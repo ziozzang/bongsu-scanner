@@ -36,7 +36,7 @@ func Latest(ctx context.Context, client *http.Client, repo, token string) (*Rele
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "bongsu-selfupdate")
+	req.Header.Set("User-Agent", "bscan-selfupdate")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -74,7 +74,7 @@ func AssetName(ver string) (string, error) {
 		return "", fmt.Errorf("no release build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	arch := map[string]string{"amd64": "x86_64", "arm64": "arm64"}[runtime.GOARCH]
-	return fmt.Sprintf("bongsu_%s_linux_%s", ver, arch), nil
+	return fmt.Sprintf("bscan_%s_linux_%s", ver, arch), nil
 }
 
 func Compare(a, b string) int {
@@ -131,7 +131,7 @@ func DownloadVerified(ctx context.Context, client *http.Client, asset Asset, wan
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "bongsu-selfupdate")
+	req.Header.Set("User-Agent", "bscan-selfupdate")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -140,7 +140,7 @@ func DownloadVerified(ctx context.Context, client *http.Client, asset Asset, wan
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: %s", asset.Name, resp.Status)
 	}
-	f, err := os.CreateTemp(dir, ".bongsu-update-*")
+	f, err := os.CreateTemp(dir, ".bscan-update-*")
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +186,7 @@ func downloadBytes(ctx context.Context, client *http.Client, u string, max int64
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "bongsu-selfupdate")
+	req.Header.Set("User-Agent", "bscan-selfupdate")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

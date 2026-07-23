@@ -33,7 +33,7 @@ const (
 func main() {
 	refreshUpdateCache(os.Args[1:])
 	if err := run(context.Background(), os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "bongsu:", err)
+		fmt.Fprintln(os.Stderr, "bscan:", err)
 		os.Exit(1)
 	}
 }
@@ -66,7 +66,7 @@ func run(ctx context.Context, args []string) error {
 		fmt.Println(version)
 		return nil
 	case "about":
-		fmt.Printf("bongsu %s\nAuthor: %s\nGitHub: %s\n", version, author, projectURL)
+		fmt.Printf("bscan %s\nAuthor: %s\nGitHub: %s\n", version, author, projectURL)
 		return nil
 	case "help", "-h", "--help":
 		usage()
@@ -77,22 +77,26 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage() {
-	fmt.Print(`bongsu - embedded host/container SBOM scanner and artifact signer
+	fmt.Print(`bscan - embedded host/container SBOM scanner and artifact signer
 
 Usage:
-  bongsu init [--signer NAME]
-  bongsu key show|generate|trust NAME PUBLIC_KEY
-  bongsu scan [--format both|spdx|cyclonedx] [--output DIR] [--sign] TARGET
-  bongsu hash [-o FILE.sha256] FILE...
-  bongsu sign [-o FILE.sig] FILE
-  bongsu check [--pubkey NAME|FILE|HEX] [--source TARGET] FILE.sha256|FILE.sig
-  bongsu scramble encrypt [-o FILE.bgs] [--chunk-size 1MiB] FILE
-  bongsu scramble decrypt [-o FILE] [--pubkey NAME|FILE|HEX] FILE.bgs
-  bongsu batch [scan flags] TARGET...
-  bongsu update [--check] [--force]
-  bongsu about
+  bscan init [--signer NAME]
+  bscan key show|generate|trust NAME PUBLIC_KEY
+  bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign] [--verbose] TARGET
+  bscan hash [-o FILE.sha256] FILE...
+  bscan sign [-o FILE.sig] FILE
+  bscan check [--pubkey NAME|FILE|HEX] [--source TARGET] FILE.sha256|FILE.sig
+  bscan scramble encrypt [-o FILE.bgs] [--chunk-size 1MiB] FILE
+  bscan scramble decrypt [-o FILE] [--pubkey NAME|FILE|HEX] FILE.bgs
+  bscan batch [scan flags] TARGET...
+  bscan update [--check] [--force]
+  bscan about
 
 Targets: host://, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
+
+Local examples:
+  bscan scan .
+  bscan scan --verbose --output ./scan-results /path/to/rootfs
 `)
 }
 
@@ -150,7 +154,7 @@ func cmdKey(args []string) error {
 		return nil
 	case "trust":
 		if len(args) != 3 {
-			return errors.New("usage: bongsu key trust NAME PUBLIC_KEY")
+			return errors.New("usage: bscan key trust NAME PUBLIC_KEY")
 		}
 		pub, err := resolvePublic(cfg, args[2])
 		if err != nil {
@@ -166,6 +170,7 @@ func cmdKey(args []string) error {
 type scanFlags struct {
 	format, output string
 	sign, files    bool
+	verbose        bool
 }
 
 func addScanFlags(fs *flag.FlagSet) *scanFlags {
@@ -174,6 +179,9 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	fs.StringVar(&f.output, "output", ".", "output directory")
 	fs.BoolVar(&f.sign, "sign", false, "sign generated SHA256 manifest")
 	fs.BoolVar(&f.files, "files", true, "include individual file hashes")
+	fs.BoolVar(&f.verbose, "verbose", false, "show files, layers, and catalog progress")
+	fs.BoolVar(&f.verbose, "v", false, "show verbose scan progress")
+	fs.BoolVar(&f.verbose, "V", false, "show verbose scan progress")
 	return f
 }
 
@@ -191,7 +199,20 @@ func cmdScan(ctx context.Context, args []string) error {
 }
 
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
-	r, err := scan.Target(ctx, target, scan.Options{IncludeFileHashes: f.files, Now: time.Now()})
+	logProgress := func(event scan.Progress) {
+		if event.Detail && !f.verbose {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[scan:%s] %s\n", event.Stage, event.Message)
+	}
+	fmt.Fprintf(os.Stderr, "[scan:start] target=%s format=%s output=%s file-hashes=%t sign=%t\n",
+		target, f.format, f.output, f.files, f.sign)
+	r, err := scan.Target(ctx, target, scan.Options{
+		IncludeFileHashes: f.files,
+		Now:               time.Now(),
+		Verbose:           f.verbose,
+		Progress:          logProgress,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +231,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 			return nil, fmt.Errorf("unsupported format %q", format)
 		}
 		out := filepath.Join(f.output, base+suffix)
+		fmt.Fprintf(os.Stderr, "[scan:sbom] writing %s -> %s\n", format, out)
 		if err := sbom.Write(out, format, r); err != nil {
 			return nil, err
 		}
@@ -217,6 +239,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	}
 	if len(r.Layers) > 0 {
 		layerPath := filepath.Join(f.output, base+".layers.sha256")
+		fmt.Fprintf(os.Stderr, "[scan:hash] writing %d layer digests -> %s\n", len(r.Layers), layerPath)
 		var entries []hashutil.Entry
 		for _, l := range r.Layers {
 			entries = append(entries, hashutil.Entry{Digest: l.SHA256, Path: l.Path})
@@ -227,6 +250,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		outputs = append(outputs, layerPath)
 	}
 	manifest := filepath.Join(f.output, base+".sha256")
+	fmt.Fprintf(os.Stderr, "[scan:hash] writing artifact manifest -> %s\n", manifest)
 	var entries []hashutil.Entry
 	for _, out := range outputs {
 		d, err := hashutil.File(out)
@@ -249,13 +273,14 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	}
 	outputs = append(outputs, manifest)
 	if f.sign {
+		fmt.Fprintf(os.Stderr, "[scan:sign] signing %s\n", manifest)
 		sig, err := signPath(manifest, "")
 		if err != nil {
 			return nil, err
 		}
 		outputs = append(outputs, sig)
 	}
-	fmt.Printf("scanned %s: %d packages, %d files\n", target, len(r.Packages), len(r.Files))
+	fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", target, len(r.Packages), len(r.Files), len(r.Layers))
 	for _, out := range outputs {
 		fmt.Println(out)
 	}

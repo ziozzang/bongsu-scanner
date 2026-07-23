@@ -74,11 +74,23 @@ func TestDirectoryGoAndNPMCatalog(t *testing.T) {
 	d := t.TempDir()
 	os.WriteFile(filepath.Join(d, "go.mod"), []byte("module x\nrequire example.com/mod v1.2.3\n"), 0o644)
 	os.WriteFile(filepath.Join(d, "package-lock.json"), []byte(`{"packages":{"node_modules/a":{"name":"a","version":"4.5.6"}}}`), 0o644)
-	r, err := Directory(d, "test", Options{IncludeFileHashes: true})
+	var events []Progress
+	r, err := Directory(d, "test", Options{IncludeFileHashes: true, Verbose: true, Progress: func(p Progress) {
+		events = append(events, p)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(r.Packages) != 2 {
 		t.Fatalf("packages = %#v", r.Packages)
+	}
+	stages := map[string]bool{}
+	for _, event := range events {
+		stages[event.Stage] = true
+	}
+	for _, want := range []string{"walk", "file", "catalog", "package"} {
+		if !stages[want] {
+			t.Errorf("progress stage %q missing: %#v", want, events)
+		}
 	}
 }

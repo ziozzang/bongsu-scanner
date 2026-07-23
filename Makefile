@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 .PHONY: build test release clean
 
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bongsu ./cmd/bongsu
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan ./cmd/bscan
 
 test:
 	go test -race ./...
@@ -12,9 +12,9 @@ test:
 
 release: clean
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bongsu_$(VERSION)_linux_x86_64 ./cmd/bongsu
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bongsu_$(VERSION)_linux_arm64 ./cmd/bongsu
-	cd dist && sha256sum bongsu_$(VERSION)_linux_x86_64 bongsu_$(VERSION)_linux_arm64 > SHA256SUMS
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan_$(VERSION)_linux_x86_64 ./cmd/bscan
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan_$(VERSION)_linux_arm64 ./cmd/bscan
+	cd dist && sha256sum bscan_$(VERSION)_linux_x86_64 bscan_$(VERSION)_linux_arm64 > SHA256SUMS
 
 clean:
-	rm -f dist/bongsu dist/bongsu_* dist/SHA256SUMS
+	rm -f dist/bscan dist/bscan_* dist/bongsu dist/bongsu_* dist/SHA256SUMS

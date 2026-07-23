@@ -25,6 +25,20 @@ const maxMetadata = 16 << 20
 type Options struct {
 	IncludeFileHashes bool
 	Now               time.Time
+	Verbose           bool
+	Progress          func(Progress)
+}
+
+type Progress struct {
+	Stage   string
+	Message string
+	Detail  bool
+}
+
+func report(opts Options, stage, message string, detail bool) {
+	if opts.Progress != nil && (!detail || opts.Verbose) {
+		opts.Progress(Progress{Stage: stage, Message: message, Detail: detail})
+	}
 }
 
 type store map[string]File
@@ -35,10 +49,13 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 	}
 	switch {
 	case target == "host" || target == "host://":
+		report(opts, "source", "local host filesystem selected", false)
 		return Directory("/", "host", opts)
 	case strings.HasPrefix(target, "docker://"):
+		report(opts, "source", "Docker image selected: "+strings.TrimPrefix(target, "docker://"), false)
 		return dockerSave(ctx, strings.TrimPrefix(target, "docker://"), false, opts)
 	case strings.HasPrefix(target, "container://"):
+		report(opts, "source", "Docker container selected: "+strings.TrimPrefix(target, "container://"), false)
 		return dockerSave(ctx, strings.TrimPrefix(target, "container://"), true, opts)
 	}
 	st, err := os.Stat(target)
@@ -46,13 +63,18 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if st.IsDir() {
+		report(opts, "source", "local directory selected: "+target, false)
 		return Directory(target, filepath.Base(filepath.Clean(target)), opts)
 	}
+	report(opts, "source", "local archive selected: "+target, false)
 	return Archive(target, opts)
 }
 
 func Directory(root, name string, opts Options) (Result, error) {
 	fs := store{}
+	regularFiles := 0
+	indexedFiles := 0
+	report(opts, "walk", "walking local filesystem: "+root, false)
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			if os.IsPermission(err) {
@@ -70,9 +92,14 @@ func Directory(root, name string, opts Options) (Result, error) {
 		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
+		regularFiles++
+		if regularFiles%1000 == 0 {
+			report(opts, "walk", fmt.Sprintf("visited %d regular files, indexed %d", regularFiles, indexedFiles), false)
+		}
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
 		if !opts.IncludeFileHashes && !interesting(rel) {
+			report(opts, "file", "skip non-metadata: "+rel, true)
 			return nil
 		}
 		f, err := os.Open(p)
@@ -83,13 +110,16 @@ func Directory(root, name string, opts Options) (Result, error) {
 		rec, err := readFile(rel, f, info.Size(), "")
 		if err == nil {
 			fs[rel] = rec
+			indexedFiles++
+			report(opts, "file", fmt.Sprintf("%s (%d bytes)", rel, info.Size()), true)
 		}
 		return nil
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	r := buildResult(name, root, "directory", fs, nil, opts.Now)
+	report(opts, "walk", fmt.Sprintf("filesystem walk complete: %d visited, %d indexed", regularFiles, indexedFiles), false)
+	r := buildResult(name, root, "directory", fs, nil, opts.Now, opts)
 	return r, nil
 }
 
@@ -107,6 +137,7 @@ func dockerSave(ctx context.Context, ref string, container bool, opts Options) (
 	}
 	image := ref
 	if container {
+		report(opts, "docker", "resolving container image ID", false)
 		out, err := exec.CommandContext(ctx, "docker", "container", "inspect", "--format", "{{.Image}}", ref).Output()
 		if err != nil {
 			return Result{}, fmt.Errorf("docker inspect %s: %w", ref, err)
@@ -120,6 +151,7 @@ func dockerSave(ctx context.Context, ref string, container bool, opts Options) (
 	tmpPath := tmp.Name()
 	tmp.Close()
 	defer os.Remove(tmpPath)
+	report(opts, "docker", "exporting image with docker image save", false)
 	cmd := exec.CommandContext(ctx, "docker", "image", "save", "-o", tmpPath, image)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return Result{}, fmt.Errorf("docker image save: %w: %s", err, strings.TrimSpace(string(out)))
@@ -133,27 +165,31 @@ func dockerSave(ctx context.Context, ref string, container bool, opts Options) (
 }
 
 func Archive(file string, opts Options) (Result, error) {
+	report(opts, "hash", "calculating source archive SHA-256", false)
 	digest, err := digestFile(file)
 	if err != nil {
 		return Result{}, err
 	}
-	entries, cleanup, err := readOuter(file)
+	report(opts, "archive", "indexing tar entries", false)
+	entries, cleanup, err := readOuter(file, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	defer cleanup()
-	fs, layers, kind, err := unpackImage(entries)
+	fs, layers, kind, err := unpackImage(entries, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	if kind == "" {
 		kind = "archive"
 		fs = store{}
+		report(opts, "archive", "plain root filesystem archive detected", false)
 		if err := applyTarFile(file, fs, ""); err != nil {
 			return Result{}, err
 		}
 	}
-	r := buildResult(filepath.Base(file), file, kind, fs, layers, opts.Now)
+	report(opts, "archive", fmt.Sprintf("%s ready: %d files, %d layers", kind, len(fs), len(layers)), false)
+	r := buildResult(filepath.Base(file), file, kind, fs, layers, opts.Now, opts)
 	r.SourceHash = digest
 	return r, nil
 }
@@ -165,7 +201,7 @@ type outerEntry struct {
 	Hash string
 }
 
-func readOuter(file string) (map[string]outerEntry, func(), error) {
+func readOuter(file string, opts Options) (map[string]outerEntry, func(), error) {
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, func() {}, err
@@ -200,6 +236,7 @@ func readOuter(file string) (map[string]outerEntry, func(), error) {
 		if !h.FileInfo().Mode().IsRegular() {
 			continue
 		}
+		report(opts, "archive-entry", fmt.Sprintf("%s (%d bytes)", clean(h.Name), h.Size), true)
 		sum := sha256.New()
 		entry := outerEntry{Size: h.Size}
 		if h.Size > maxMetadata {
@@ -232,8 +269,9 @@ func readOuter(file string) (map[string]outerEntry, func(), error) {
 	return out, cleanup, nil
 }
 
-func unpackImage(entries map[string]outerEntry) (store, []File, string, error) {
+func unpackImage(entries map[string]outerEntry, opts Options) (store, []File, string, error) {
 	if e, ok := entries["manifest.json"]; ok { // docker-archive
+		report(opts, "archive", "Docker save manifest detected", false)
 		var manifests []struct {
 			Config   string
 			RepoTags []string
@@ -250,13 +288,16 @@ func unpackImage(entries map[string]outerEntry) (store, []File, string, error) {
 				return nil, nil, "", fmt.Errorf("Docker layer %q missing", layer)
 			}
 			layers = append(layers, File{Path: layer, Size: e.Size, SHA256: e.Hash})
+			report(opts, "layer", fmt.Sprintf("applying %s (%d bytes)", layer, e.Size), false)
 			if err := applyOuterLayer(e, fs, layer); err != nil {
 				return nil, nil, "", err
 			}
+			report(opts, "layer", fmt.Sprintf("applied %s; merged filesystem has %d files", layer, len(fs)), false)
 		}
 		return fs, layers, "docker-archive", nil
 	}
 	if idx, ok := entries["index.json"]; ok && entries["oci-layout"].Data != nil {
+		report(opts, "archive", "OCI image layout detected", false)
 		var index struct {
 			Manifests []struct {
 				Digest string `json:"digest"`
@@ -287,9 +328,11 @@ func unpackImage(entries map[string]outerEntry) (store, []File, string, error) {
 				return nil, nil, "", fmt.Errorf("OCI layer %s missing", l.Digest)
 			}
 			layers = append(layers, File{Path: l.Digest, Size: e.Size, SHA256: strings.TrimPrefix(l.Digest, "sha256:")})
+			report(opts, "layer", fmt.Sprintf("applying %s (%d bytes)", l.Digest, e.Size), false)
 			if err := applyOuterLayer(e, fs, l.Digest); err != nil {
 				return nil, nil, "", err
 			}
+			report(opts, "layer", fmt.Sprintf("applied %s; merged filesystem has %d files", l.Digest, len(fs)), false)
 		}
 		return fs, layers, "oci-archive", nil
 	}
@@ -431,14 +474,19 @@ func interesting(p string) bool {
 	return strings.HasSuffix(p, ".dist-info/metadata")
 }
 
-func buildResult(name, source, kind string, fs store, layers []File, now time.Time) Result {
+func buildResult(name, source, kind string, fs store, layers []File, now time.Time, opts Options) Result {
 	files := make([]File, 0, len(fs))
 	for _, f := range fs {
 		files = append(files, f)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	r := Result{Name: name, Source: source, SourceType: kind, ScannedAt: now.UTC(), Files: files, Layers: layers}
+	report(opts, "catalog", fmt.Sprintf("cataloging package metadata from %d files", len(files)), false)
 	r.Packages, r.OSName, r.OSVersion = catalog(files)
+	report(opts, "catalog", fmt.Sprintf("catalog complete: %d packages; os=%s %s", len(r.Packages), r.OSName, r.OSVersion), false)
+	for _, p := range r.Packages {
+		report(opts, "package", fmt.Sprintf("%s %s (%s)", p.Name, p.Version, p.Type), true)
+	}
 	return r
 }
 

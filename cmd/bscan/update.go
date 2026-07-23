@@ -87,7 +87,7 @@ func refreshUpdateCache(args []string) {
 	}
 	if c.Latest != "" && time.Since(c.Checked) < 24*time.Hour {
 		if selfupdate.Compare(c.Latest, version) > 0 {
-			fmt.Fprintf(os.Stderr, "bongsu %s is available; run 'bongsu update'\n", c.Latest)
+			fmt.Fprintf(os.Stderr, "bscan %s is available; run 'bscan update'\n", c.Latest)
 		}
 		return
 	}
@@ -114,5 +114,5 @@ func updateCachePath() string {
 	if err != nil {
 		d = os.TempDir()
 	}
-	return filepath.Join(d, "bongsu", "update-check.json")
+	return filepath.Join(d, "bscan", "update-check.json")
 }

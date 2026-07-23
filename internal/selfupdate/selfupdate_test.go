@@ -12,3 +12,10 @@ func TestCompare(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxAssetNameUsesBscan(t *testing.T) {
+	name, err := AssetName("0.2.0")
+	if err == nil && name != "bscan_0.2.0_linux_x86_64" && name != "bscan_0.2.0_linux_arm64" {
+		t.Fatalf("asset name = %q", name)
+	}
+}
