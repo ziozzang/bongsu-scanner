@@ -57,6 +57,7 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 			return Result{}, err
 		}
 		r.SourceType = "host"
+		makeHostPackageSourcesAbsolute(r.Packages)
 		// Package cataloging has already consumed the selected metadata files.
 		// Do not emit those implementation-detail file digests in a host SBOM.
 		r.Files = nil
@@ -82,6 +83,14 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 	}
 	report(opts, "source", "local archive selected: "+target, false)
 	return Archive(target, opts)
+}
+
+func makeHostPackageSourcesAbsolute(packages []Package) {
+	for i := range packages {
+		if packages[i].Source != "" && !strings.HasPrefix(packages[i].Source, "/") {
+			packages[i].Source = "/" + packages[i].Source
+		}
+	}
 }
 
 func Directory(root, name string, opts Options) (Result, error) {

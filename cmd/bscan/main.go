@@ -55,7 +55,9 @@ func run(ctx context.Context, args []string) error {
 	case "sign":
 		return cmdSign(args[1:])
 	case "check":
-		return cmdCheck(ctx, args[1:])
+		return cmdCheck(ctx, args[1:], false)
+	case "verify":
+		return cmdCheck(ctx, args[1:], true)
 	case "scramble", "encrypt", "decrypt":
 		return cmdScramble(args)
 	case "batch":
@@ -85,17 +87,19 @@ Usage:
   bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign] [--verbose] TARGET
   bscan hash [-o FILE.sha256] FILE...
   bscan sign [-o FILE.sig] FILE
-  bscan check [--pubkey NAME|FILE|HEX] [--source TARGET] FILE.sha256|FILE.sig
+  bscan verify [--pubkey NAME|FILE|HEX] FILE.sig [FILE.sig...]
+  bscan check [--pubkey NAME|FILE|HEX] [--source TARGET] FILE.sha256|FILE.sig [...]
   bscan scramble encrypt [-o FILE.bgs] [--chunk-size 1MiB] FILE
   bscan scramble decrypt [-o FILE] [--pubkey NAME|FILE|HEX] FILE.bgs
   bscan batch [scan flags] TARGET...
   bscan update [--check] [--force]
   bscan about
 
-Targets: host://, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
+Targets: host, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
 
 Local examples:
   bscan scan .
+  bscan scan --sign --output ./host-scan host
   bscan scan --verbose --output ./scan-results /path/to/rootfs
 `)
 }
@@ -382,32 +386,38 @@ func signPath(target, output string) (string, error) {
 	return output, sign.WriteRecord(output, r)
 }
 
-func cmdCheck(ctx context.Context, args []string) error {
+func cmdCheck(ctx context.Context, args []string, requireTrusted bool) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	pubSpec := fs.String("pubkey", "", "trusted name, public key file, or hex")
 	source := fs.String("source", "", "source archive/image for layer manifest verification")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("check requires one manifest or signature")
+	if fs.NArg() == 0 {
+		return errors.New("check requires one or more manifests or signatures")
 	}
-	p := fs.Arg(0)
-	if strings.HasSuffix(p, ".sig") {
-		cfg, _, err := config.Load()
-		if err != nil {
-			return err
+	cfg, _, err := config.Load()
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, p := range fs.Args() {
+		if err := checkOne(ctx, p, *pubSpec, *source, cfg, requireTrusted); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", p, err))
 		}
+	}
+	return errors.Join(failures...)
+}
+
+func checkOne(ctx context.Context, p, pubSpec, source string, cfg config.Config, requireTrusted bool) error {
+	if strings.HasSuffix(p, ".sig") {
 		r, err := sign.ReadRecord(p)
 		if err != nil {
 			return err
 		}
-		var pub ed25519.PublicKey
-		if *pubSpec != "" {
-			pub, err = resolvePublic(cfg, *pubSpec)
-			if err != nil {
-				return err
-			}
+		pub, trust, err := verificationKey(cfg, r, pubSpec, requireTrusted)
+		if err != nil {
+			return err
 		}
 		if err := r.Verify(pub); err != nil {
 			return err
@@ -428,7 +438,8 @@ func cmdCheck(ctx context.Context, args []string) error {
 				return err
 			}
 		}
-		fmt.Printf("OK: signature and content verified (%s)\n", r.Signer)
+		fmt.Printf("OK: %s: signature, target digest, and content verified (signer=%s, trust=%s, signed=%s)\n",
+			p, r.Signer, trust, r.SignedAt.UTC().Format(time.RFC3339))
 		return nil
 	}
 	if strings.HasSuffix(p, ".layers.sha256") {
@@ -436,16 +447,16 @@ func cmdCheck(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		if *source == "" {
+		if source == "" {
 			candidate := strings.TrimSuffix(p, ".layers.sha256")
 			if _, err := os.Stat(candidate); err == nil {
-				*source = candidate
+				source = candidate
 			}
 		}
-		if *source == "" {
+		if source == "" {
 			return errors.New("layer verification requires --source ARCHIVE|docker://IMAGE|container://ID")
 		}
-		r, err := scan.Target(ctx, *source, scan.Options{IncludeFileHashes: false})
+		r, err := scan.Target(ctx, source, scan.Options{IncludeFileHashes: false})
 		if err != nil {
 			return err
 		}
@@ -457,14 +468,49 @@ func cmdCheck(ctx context.Context, args []string) error {
 				return fmt.Errorf("layer %d mismatch (%s)", i, layer.Path)
 			}
 		}
-		fmt.Println("OK: layer checksums verified")
+		fmt.Printf("OK: %s: layer checksums verified\n", p)
 		return nil
 	}
 	if err := hashutil.Verify(p); err != nil {
 		return err
 	}
-	fmt.Println("OK: checksums verified")
+	fmt.Printf("OK: %s: checksums verified\n", p)
 	return nil
+}
+
+func verificationKey(cfg config.Config, record sign.Record, spec string, requireTrusted bool) (ed25519.PublicKey, string, error) {
+	if spec != "" {
+		pub, err := resolvePublic(cfg, spec)
+		if err != nil {
+			return nil, "", err
+		}
+		return pub, "pinned:" + spec, nil
+	}
+	embedded, err := sign.ParsePublic([]byte(record.PublicKey))
+	if err != nil {
+		return nil, "", err
+	}
+	for name, value := range cfg.TrustedKeys {
+		pub, err := sign.ParsePublic([]byte(value))
+		if err == nil && pub.Equal(embedded) {
+			return pub, "trusted:" + name, nil
+		}
+	}
+	publicPath := cfg.PublicKey
+	if publicPath == "" {
+		if dir, err := config.Dir(); err == nil {
+			publicPath = filepath.Join(dir, "signing.pub")
+		}
+	}
+	if publicPath != "" {
+		if pub, err := resolvePublic(cfg, publicPath); err == nil && pub.Equal(embedded) {
+			return pub, "local:" + publicPath, nil
+		}
+	}
+	if requireTrusted {
+		return nil, "", errors.New("signature key is not trusted; use --pubkey KEY or 'bscan key trust NAME KEY'")
+	}
+	return nil, "embedded-unpinned", nil
 }
 
 func cmdScramble(args []string) error {

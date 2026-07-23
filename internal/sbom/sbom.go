@@ -79,6 +79,9 @@ func SPDX(r scan.Result) ([]byte, error) {
 		id := fmt.Sprintf("SPDXRef-Package-%d-%s", i, safeID(p.Name))
 		pkg := spdxPackage{SPDXID: id, Name: p.Name, VersionInfo: p.Version, DownloadLocation: "NOASSERTION",
 			FilesAnalyzed: false, LicenseConcluded: "NOASSERTION", LicenseDeclared: license(p.License), CopyrightText: "NOASSERTION"}
+		if p.Source != "" {
+			pkg.PackageComment = "bscan detected package metadata at " + p.Source
+		}
 		if p.PURL != "" {
 			pkg.ExternalRefs = []spdxRef{{ReferenceCategory: "PACKAGE-MANAGER", ReferenceType: "purl", ReferenceLocator: p.PURL}}
 		}
@@ -134,7 +137,7 @@ func CycloneDX(r scan.Result) ([]byte, error) {
 	for i, p := range r.Packages {
 		c := cdxComponent{Type: "library", BOMRef: fmt.Sprintf("pkg-%d-%s", i, safeID(p.Name)), Name: p.Name, Version: p.Version, PURL: p.PURL}
 		if p.Source != "" {
-			c.Properties = []cdxProperty{{Name: "bongsu:source", Value: p.Source}}
+			c.Properties = []cdxProperty{{Name: "bscan:source", Value: p.Source}}
 		}
 		doc.Components = append(doc.Components, c)
 	}

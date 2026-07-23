@@ -44,6 +44,28 @@ func TestDirectoryProducesOnlySignedSBOMs(t *testing.T) {
 			t.Fatalf("%s signature does not cover SBOM", suffix)
 		}
 	}
+	pubKey := filepath.Join(os.Getenv("BONGSU_HOME"), "signing.pub")
+	signatures := []string{
+		findSuffix(t, files, ".spdx.json.sig"),
+		findSuffix(t, files, ".cdx.json.sig"),
+	}
+	verifyArgs := append([]string{"--pubkey", pubKey}, signatures...)
+	if err := cmdCheck(context.Background(), verifyArgs, true); err != nil {
+		t.Fatalf("multi-signature verify: %v", err)
+	}
+	t.Setenv("BONGSU_HOME", t.TempDir())
+	if err := cmdCheck(context.Background(), signatures, true); err == nil {
+		t.Fatal("verify accepted an untrusted embedded key")
+	}
+	if err := cmdCheck(context.Background(), verifyArgs, true); err != nil {
+		t.Fatalf("explicit pinned verification failed: %v", err)
+	}
+	if err := os.WriteFile(findSuffix(t, files, ".spdx.json"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdCheck(context.Background(), verifyArgs, true); err == nil {
+		t.Fatal("verify accepted a modified SBOM")
+	}
 }
 
 func TestArchiveProducesAndSignsSHAManifest(t *testing.T) {

@@ -22,3 +22,11 @@ func TestCollectHostMetadata(t *testing.T) {
 		t.Fatalf("hardware metadata incomplete: %#v", got)
 	}
 }
+
+func TestHostPackageSourcesBecomeAbsolute(t *testing.T) {
+	packages := []Package{{Name: "a", Source: "home/foo/go.mod"}, {Name: "b", Source: "/var/lib/dpkg/status"}}
+	makeHostPackageSourcesAbsolute(packages)
+	if packages[0].Source != "/home/foo/go.mod" || packages[1].Source != "/var/lib/dpkg/status" {
+		t.Fatalf("sources = %#v", packages)
+	}
+}

@@ -33,13 +33,14 @@ func TestHostMetadataIncludedInBothFormats(t *testing.T) {
 	r := scan.Result{Name: "host", SourceType: "host", ScannedAt: time.Unix(1, 0).UTC(),
 		Host: &scan.HostMetadata{Hostname: "build-host", OperatingSystem: "linux", OSVersion: "42",
 			Kernel: "6.1-test", Architecture: "amd64", CPUModel: "Test CPU", CPUCount: 8,
-			MemoryBytes: 17179869184, IPAddresses: []string{"10.0.0.2", "2001:db8::2"}}}
+			MemoryBytes: 17179869184, IPAddresses: []string{"10.0.0.2", "2001:db8::2"}},
+		Packages: []scan.Package{{Name: "local-module", Version: "1", Type: "golang", Source: "/home/foo/app/go.mod"}}}
 	for name, fn := range map[string]func(scan.Result) ([]byte, error){"spdx": SPDX, "cdx": CycloneDX} {
 		b, err := fn(r)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, value := range []string{"build-host", "Test CPU", "17179869184", "10.0.0.2"} {
+		for _, value := range []string{"build-host", "Test CPU", "17179869184", "10.0.0.2", "/home/foo/app/go.mod"} {
 			if !strings.Contains(string(b), value) {
 				t.Errorf("%s missing host metadata %q", name, value)
 			}

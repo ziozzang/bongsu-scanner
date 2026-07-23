@@ -13,7 +13,7 @@ Project: https://github.com/ziozzang/bongsu-scanner
 ## Build and initialize
 
 ```sh
-make build VERSION=0.3.0
+make build VERSION=0.4.0
 ./dist/bscan init --signer ziozzang@gmail.com
 ./dist/bscan about
 ```
@@ -35,7 +35,7 @@ bscan scan --output ./scan-results .
 bscan scan --verbose --output ./scan-results /path/to/rootfs
 
 # Scan the local host filesystem
-sudo bscan scan --sign --output ./host-scan host://
+sudo bscan scan --sign --output ./host-scan host
 ```
 
 Normal mode prints each major phase—source detection, filesystem walk or
@@ -48,7 +48,10 @@ and logical CPU count, total RAM, architecture, and non-loopback IP addresses.
 With `--sign`, each host SBOM is signed directly, so both its inventory and
 host metadata are covered by the detached signature. Host and directory scans
 do not create separate `.sha256` files. Host scans also disable per-file
-checksums and inventory only package metadata.
+checksums and inventory only package metadata. Package metadata locations retain
+absolute host paths such as `/home/foo/app/go.mod` and
+`/var/lib/dpkg/status`. The legacy `host://` spelling remains accepted only for
+backward compatibility.
 
 ## Image scan, sign, and check
 
@@ -82,6 +85,28 @@ Output and signing depend on the target:
 Signatures cover the exact target digest, UTC signing timestamp, and
 time-derived 256-bit random salt.
 
+## Signature verification
+
+`verify` validates the Ed25519 signature, the signed target digest, the current
+SBOM contents, and a pinned/trusted public key. Multiple signatures can be
+verified in one invocation:
+
+```sh
+# Verify with this scanner's local public key
+bscan verify \
+  --pubkey ~/.bongsu/signing.pub \
+  host-scan/host.spdx.json.sig \
+  host-scan/host.cdx.json.sig
+
+# Or register a remote scanner's key once and verify by trust name
+bscan key trust scanner-01 scanner-01.pub
+bscan verify --pubkey scanner-01 incoming/*.sig
+```
+
+`verify` fails when a key is not pinned, the signature record was modified,
+the SBOM is missing, or the current SBOM digest differs. `check` remains the
+general command for SHA manifests and layer manifests as well as signatures.
+
 ## Scrambler
 
 ```sh
@@ -105,6 +130,21 @@ Interactive commands perform a non-blocking update check at most once every
 24 hours. Set `BONGSU_NO_UPDATE_CHECK=1` for air-gapped or fully silent use.
 Updates download the matching Linux release binary, verify it against the
 release `SHA256SUMS`, and atomically replace the current executable.
+
+## Future server submission
+
+A future bongsu server should register each scanner's public-key fingerprint
+and accept an upload envelope containing scanner ID, scan ID, target type,
+scan/signing timestamps, SBOM files, and detached signatures. The server must
+recalculate each SBOM digest and verify it against the registered key before
+accepting the scan.
+
+For periodic collection, `bscan` should write completed signed scans to a local
+outbox. A systemd timer or cron job can run scans, while a separate submit
+worker uploads outbox entries with idempotent scan IDs, retries with backoff,
+and deletes or archives an entry only after server acknowledgement. This keeps
+scanning functional while the server is offline and avoids giving the scanner
+private key to the server.
 
 ## Security notes
 
