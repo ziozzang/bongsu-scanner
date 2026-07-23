@@ -1,0 +1,6 @@
+/dist/
+*.sig
+*.sha256
+*.spdx.json
+*.cdx.json
+*.bgs
