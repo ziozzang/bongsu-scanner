@@ -2,6 +2,7 @@ package sbom
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,24 @@ func TestDocumentsAreValidJSONWithComponents(t *testing.T) {
 		}
 		if name == "cdx" && doc["specVersion"] != "1.6" {
 			t.Fatal("wrong CycloneDX version")
+		}
+	}
+}
+
+func TestHostMetadataIncludedInBothFormats(t *testing.T) {
+	r := scan.Result{Name: "host", SourceType: "host", ScannedAt: time.Unix(1, 0).UTC(),
+		Host: &scan.HostMetadata{Hostname: "build-host", OperatingSystem: "linux", OSVersion: "42",
+			Kernel: "6.1-test", Architecture: "amd64", CPUModel: "Test CPU", CPUCount: 8,
+			MemoryBytes: 17179869184, IPAddresses: []string{"10.0.0.2", "2001:db8::2"}}}
+	for name, fn := range map[string]func(scan.Result) ([]byte, error){"spdx": SPDX, "cdx": CycloneDX} {
+		b, err := fn(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range []string{"build-host", "Test CPU", "17179869184", "10.0.0.2"} {
+			if !strings.Contains(string(b), value) {
+				t.Errorf("%s missing host metadata %q", name, value)
+			}
 		}
 	}
 }

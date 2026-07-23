@@ -27,6 +27,7 @@ type spdxPackage struct {
 	LicenseConcluded string    `json:"licenseConcluded"`
 	LicenseDeclared  string    `json:"licenseDeclared"`
 	CopyrightText    string    `json:"copyrightText"`
+	PackageComment   string    `json:"packageComment,omitempty"`
 	ExternalRefs     []spdxRef `json:"externalRefs,omitempty"`
 }
 type spdxRef struct {
@@ -62,10 +63,17 @@ func SPDX(r scan.Result) ([]byte, error) {
 	hash := stableHash(r)
 	doc := spdxDoc{SPDXVersion: "SPDX-2.3", DataLicense: "CC0-1.0", SPDXID: "SPDXRef-DOCUMENT",
 		Name: r.Name, DocumentNamespace: "https://bongsu.local/spdx/" + hash,
-		CreationInfo:  map[string]any{"created": r.ScannedAt, "creators": []string{"Tool: bongsu-scanner"}},
+		CreationInfo:  map[string]any{"created": r.ScannedAt, "creators": []string{"Tool: bscan"}},
 		Relationships: []relationship{{SPDXElementID: "SPDXRef-DOCUMENT", RelationshipType: "DESCRIBES", RelatedSPDXElement: "SPDXRef-Root"}}}
 	rp := spdxPackage{SPDXID: "SPDXRef-Root", Name: r.Name, DownloadLocation: "NOASSERTION",
 		FilesAnalyzed: false, LicenseConcluded: "NOASSERTION", LicenseDeclared: "NOASSERTION", CopyrightText: "NOASSERTION"}
+	if r.Host != nil {
+		hostJSON, err := json.Marshal(r.Host)
+		if err != nil {
+			return nil, err
+		}
+		rp.PackageComment = "bscan host metadata: " + string(hostJSON)
+	}
 	doc.Packages = append(doc.Packages, rp)
 	for i, p := range r.Packages {
 		id := fmt.Sprintf("SPDXRef-Package-%d-%s", i, safeID(p.Name))
@@ -118,8 +126,11 @@ func CycloneDX(r scan.Result) ([]byte, error) {
 	if r.SourceHash != "" {
 		root.Hashes = []cdxHash{{Alg: "SHA-256", Content: r.SourceHash}}
 	}
+	if r.Host != nil {
+		root.Properties = hostProperties(*r.Host)
+	}
 	doc := cdxDoc{BOMFormat: "CycloneDX", SpecVersion: "1.6", Serial: "urn:uuid:" + uuidFromHash(hash), Version: 1,
-		Metadata: map[string]any{"timestamp": r.ScannedAt, "tools": map[string]any{"components": []any{map[string]any{"type": "application", "name": "bongsu-scanner"}}}, "component": root}}
+		Metadata: map[string]any{"timestamp": r.ScannedAt, "tools": map[string]any{"components": []any{map[string]any{"type": "application", "name": "bscan"}}}, "component": root}}
 	for i, p := range r.Packages {
 		c := cdxComponent{Type: "library", BOMRef: fmt.Sprintf("pkg-%d-%s", i, safeID(p.Name)), Name: p.Name, Version: p.Version, PURL: p.PURL}
 		if p.Source != "" {
@@ -158,10 +169,35 @@ func safeID(s string) string {
 func stableHash(r scan.Result) string {
 	h := sha256.New()
 	h.Write([]byte(r.Name + "\x00" + r.SourceHash + "\x00" + r.ScannedAt.UTC().Format("20060102T150405.000000000Z")))
+	if r.Host != nil {
+		b, _ := json.Marshal(r.Host)
+		h.Write(append([]byte("\x00host\x00"), b...))
+	}
 	for _, f := range r.Files {
 		h.Write([]byte("\x00" + f.Path + "\x00" + f.SHA256))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func hostProperties(host scan.HostMetadata) []cdxProperty {
+	values := [][2]string{
+		{"bscan:host:hostname", host.Hostname},
+		{"bscan:host:operating-system", host.OperatingSystem},
+		{"bscan:host:os-version", host.OSVersion},
+		{"bscan:host:kernel", host.Kernel},
+		{"bscan:host:architecture", host.Architecture},
+		{"bscan:host:cpu-model", host.CPUModel},
+		{"bscan:host:cpu-count", fmt.Sprintf("%d", host.CPUCount)},
+		{"bscan:host:memory-bytes", fmt.Sprintf("%d", host.MemoryBytes)},
+		{"bscan:host:ip-addresses", strings.Join(host.IPAddresses, ",")},
+	}
+	out := make([]cdxProperty, 0, len(values))
+	for _, value := range values {
+		if value[1] != "" && value[1] != "0" {
+			out = append(out, cdxProperty{Name: value[0], Value: value[1]})
+		}
+	}
+	return out
 }
 func uuidFromHash(h string) string {
 	return h[:8] + "-" + h[8:12] + "-4" + h[13:16] + "-a" + h[17:20] + "-" + h[20:32]

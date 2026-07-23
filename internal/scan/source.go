@@ -49,8 +49,22 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 	}
 	switch {
 	case target == "host" || target == "host://":
-		report(opts, "source", "local host filesystem selected", false)
-		return Directory("/", "host", opts)
+		report(opts, "source", "local host filesystem selected (package metadata only; file SHA disabled)", false)
+		hostOpts := opts
+		hostOpts.IncludeFileHashes = false
+		r, err := Directory("/", "host", hostOpts)
+		if err != nil {
+			return Result{}, err
+		}
+		r.SourceType = "host"
+		// Package cataloging has already consumed the selected metadata files.
+		// Do not emit those implementation-detail file digests in a host SBOM.
+		r.Files = nil
+		metadata := collectHostMetadata(r.OSName, r.OSVersion)
+		r.Host = &metadata
+		report(opts, "metadata", fmt.Sprintf("host=%s cpu=%d ram=%d bytes ip=%d",
+			metadata.Hostname, metadata.CPUCount, metadata.MemoryBytes, len(metadata.IPAddresses)), false)
+		return r, nil
 	case strings.HasPrefix(target, "docker://"):
 		report(opts, "source", "Docker image selected: "+strings.TrimPrefix(target, "docker://"), false)
 		return dockerSave(ctx, strings.TrimPrefix(target, "docker://"), false, opts)
@@ -99,7 +113,6 @@ func Directory(root, name string, opts Options) (Result, error) {
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
 		if !opts.IncludeFileHashes && !interesting(rel) {
-			report(opts, "file", "skip non-metadata: "+rel, true)
 			return nil
 		}
 		f, err := os.Open(p)
@@ -160,6 +173,9 @@ func dockerSave(ctx context.Context, ref string, container bool, opts Options) (
 	if err == nil {
 		r.Name, r.Source = ref, map[bool]string{true: "container://", false: "docker://"}[container]+ref
 		r.SourceType = map[bool]string{true: "container", false: "docker-image"}[container]
+		// The temporary docker-save tar is an implementation detail, not a
+		// stable source artifact, so its digest must not appear in the SBOM.
+		r.SourceHash = ""
 	}
 	return r, err
 }

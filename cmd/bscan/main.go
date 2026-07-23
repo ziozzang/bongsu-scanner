@@ -177,7 +177,7 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	f := &scanFlags{}
 	fs.StringVar(&f.format, "format", "both", "spdx, cyclonedx, or both")
 	fs.StringVar(&f.output, "output", ".", "output directory")
-	fs.BoolVar(&f.sign, "sign", false, "sign generated SHA256 manifest")
+	fs.BoolVar(&f.sign, "sign", false, "sign SBOMs, or the SHA manifest for a local archive")
 	fs.BoolVar(&f.files, "files", true, "include individual file hashes")
 	fs.BoolVar(&f.verbose, "verbose", false, "show files, layers, and catalog progress")
 	fs.BoolVar(&f.verbose, "v", false, "show verbose scan progress")
@@ -199,6 +199,9 @@ func cmdScan(ctx context.Context, args []string) error {
 }
 
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
+	if target == "host" || target == "host://" {
+		f.files = false
+	}
 	logProgress := func(event scan.Progress) {
 		if event.Detail && !f.verbose {
 			return
@@ -237,54 +240,76 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		}
 		outputs = append(outputs, out)
 	}
-	if len(r.Layers) > 0 {
-		layerPath := filepath.Join(f.output, base+".layers.sha256")
-		fmt.Fprintf(os.Stderr, "[scan:hash] writing %d layer digests -> %s\n", len(r.Layers), layerPath)
-		var entries []hashutil.Entry
-		for _, l := range r.Layers {
-			entries = append(entries, hashutil.Entry{Digest: l.SHA256, Path: l.Path})
-		}
-		if err := hashutil.Write(layerPath, entries); err != nil {
-			return nil, err
-		}
-		outputs = append(outputs, layerPath)
-	}
-	manifest := filepath.Join(f.output, base+".sha256")
-	fmt.Fprintf(os.Stderr, "[scan:hash] writing artifact manifest -> %s\n", manifest)
-	var entries []hashutil.Entry
-	for _, out := range outputs {
-		d, err := hashutil.File(out)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, hashutil.Entry{Digest: d, Path: filepath.Base(out)})
-	}
-	if r.SourceHash != "" {
-		if _, err := os.Stat(r.Source); err == nil {
-			sourcePath, relErr := filepath.Rel(f.output, r.Source)
-			if relErr != nil {
-				sourcePath = r.Source
+	if isPhysicalArchive(r) {
+		fmt.Fprintln(os.Stderr, "[scan:policy] local archive: generating source/SBOM SHA-256 manifest")
+		if len(r.Layers) > 0 {
+			layerPath := filepath.Join(f.output, base+".layers.sha256")
+			fmt.Fprintf(os.Stderr, "[scan:hash] writing %d layer digests -> %s\n", len(r.Layers), layerPath)
+			var entries []hashutil.Entry
+			for _, l := range r.Layers {
+				entries = append(entries, hashutil.Entry{Digest: l.SHA256, Path: l.Path})
 			}
-			entries = append(entries, hashutil.Entry{Digest: r.SourceHash, Path: filepath.ToSlash(sourcePath)})
+			if err := hashutil.Write(layerPath, entries); err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, layerPath)
 		}
-	}
-	if err := hashutil.Write(manifest, entries); err != nil {
-		return nil, err
-	}
-	outputs = append(outputs, manifest)
-	if f.sign {
-		fmt.Fprintf(os.Stderr, "[scan:sign] signing %s\n", manifest)
-		sig, err := signPath(manifest, "")
-		if err != nil {
+		manifest := filepath.Join(f.output, base+".sha256")
+		fmt.Fprintf(os.Stderr, "[scan:hash] writing artifact manifest -> %s\n", manifest)
+		var entries []hashutil.Entry
+		for _, out := range outputs {
+			d, err := hashutil.File(out)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, hashutil.Entry{Digest: d, Path: filepath.Base(out)})
+		}
+		sourcePath, relErr := filepath.Rel(f.output, r.Source)
+		if relErr != nil {
+			sourcePath = r.Source
+		}
+		entries = append(entries, hashutil.Entry{Digest: r.SourceHash, Path: filepath.ToSlash(sourcePath)})
+		if err := hashutil.Write(manifest, entries); err != nil {
 			return nil, err
 		}
-		outputs = append(outputs, sig)
+		outputs = append(outputs, manifest)
+		if f.sign {
+			fmt.Fprintf(os.Stderr, "[scan:sign] signing archive manifest %s\n", manifest)
+			sig, err := signPath(manifest, "")
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, sig)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "[scan:policy] non-archive target: SBOM only; no SHA manifest")
+		if f.sign {
+			sbomOutputs := append([]string(nil), outputs...)
+			for _, out := range sbomOutputs {
+				fmt.Fprintf(os.Stderr, "[scan:sign] signing SBOM %s\n", out)
+				sig, err := signPath(out, "")
+				if err != nil {
+					return nil, err
+				}
+				outputs = append(outputs, sig)
+			}
+		}
 	}
 	fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", target, len(r.Packages), len(r.Files), len(r.Layers))
 	for _, out := range outputs {
 		fmt.Println(out)
 	}
 	return outputs, nil
+}
+
+func isPhysicalArchive(r scan.Result) bool {
+	switch r.SourceType {
+	case "archive", "docker-archive", "oci-archive":
+	default:
+		return false
+	}
+	info, err := os.Stat(r.Source)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func cmdHash(args []string) error {

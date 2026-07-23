@@ -20,6 +20,18 @@ type Package struct {
 	Arch    string `json:"architecture,omitempty"`
 }
 
+type HostMetadata struct {
+	Hostname        string   `json:"hostname,omitempty"`
+	OperatingSystem string   `json:"operating_system,omitempty"`
+	OSVersion       string   `json:"os_version,omitempty"`
+	Kernel          string   `json:"kernel,omitempty"`
+	Architecture    string   `json:"architecture,omitempty"`
+	CPUModel        string   `json:"cpu_model,omitempty"`
+	CPUCount        int      `json:"cpu_count,omitempty"`
+	MemoryBytes     uint64   `json:"memory_bytes,omitempty"`
+	IPAddresses     []string `json:"ip_addresses,omitempty"`
+}
+
 type Result struct {
 	Name       string
 	Source     string
@@ -31,4 +43,5 @@ type Result struct {
 	Layers     []File
 	OSName     string
 	OSVersion  string
+	Host       *HostMetadata
 }

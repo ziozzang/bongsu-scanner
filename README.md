@@ -13,7 +13,7 @@ Project: https://github.com/ziozzang/bongsu-scanner
 ## Build and initialize
 
 ```sh
-make build VERSION=0.2.0
+make build VERSION=0.3.0
 ./dist/bscan init --signer ziozzang@gmail.com
 ./dist/bscan about
 ```
@@ -35,7 +35,7 @@ bscan scan --output ./scan-results .
 bscan scan --verbose --output ./scan-results /path/to/rootfs
 
 # Scan the local host filesystem
-sudo bscan scan --output ./host-scan host://
+sudo bscan scan --sign --output ./host-scan host://
 ```
 
 Normal mode prints each major phase—source detection, filesystem walk or
@@ -43,12 +43,19 @@ archive/layer processing, package cataloging, SBOM creation, hashing, and
 signing. `--verbose` (or `-v`) additionally prints individual files, archive
 entries, and packages.
 
+Host SBOM metadata includes hostname, operating system and kernel, CPU model
+and logical CPU count, total RAM, architecture, and non-loopback IP addresses.
+With `--sign`, each host SBOM is signed directly, so both its inventory and
+host metadata are covered by the detached signature. Host and directory scans
+do not create separate `.sha256` files. Host scans also disable per-file
+checksums and inventory only package metadata.
+
 ## Image scan, sign, and check
 
 ```sh
 bscan scan --sign docker://alpine:3.20
 bscan scan --sign container://my-running-container
-bscan scan --verbose --output results image.tar
+bscan scan --verbose --sign --output results image.tar
 bscan scan --format spdx /some/rootfs
 bscan check results/image.tar.sha256.sig
 bscan check --source image.tar results/image.tar.layers.sha256
@@ -64,9 +71,16 @@ Go modules, Python requirements/dist-info, Cargo lockfiles, and Maven
 `pom.properties`. RPM's binary Berkeley DB / SQLite databases are not decoded
 in this release.
 
-Each scan writes the requested SBOM, a SHA-256 manifest, an optional layer
-digest manifest, and (with `--sign`) a detached `.sig`. Signatures cover the
-target digest, UTC signing timestamp, and 256-bit random salt.
+Output and signing depend on the target:
+
+- `host://`, directories, `docker://`, and `container://` write only the
+  requested SBOMs. With `--sign`, each SBOM receives its own detached `.sig`.
+- Physical tar/tgz image files additionally receive a SHA-256 manifest covering
+  the original archive and generated SBOMs, plus a layer digest manifest when
+  applicable. With `--sign`, the main SHA-256 manifest is signed.
+
+Signatures cover the exact target digest, UTC signing timestamp, and
+time-derived 256-bit random salt.
 
 ## Scrambler
 
