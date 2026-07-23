@@ -84,7 +84,7 @@ func usage() {
 Usage:
   bscan init [--signer NAME]
   bscan key show|generate|trust NAME PUBLIC_KEY
-  bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign] [--verbose] TARGET
+  bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign|--no-sign] [--verbose] TARGET
   bscan hash [-o FILE.sha256] FILE...
   bscan sign [-o FILE.sig] FILE
   bscan verify [--pubkey NAME|FILE|HEX] FILE.sig [FILE.sig...]
@@ -173,8 +173,10 @@ func cmdKey(args []string) error {
 
 type scanFlags struct {
 	format, output string
-	sign, files    bool
+	sign, noSign   bool
+	files          bool
 	verbose        bool
+	autoSigner     string
 }
 
 func addScanFlags(fs *flag.FlagSet) *scanFlags {
@@ -182,6 +184,7 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	fs.StringVar(&f.format, "format", "both", "spdx, cyclonedx, or both")
 	fs.StringVar(&f.output, "output", ".", "output directory")
 	fs.BoolVar(&f.sign, "sign", false, "sign SBOMs, or the SHA manifest for a local archive")
+	fs.BoolVar(&f.noSign, "no-sign", false, "disable signing even when a configured key is available")
 	fs.BoolVar(&f.files, "files", true, "include individual file hashes")
 	fs.BoolVar(&f.verbose, "verbose", false, "show files, layers, and catalog progress")
 	fs.BoolVar(&f.verbose, "v", false, "show verbose scan progress")
@@ -203,6 +206,9 @@ func cmdScan(ctx context.Context, args []string) error {
 }
 
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
+	if err := resolveScanSigning(&f); err != nil {
+		return nil, err
+	}
 	if target == "host" || target == "host://" {
 		f.files = false
 	}
@@ -214,6 +220,16 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	}
 	fmt.Fprintf(os.Stderr, "[scan:start] target=%s format=%s output=%s file-hashes=%t sign=%t\n",
 		target, f.format, f.output, f.files, f.sign)
+	switch {
+	case f.noSign:
+		fmt.Fprintln(os.Stderr, "[scan:sign] signing explicitly disabled (--no-sign)")
+	case f.autoSigner != "":
+		fmt.Fprintf(os.Stderr, "[scan:sign] auto-sign enabled: signer=%s\n", f.autoSigner)
+	case f.sign:
+		fmt.Fprintln(os.Stderr, "[scan:sign] signing explicitly enabled (--sign)")
+	default:
+		fmt.Fprintln(os.Stderr, "[scan:sign] unsigned scan: configured signer/private key not available")
+	}
 	r, err := scan.Target(ctx, target, scan.Options{
 		IncludeFileHashes: f.files,
 		Now:               time.Now(),
@@ -304,6 +320,43 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		fmt.Println(out)
 	}
 	return outputs, nil
+}
+
+func resolveScanSigning(f *scanFlags) error {
+	if f.sign && f.noSign {
+		return errors.New("--sign and --no-sign cannot be used together")
+	}
+	if f.noSign {
+		f.sign = false
+		return nil
+	}
+	if f.sign {
+		return nil
+	}
+	cfg, _, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load signing config: %w", err)
+	}
+	if strings.TrimSpace(cfg.Signer) == "" {
+		return nil
+	}
+	keyPath, err := config.Expand(cfg.PrivateKey)
+	if err != nil {
+		return err
+	}
+	keyData, err := os.ReadFile(keyPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read configured signing key: %w", err)
+	}
+	if _, err := sign.ParsePrivate(keyData); err != nil {
+		return fmt.Errorf("configured signing key is invalid: %w", err)
+	}
+	f.sign = true
+	f.autoSigner = cfg.Signer
+	return nil
 }
 
 func isPhysicalArchive(r scan.Result) bool {

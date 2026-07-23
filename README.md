@@ -13,7 +13,7 @@ Project: https://github.com/ziozzang/bongsu-scanner
 ## Build and initialize
 
 ```sh
-make build VERSION=0.4.0
+make build VERSION=0.5.0
 ./dist/bscan init --signer ziozzang@gmail.com
 ./dist/bscan about
 ```
@@ -34,8 +34,8 @@ bscan scan --output ./scan-results .
 # Print every indexed file and discovered package
 bscan scan --verbose --output ./scan-results /path/to/rootfs
 
-# Scan the local host filesystem
-sudo bscan scan --sign --output ./host-scan host
+# Scan the local host filesystem; reuse the invoking user's signing identity
+sudo BONGSU_HOME="$HOME/.bongsu" bscan scan --output ./host-scan host
 ```
 
 Normal mode prints each major phase—source detection, filesystem walk or
@@ -45,8 +45,9 @@ entries, and packages.
 
 Host SBOM metadata includes hostname, operating system and kernel, CPU model
 and logical CPU count, total RAM, architecture, and non-loopback IP addresses.
-With `--sign`, each host SBOM is signed directly, so both its inventory and
-host metadata are covered by the detached signature. Host and directory scans
+When a configured identity is available, each host SBOM is signed directly,
+so both its inventory and host metadata are covered by the detached signature.
+Host and directory scans
 do not create separate `.sha256` files. Host scans also disable per-file
 checksums and inventory only package metadata. Package metadata locations retain
 absolute host paths such as `/home/foo/app/go.mod` and
@@ -56,9 +57,9 @@ backward compatibility.
 ## Image scan, sign, and check
 
 ```sh
-bscan scan --sign docker://alpine:3.20
-bscan scan --sign container://my-running-container
-bscan scan --verbose --sign --output results image.tar
+bscan scan docker://alpine:3.20
+bscan scan container://my-running-container
+bscan scan --verbose --output results image.tar
 bscan scan --format spdx /some/rootfs
 bscan check results/image.tar.sha256.sig
 bscan check --source image.tar results/image.tar.layers.sha256
@@ -76,14 +77,32 @@ in this release.
 
 Output and signing depend on the target:
 
-- `host://`, directories, `docker://`, and `container://` write only the
-  requested SBOMs. With `--sign`, each SBOM receives its own detached `.sig`.
+- `host`, directories, `docker://`, and `container://` write only the requested
+  SBOMs. With automatic or explicit signing, each SBOM receives its own
+  detached `.sig`.
 - Physical tar/tgz image files additionally receive a SHA-256 manifest covering
   the original archive and generated SBOMs, plus a layer digest manifest when
-  applicable. With `--sign`, the main SHA-256 manifest is signed.
+  applicable. With automatic or explicit signing, the main SHA-256 manifest is
+  signed.
 
 Signatures cover the exact target digest, UTC signing timestamp, and
 time-derived 256-bit random salt.
+
+## Automatic signing
+
+After an identity has been initialized with both a signer label and private
+key, every scan signs its normal signing target automatically:
+
+```sh
+bscan init --signer scanner-01@example.com
+bscan scan --output ./host-scan host
+```
+
+The startup log reports `auto-sign enabled` and the configured signer.
+Automatic signing requires a non-empty `signer` in
+`~/.bongsu/scaner.yaml` and a valid configured/default private key. Use
+`--no-sign` for an intentionally unsigned scan. `--sign` remains available to
+force signing and initialize a missing default key.
 
 ## Signature verification
 

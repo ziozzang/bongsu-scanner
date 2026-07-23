@@ -68,6 +68,43 @@ func TestDirectoryProducesOnlySignedSBOMs(t *testing.T) {
 	}
 }
 
+func TestConfiguredIdentityAutoSignsAndNoSignOverrides(t *testing.T) {
+	t.Setenv("BONGSU_HOME", t.TempDir())
+	if err := cmdInit([]string{"--signer", "scanner@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module auto.test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	autoOutput := t.TempDir()
+	files, err := scanOne(context.Background(), source, scanFlags{format: "both", output: autoOutput, files: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countSuffix(files, ".json.sig") != 2 {
+		t.Fatalf("configured identity did not auto-sign: %#v", files)
+	}
+
+	unsignedOutput := t.TempDir()
+	files, err = scanOne(context.Background(), source, scanFlags{format: "both", output: unsignedOutput, files: true, noSign: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countSuffix(files, ".sig") != 0 {
+		t.Fatalf("--no-sign produced signatures: %#v", files)
+	}
+}
+
+func TestConflictingSignFlagsRejected(t *testing.T) {
+	_, err := scanOne(context.Background(), t.TempDir(), scanFlags{
+		format: "both", output: t.TempDir(), files: true, sign: true, noSign: true,
+	})
+	if err == nil {
+		t.Fatal("--sign with --no-sign was accepted")
+	}
+}
+
 func TestArchiveProducesAndSignsSHAManifest(t *testing.T) {
 	t.Setenv("BONGSU_HOME", t.TempDir())
 	source := filepath.Join(t.TempDir(), "rootfs.tar")
@@ -114,4 +151,14 @@ func findSuffix(t *testing.T, files []string, suffix string) string {
 	}
 	t.Fatalf("output suffix %q missing from %#v", suffix, files)
 	return ""
+}
+
+func countSuffix(files []string, suffix string) int {
+	count := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, suffix) {
+			count++
+		}
+	}
+	return count
 }
