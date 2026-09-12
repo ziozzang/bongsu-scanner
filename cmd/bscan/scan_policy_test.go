@@ -4,14 +4,43 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ziozzang/bongsu-scanner/internal/config"
 	hashutil "github.com/ziozzang/bongsu-scanner/internal/hash"
 	"github.com/ziozzang/bongsu-scanner/internal/sign"
 )
+
+func TestScanCLIPrintsConfigWarnings(t *testing.T) {
+	for _, command := range []string{"scan", "batch"} {
+		t.Run(command, func(t *testing.T) {
+			t.Setenv("BONGSU_HOME", t.TempDir())
+			path, err := config.Path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("unknown_cli_setting: true\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			log, err := captureBatchStderr(t, func() error {
+				return run(context.Background(), []string{command, "--output", t.TempDir(), t.TempDir()})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(log, "warning:") || !strings.Contains(log, `unknown configuration key "unknown_cli_setting"`) {
+				t.Fatalf("missing CLI configuration warning: %s", log)
+			}
+		})
+	}
+}
 
 func TestDirectoryProducesOnlySignedSBOMs(t *testing.T) {
 	t.Setenv("BONGSU_HOME", t.TempDir())
@@ -161,4 +190,63 @@ func countSuffix(files []string, suffix string) int {
 		}
 	}
 	return count
+}
+
+func TestVerifyLabelsLegacySignerUnauthenticated(t *testing.T) {
+	t.Setenv("BONGSU_HOME", t.TempDir())
+	pub, priv, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []int{1, 2} {
+		t.Run(string(rune('0'+version)), func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "artifact")
+			if err := os.WriteFile(target, []byte("fixture"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := hashutil.File(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := sign.Create(digest, "artifact", "fixture-signer", priv, time.Unix(1700000000, 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if version == 1 {
+				record.Version = 1
+				message := "bongsu-signature-v1\nsha256:" + digest + "\nsigned-at:" +
+					record.SignedAt.UTC().Format(time.RFC3339Nano) + "\nsalt:" + record.Salt + "\n"
+				record.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, []byte(message)))
+				// A legacy record can carry a changed label without invalidating its signature.
+				record.Signer = "changed-signer"
+			}
+			path := target + ".sig"
+			if err := sign.WriteRecord(path, record); err != nil {
+				t.Fatal(err)
+			}
+			out, err := os.CreateTemp(dir, "stdout")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer out.Close()
+			old := os.Stdout
+			os.Stdout = out
+			defer func() { os.Stdout = old }()
+			if err := run(context.Background(), []string{"verify", "--pubkey", hex.EncodeToString(pub), path}); err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(out.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(b), "signer="+record.Signer) {
+				t.Fatalf("signer missing: %s", b)
+			}
+			warning := "(unauthenticated: v1 record)"
+			if strings.Contains(string(b), warning) != (version == 1) {
+				t.Fatalf("version %d: unexpected signer authentication label: %s", version, b)
+			}
+		})
+	}
 }

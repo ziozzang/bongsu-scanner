@@ -9,10 +9,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/config"
@@ -32,13 +35,28 @@ const (
 
 func main() {
 	refreshUpdateCache(os.Args[1:])
-	if err := run(context.Background(), os.Args[1:]); err != nil {
+	// SIGINT/SIGTERM cancel the context so docker child processes are killed
+	// and temporary docker save/export tars are removed by their defers. A
+	// second signal after cancellation falls back to the default handler.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	err := run(ctx, os.Args[1:])
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "bscan:", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
-func run(ctx context.Context, args []string) error {
+func run(ctx context.Context, args []string) (err error) {
+	defer func() {
+		if errors.Is(err, flag.ErrHelp) {
+			err = nil
+		}
+	}()
 	if len(args) == 0 {
 		usage()
 		return nil
@@ -50,6 +68,12 @@ func run(ctx context.Context, args []string) error {
 		return cmdKey(args[1:])
 	case "scan":
 		return cmdScan(ctx, args[1:])
+	case "db":
+		return cmdDB(ctx, args[1:])
+	case "match":
+		return cmdMatch(ctx, args[1:])
+	case "report":
+		return cmdReport(ctx, args[1:])
 	case "hash":
 		return cmdHash(args[1:])
 	case "sign":
@@ -84,7 +108,10 @@ func usage() {
 Usage:
   bscan init [--signer NAME]
   bscan key show|generate|trust NAME PUBLIC_KEY
-  bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign|--no-sign] [--verbose] TARGET
+  bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign|--no-sign] [--verbose]
+             [--exclude PATH]... [--no-default-excludes] [--one-file-system] [--max-files N]
+             [--timeout DURATION] [--no-host-metadata] [--redact-ip] [--containers]
+             [--skip-binaries] [--workers N] [--platform os/arch] [--allow-digest-mismatch] [--fail-on-partial] TARGET
   bscan hash [-o FILE.sha256] FILE...
   bscan sign [-o FILE.sig] FILE
   bscan verify [--pubkey NAME|FILE|HEX] FILE.sig [FILE.sig...]
@@ -92,7 +119,10 @@ Usage:
   bscan scramble encrypt [-o FILE.bgs] [--chunk-size 1MiB] FILE
   bscan scramble decrypt [-o FILE] [--pubkey NAME|FILE|HEX] FILE.bgs
   bscan batch [scan flags] TARGET...
-  bscan update [--check] [--force]
+  bscan db update|status|lookup|show|verify|export|import|convert [options]
+  bscan match [--db DIR] [--format table|json|cyclonedx|html|markdown|csv|sarif] [--fail-on LEVEL] [--llm] SBOM...
+  bscan report --from MATCH.json [--sbom SBOM.json] [--format html|markdown|json|csv|sarif] [-o FILE] [--title TEXT]
+  bscan update [--check] [--force] [--require-signature]
   bscan about
 
 Targets: host, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
@@ -100,6 +130,7 @@ Targets: host, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tg
 Local examples:
   bscan scan .
   bscan scan --sign --output ./host-scan host
+  bscan scan --containers --redact-ip --timeout 30m --output ./host-scan host
   bscan scan --verbose --output ./scan-results /path/to/rootfs
 `)
 }
@@ -110,7 +141,7 @@ func cmdInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, path, err := config.Load()
+	cfg, path, err := config.LoadForCLI()
 	if err != nil {
 		return err
 	}
@@ -137,7 +168,7 @@ func cmdKey(args []string) error {
 	if len(args) == 0 {
 		return errors.New("key requires show, generate, or trust")
 	}
-	cfg, _, err := config.Load()
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return err
 	}
@@ -177,6 +208,24 @@ type scanFlags struct {
 	files          bool
 	verbose        bool
 	autoSigner     string
+
+	batchOutputBase string
+	hostContainers  bool
+	outputPaths     *scanOutputPaths
+
+	exclude             []string
+	noDefaultExcludes   bool
+	oneFileSystem       bool
+	maxFiles            int64
+	timeout             time.Duration
+	noHostMetadata      bool
+	redactIP            bool
+	containers          bool
+	skipBinaries        bool
+	workers             int
+	platform            string
+	allowDigestMismatch bool
+	failOnPartial       bool
 }
 
 func addScanFlags(fs *flag.FlagSet) *scanFlags {
@@ -189,28 +238,154 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	fs.BoolVar(&f.verbose, "verbose", false, "show files, layers, and catalog progress")
 	fs.BoolVar(&f.verbose, "v", false, "show verbose scan progress")
 	fs.BoolVar(&f.verbose, "V", false, "show verbose scan progress")
+	fs.Func("exclude", "path or glob to skip (repeatable; absolute, root-relative, or bare name)", func(v string) error {
+		f.exclude = append(f.exclude, v)
+		return nil
+	})
+	fs.BoolVar(&f.noDefaultExcludes, "no-default-excludes", false, "walk /proc, /var/lib/docker, caches, ... during host scans")
+	fs.BoolVar(&f.oneFileSystem, "one-file-system", false, "do not cross mount points below the scan root")
+	fs.Int64Var(&f.maxFiles, "max-files", 0, "stop the directory walk after N regular files (0 = unlimited)")
+	fs.DurationVar(&f.timeout, "timeout", 0, "abort the scan after this duration (e.g. 10m; 0 = none)")
+	fs.BoolVar(&f.noHostMetadata, "no-host-metadata", false, "omit hostname, hardware and IP details from host SBOMs")
+	fs.BoolVar(&f.redactIP, "redact-ip", false, "omit IP addresses from host metadata")
+	fs.BoolVar(&f.containers, "containers", false, "after a host scan, also scan every running Docker container into its own SBOM")
+	fs.BoolVar(&f.skipBinaries, "skip-binaries", false, "do not extract Go build info from ELF executables")
+	fs.IntVar(&f.workers, "workers", 0, "directories walked concurrently for host/directory scans (0 = min(8, CPUs), 1 = sequential)")
+	fs.StringVar(&f.platform, "platform", "", "image platform to select from multi-arch archives, os/arch[/variant]")
+	fs.BoolVar(&f.allowDigestMismatch, "allow-digest-mismatch", false, "record mismatching layer digests instead of failing")
+	fs.BoolVar(&f.failOnPartial, "fail-on-partial", false, "exit with an error when a walk was partial (permission denied, I/O errors, limits)")
 	return f
 }
 
-func cmdScan(ctx context.Context, args []string) error {
+func (f scanFlags) options() scan.Options {
+	return scan.Options{
+		IncludeFileHashes:   f.files,
+		Now:                 time.Now(),
+		Verbose:             f.verbose,
+		Platform:            f.platform,
+		AllowDigestMismatch: f.allowDigestMismatch,
+		Exclude:             f.exclude,
+		NoDefaultExcludes:   f.noDefaultExcludes,
+		OneFileSystem:       f.oneFileSystem,
+		MaxFiles:            f.maxFiles,
+		NoHostMetadata:      f.noHostMetadata,
+		RedactIPs:           f.redactIP,
+		IncludeContainers:   f.containers,
+		SkipBinaries:        f.skipBinaries,
+		Workers:             f.workers,
+	}
+}
+
+// outputBase names the SBOM files for one result: "host" for the host,
+// "host.container-NAME" for containers scanned alongside it.
+func outputBase(r scan.Result, f scanFlags) string {
+	base := f.batchOutputBase
+	if base == "" {
+		base = safeName(r.Name)
+	}
+	if f.hostContainers && r.SourceType == "container" {
+		if f.batchOutputBase == "" {
+			base = "host"
+		}
+		return base + ".container-" + safeName(strings.TrimPrefix(r.Name, "host:container:"))
+	}
+	return base
+}
+
+// scanOutputPaths reserves final paths across all results and batch workers.
+type scanOutputPaths struct {
+	mu    sync.Mutex
+	paths map[string]string
+}
+
+func (p *scanOutputPaths) reserve(paths []string, name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.paths == nil {
+		p.paths = make(map[string]string)
+	}
+	for i, path := range paths {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		paths[i] = abs
+		if previous, ok := p.paths[abs]; ok {
+			return fmt.Errorf("output path collision: %q and %q both write %s", previous, name, abs)
+		}
+	}
+	for _, path := range paths {
+		p.paths[path] = name
+	}
+	return nil
+}
+
+func cmdScan(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	f := addScanFlags(fs)
+	cpuProfile := fs.String("cpuprofile", "", "")
+	memProfile := fs.String("memprofile", "", "")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage of scan:")
+		visible := flag.NewFlagSet("scan", flag.ContinueOnError)
+		visible.SetOutput(fs.Output())
+		addScanFlags(visible)
+		visible.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return errors.New("scan requires exactly one target")
 	}
-	_, err := scanOne(ctx, fs.Arg(0), *f)
+	if *cpuProfile != "" {
+		out, createErr := os.Create(*cpuProfile)
+		if createErr != nil {
+			return createErr
+		}
+		if startErr := pprof.StartCPUProfile(out); startErr != nil {
+			out.Close()
+			return startErr
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			err = errors.Join(err, out.Close())
+		}()
+	}
+	if *memProfile != "" {
+		out, createErr := os.Create(*memProfile)
+		if createErr != nil {
+			return createErr
+		}
+		defer func() {
+			err = errors.Join(err, pprof.WriteHeapProfile(out), out.Close())
+		}()
+	}
+	_, err = scanOne(ctx, fs.Arg(0), *f)
 	return err
 }
 
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
+	if f.format != "both" && f.format != "spdx" && f.format != "cyclonedx" {
+		return nil, fmt.Errorf("unsupported format %q", f.format)
+	}
+	if f.maxFiles < 0 || f.timeout < 0 {
+		return nil, errors.New("--max-files and --timeout must not be negative")
+	}
 	if err := resolveScanSigning(&f); err != nil {
 		return nil, err
 	}
-	if target == "host" || target == "host://" {
+	if scan.IsHostTarget(target) {
 		f.files = false
+	}
+	f.hostContainers = scan.IsHostTarget(target) && f.containers
+	if f.outputPaths == nil {
+		f.outputPaths = &scanOutputPaths{}
+	}
+	if f.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, f.timeout)
+		defer cancel()
 	}
 	logProgress := func(event scan.Progress) {
 		if event.Detail && !f.verbose {
@@ -230,37 +405,103 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	default:
 		fmt.Fprintln(os.Stderr, "[scan:sign] unsigned scan: configured signer/private key not available")
 	}
-	r, err := scan.Target(ctx, target, scan.Options{
-		IncludeFileHashes: f.files,
-		Now:               time.Now(),
-		Verbose:           f.verbose,
-		Progress:          logProgress,
-	})
-	if err != nil {
+	opts := f.options()
+	opts.Progress = logProgress
+	results, scanErr := scan.TargetAll(ctx, target, opts)
+	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if errors.Is(scanErr, context.Canceled) || errors.Is(scanErr, context.DeadlineExceeded) {
+		return nil, scanErr
+	}
+	if len(results) == 0 {
+		if scanErr == nil {
+			scanErr = errors.New("scan produced no result")
+		}
+		return nil, scanErr
+	}
+	if scanErr != nil {
+		fmt.Fprintf(os.Stderr, "[scan:policy] warning: %v\n", scanErr)
+	}
+	for _, r := range results {
+		if r.Scan == nil || !r.Scan.Partial {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "[scan:policy] partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
+			r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
+		if f.failOnPartial {
+			return nil, fmt.Errorf("partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q): --fail-on-partial", r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
+		}
 	}
 	if err := os.MkdirAll(f.output, 0o755); err != nil {
 		return nil, err
 	}
-	base := safeName(r.Name)
+	var outputs []string
+	for _, r := range results {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		written, err := writeScanOutputs(r, f)
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, written...)
+		fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", r.Name, len(r.Packages), len(r.Files), len(r.Layers))
+	}
+	for _, out := range outputs {
+		fmt.Println(out)
+	}
+	return outputs, scanErr
+}
+
+// writeScanOutputs writes and (optionally) signs the SBOMs and manifests
+// for one scan result, returning the created paths.
+func writeScanOutputs(r scan.Result, f scanFlags) ([]string, error) {
+	base := outputBase(r, f)
 	var outputs []string
 	formats := []string{f.format}
 	if f.format == "both" {
 		formats = []string{"spdx", "cyclonedx"}
 	}
+	var sbomPaths, reserved []string
+	archive := isPhysicalArchive(r)
 	for _, format := range formats {
 		suffix := map[string]string{"spdx": ".spdx.json", "cyclonedx": ".cdx.json"}[format]
 		if suffix == "" {
 			return nil, fmt.Errorf("unsupported format %q", format)
 		}
 		out := filepath.Join(f.output, base+suffix)
+		sbomPaths = append(sbomPaths, out)
+		reserved = append(reserved, out)
+		if f.sign && !archive {
+			reserved = append(reserved, out+".sig")
+		}
+	}
+	if archive {
+		if len(r.Layers) > 0 {
+			reserved = append(reserved, filepath.Join(f.output, base+".layers.sha256"))
+		}
+		manifest := filepath.Join(f.output, base+".sha256")
+		reserved = append(reserved, manifest)
+		if f.sign {
+			reserved = append(reserved, manifest+".sig")
+		}
+	}
+	if f.outputPaths == nil {
+		f.outputPaths = &scanOutputPaths{}
+	}
+	if err := f.outputPaths.reserve(reserved, r.Name); err != nil {
+		return nil, err
+	}
+	for i, format := range formats {
+		out := sbomPaths[i]
 		fmt.Fprintf(os.Stderr, "[scan:sbom] writing %s -> %s\n", format, out)
 		if err := sbom.Write(out, format, r); err != nil {
 			return nil, err
 		}
 		outputs = append(outputs, out)
 	}
-	if isPhysicalArchive(r) {
+	if archive {
 		fmt.Fprintln(os.Stderr, "[scan:policy] local archive: generating source/SBOM SHA-256 manifest")
 		if len(r.Layers) > 0 {
 			layerPath := filepath.Join(f.output, base+".layers.sha256")
@@ -315,10 +556,6 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 			}
 		}
 	}
-	fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", target, len(r.Packages), len(r.Files), len(r.Layers))
-	for _, out := range outputs {
-		fmt.Println(out)
-	}
 	return outputs, nil
 }
 
@@ -333,7 +570,7 @@ func resolveScanSigning(f *scanFlags) error {
 	if f.sign {
 		return nil
 	}
-	cfg, _, err := config.Load()
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return fmt.Errorf("load signing config: %w", err)
 	}
@@ -417,7 +654,7 @@ func cmdSign(args []string) error {
 }
 
 func signPath(target, output string) (string, error) {
-	cfg, _, err := config.Load()
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return "", err
 	}
@@ -449,7 +686,7 @@ func cmdCheck(ctx context.Context, args []string, requireTrusted bool) error {
 	if fs.NArg() == 0 {
 		return errors.New("check requires one or more manifests or signatures")
 	}
-	cfg, _, err := config.Load()
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return err
 	}
@@ -467,6 +704,9 @@ func checkOne(ctx context.Context, p, pubSpec, source string, cfg config.Config,
 		r, err := sign.ReadRecord(p)
 		if err != nil {
 			return err
+		}
+		if err := cfg.CheckSignatureVersion(r.Version); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
 		}
 		pub, trust, err := verificationKey(cfg, r, pubSpec, requireTrusted)
 		if err != nil {
@@ -491,8 +731,12 @@ func checkOne(ctx context.Context, p, pubSpec, source string, cfg config.Config,
 				return err
 			}
 		}
+		signer := r.Signer
+		if !r.Authenticated() {
+			signer += " (unauthenticated: v1 record)"
+		}
 		fmt.Printf("OK: %s: signature, target digest, and content verified (signer=%s, trust=%s, signed=%s)\n",
-			p, r.Signer, trust, r.SignedAt.UTC().Format(time.RFC3339))
+			p, signer, trust, r.SignedAt.UTC().Format(time.RFC3339))
 		return nil
 	}
 	if strings.HasSuffix(p, ".layers.sha256") {
@@ -590,7 +834,7 @@ func cmdScramble(args []string) error {
 		return err
 	}
 	defer in.Close()
-	cfg, _, err := config.Load()
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return err
 	}
@@ -646,7 +890,11 @@ func cmdBatch(ctx context.Context, args []string) error {
 	if fs.NArg() == 0 {
 		return errors.New("batch requires targets")
 	}
-	cfg, _, err := config.Load()
+	bases, err := batchOutputBases(fs.Args())
+	if err != nil {
+		return err
+	}
+	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return err
 	}
@@ -655,22 +903,26 @@ func cmdBatch(ctx context.Context, args []string) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	work := make(chan string)
+	f.outputPaths = &scanOutputPaths{}
+	work := make(chan int)
 	errs := make(chan error, len(fs.Args()))
 	var wg sync.WaitGroup
 	for range *jobs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for target := range work {
-				if _, err := scanOne(ctx, target, *f); err != nil {
+			for i := range work {
+				target := fs.Arg(i)
+				flags := *f
+				flags.batchOutputBase = bases[i]
+				if _, err := scanOne(ctx, target, flags); err != nil {
 					errs <- fmt.Errorf("%s: %w", target, err)
 				}
 			}
 		}()
 	}
-	for _, target := range fs.Args() {
-		work <- target
+	for i := range fs.Args() {
+		work <- i
 	}
 	close(work)
 	wg.Wait()
@@ -680,6 +932,64 @@ func cmdBatch(ctx context.Context, args []string) error {
 		all = append(all, err)
 	}
 	return errors.Join(all...)
+}
+
+// batchOutputBases reserves names before workers can write any output.
+func batchOutputBases(targets []string) ([]string, error) {
+	bases := make([]string, len(targets))
+	paths := make(map[string]string, len(targets))
+	counts := make(map[string]int, len(targets))
+	for i, target := range targets {
+		var identity, name string
+		switch {
+		case scan.IsHostTarget(target):
+			identity, name = "path:/", "host"
+		case strings.HasPrefix(target, "docker://"), strings.HasPrefix(target, "container://"):
+			identity = target
+			_, name, _ = strings.Cut(target, "://")
+		default:
+			abs, err := filepath.Abs(target)
+			if err != nil {
+				return nil, fmt.Errorf("resolve batch target %q: %w", target, err)
+			}
+			resolved, err := filepath.EvalSymlinks(abs)
+			if err != nil {
+				resolved = abs
+			}
+			identity, name = "path:"+resolved, filepath.Base(target)
+			if info, err := os.Stat(target); err == nil && info.IsDir() {
+				name = filepath.Base(resolved)
+			}
+		}
+		if previous, ok := paths[identity]; ok {
+			return nil, fmt.Errorf("duplicate target: %q and %q resolve to %s", previous, target, strings.TrimPrefix(identity, "path:"))
+		}
+		paths[identity] = target
+		bases[i] = safeName(name)
+		counts[bases[i]]++
+	}
+	// Reserve original names too, so a suffix cannot overwrite another target
+	// whose basename already contains that suffix (for example rootfs-1).
+	used := make(map[string]bool, len(counts))
+	for base := range counts {
+		used[base] = true
+	}
+	for i, base := range bases {
+		if counts[base] < 2 {
+			continue
+		}
+		for suffix := i + 1; ; suffix++ {
+			candidate := fmt.Sprintf("%s-%d", base, suffix)
+			if used[candidate] {
+				continue
+			}
+			bases[i] = candidate
+			used[candidate] = true
+			fmt.Fprintf(os.Stderr, "[batch:collision] target=%s output base %s -> %s\n", targets[i], base, candidate)
+			break
+		}
+	}
+	return bases, nil
 }
 
 func ensureKey(cfg *config.Config) (ed25519.PrivateKey, string, bool, error) {

@@ -52,8 +52,15 @@ func Read(path string) ([]Entry, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return ReadFrom(f)
+}
+
+// ReadFrom parses a SHA-256 manifest from an already opened stream. Callers
+// that also authenticate the manifest can hash these exact bytes as they are
+// parsed instead of reopening a path that may have changed.
+func ReadFrom(r io.Reader) ([]Entry, error) {
 	var out []Entry
-	s := bufio.NewScanner(f)
+	s := bufio.NewScanner(r)
 	for s.Scan() {
 		line := s.Text()
 		if len(line) < 67 || line[64:66] != "  " {

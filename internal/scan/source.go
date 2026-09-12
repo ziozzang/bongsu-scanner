@@ -1,18 +1,13 @@
 package scan
 
 import (
-	"archive/tar"
-	"bufio"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -27,6 +22,57 @@ type Options struct {
 	Now               time.Time
 	Verbose           bool
 	Progress          func(Progress)
+	// Platform selects the image manifest from multi-architecture OCI
+	// indexes, formatted "os/arch[/variant]". Empty means linux/<GOARCH>.
+	Platform string
+	// AllowDigestMismatch records layers whose content hash differs from the
+	// declared digest with Verified=false instead of aborting the scan.
+	AllowDigestMismatch bool
+
+	// Exclude adds paths the local filesystem walk must not enter or index.
+	// Absolute entries match the absolute path, relative entries containing
+	// "/" match the root-relative path, and bare names match any entry with
+	// that base name. All accept filepath.Match globs.
+	Exclude []string
+	// NoDefaultExcludes disables the built-in host exclusion list (/proc,
+	// /sys, /var/lib/docker, user caches, ...). Mount-type boundaries still
+	// apply.
+	NoDefaultExcludes bool
+	// OneFileSystem stops the walk at every mount point below the root, like
+	// find -xdev; bind and network mounts are never entered.
+	OneFileSystem bool
+	// MaxFiles stops the walk after this many regular files (0 = unlimited).
+	// The result is marked partial.
+	MaxFiles int64
+	// MaxTotalBytes caps metadata parsed by a local walk (0 = 4 GiB).
+	// Critical OS inventories are exempt; skipped metadata is counted separately.
+	MaxTotalBytes int64
+	// SkipBinaries disables Go build-info extraction from ELF executables
+	// found during a local walk.
+	SkipBinaries bool
+	// Workers bounds the number of directories walked concurrently during
+	// host and directory scans (0 = min(8, NumCPU); 1 = sequential).
+	Workers int
+	// NoHostMetadata leaves Result.Host empty for host scans.
+	NoHostMetadata bool
+	// RedactIPs drops IP addresses from the host metadata.
+	RedactIPs bool
+	// IncludeContainers makes TargetAll scan every running Docker container
+	// after a host scan, each as its own Result.
+	IncludeContainers bool
+	// ContainersOptional permits host-only success when container enumeration fails.
+	ContainersOptional bool
+	// HostRoot overrides the directory scanned for the "host" target
+	// (default "/"). Host policy (no file hashes, default excludes, host
+	// metadata) still applies; tests use it to walk a fixture tree.
+	HostRoot string
+
+	// skipSourceHash is set for docker save/export temp files, which are not
+	// stable source artifacts and must not be hashed or recorded.
+	skipSourceHash bool
+	// hostPolicy is set by Target for the host root: file hashes off, default
+	// excludes on, ScanMetadata.InContainer detected.
+	hostPolicy bool
 }
 
 type Progress struct {
@@ -49,321 +95,255 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 	}
 	switch {
 	case target == "host" || target == "host://":
-		report(opts, "source", "local host filesystem selected (package metadata only; file SHA disabled)", false)
-		hostOpts := opts
-		hostOpts.IncludeFileHashes = false
-		r, err := Directory("/", "host", hostOpts)
-		if err != nil {
-			return Result{}, err
+		root := opts.HostRoot
+		if root == "" {
+			root = "/"
 		}
-		r.SourceType = "host"
-		makeHostPackageSourcesAbsolute(r.Packages)
-		// Package cataloging has already consumed the selected metadata files.
-		// Do not emit those implementation-detail file digests in a host SBOM.
-		r.Files = nil
-		metadata := collectHostMetadata(r.OSName, r.OSVersion)
-		r.Host = &metadata
-		report(opts, "metadata", fmt.Sprintf("host=%s cpu=%d ram=%d bytes ip=%d",
-			metadata.Hostname, metadata.CPUCount, metadata.MemoryBytes, len(metadata.IPAddresses)), false)
-		return r, nil
+		report(opts, "source", "local host filesystem selected (package metadata only; file SHA disabled)", false)
+		return scanHost(ctx, root, opts)
 	case strings.HasPrefix(target, "docker://"):
 		report(opts, "source", "Docker image selected: "+strings.TrimPrefix(target, "docker://"), false)
-		return dockerSave(ctx, strings.TrimPrefix(target, "docker://"), false, opts)
+		return dockerImage(ctx, strings.TrimPrefix(target, "docker://"), opts)
 	case strings.HasPrefix(target, "container://"):
 		report(opts, "source", "Docker container selected: "+strings.TrimPrefix(target, "container://"), false)
-		return dockerSave(ctx, strings.TrimPrefix(target, "container://"), true, opts)
+		return dockerContainer(ctx, strings.TrimPrefix(target, "container://"), opts)
 	}
 	st, err := os.Stat(target)
 	if err != nil {
 		return Result{}, err
 	}
 	if st.IsDir() {
+		root := normalizeRoot(target)
+		if root == "/" {
+			// "/", "//", "/." and symlinks to the root are the host: apply
+			// the host policy instead of hashing every file on the machine.
+			report(opts, "source", fmt.Sprintf("treating %s as host scan (package metadata only; file SHA disabled)", target), false)
+			return scanHost(ctx, root, opts)
+		}
 		report(opts, "source", "local directory selected: "+target, false)
-		return Directory(target, filepath.Base(filepath.Clean(target)), opts)
+		return DirectoryContext(ctx, root, filepath.Base(root), opts)
 	}
 	report(opts, "source", "local archive selected: "+target, false)
-	return Archive(target, opts)
+	return archiveContext(ctx, target, opts)
+}
+
+// TargetAll scans target like Target and, for host scans with
+// Options.IncludeContainers, also every running Docker container. Each
+// container is returned as its own Result named "host:container:<name>";
+// its packages are never merged into the host inventory. Containers that
+// fail to export are skipped and reported in the returned error alongside
+// the successful results; only the host scan itself is fatal.
+func TargetAll(ctx context.Context, target string, opts Options) ([]Result, error) {
+	r, err := Target(ctx, target, opts)
+	if err != nil {
+		return nil, err
+	}
+	results := []Result{r}
+	if r.SourceType != "host" || !opts.IncludeContainers {
+		return results, nil
+	}
+	containers, err := runningContainers(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return results, err
+		}
+		report(opts, "docker", "warning: cannot list running containers, skipping --containers: "+err.Error(), false)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return results, ctxErr
+		}
+		if !opts.ContainersOptional {
+			return results, err
+		}
+		return results, nil
+	}
+	report(opts, "docker", fmt.Sprintf("%d running container(s) to scan", len(containers)), false)
+	var errs []error
+	for _, c := range containers {
+		report(opts, "docker", fmt.Sprintf("scanning running container %s (%s)", c.name, shortID(c.id)), false)
+		cr, err := dockerContainer(ctx, c.id, opts)
+		if err != nil {
+			if ctx.Err() != nil {
+				return results, err
+			}
+			report(opts, "docker", fmt.Sprintf("warning: container %s skipped: %v", c.name, err), false)
+			errs = append(errs, fmt.Errorf("container %s: %w", c.name, err))
+			continue
+		}
+		cr.Name = "host:container:" + c.name
+		results = append(results, cr)
+	}
+	if err := ctx.Err(); err != nil {
+		return results, err
+	}
+	return results, errors.Join(errs...)
+}
+
+type runningContainer struct {
+	id   string
+	name string
+}
+
+// runningContainers lists running Docker containers with their full IDs.
+// The name falls back to the short ID when docker reports none.
+func runningContainers(ctx context.Context) ([]runningContainer, error) {
+	out, err := runDocker(ctx, "ps", "ps", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	var list []runningContainer
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if fields[0] == "" {
+			continue
+		}
+		c := runningContainer{id: fields[0]}
+		if len(fields) == 2 {
+			c.name = strings.TrimPrefix(strings.SplitN(strings.TrimSpace(fields[1]), ",", 2)[0], "/")
+		}
+		if c.name == "" {
+			c.name = shortID(c.id)
+		}
+		list = append(list, c)
+	}
+	return list, nil
+}
+
+// scanHost walks root under the host policy: no per-file hashes, default
+// exclusions, absolute package sources, and host metadata.
+func scanHost(ctx context.Context, root string, opts Options) (Result, error) {
+	hostOpts := opts
+	hostOpts.IncludeFileHashes = false
+	hostOpts.hostPolicy = true
+	r, err := DirectoryContext(ctx, root, "host", hostOpts)
+	if err != nil {
+		return Result{}, err
+	}
+	r.SourceType = "host"
+	makeHostPackageSourcesAbsolute(r.Packages)
+	// Package cataloging has already consumed the selected metadata files.
+	// Do not emit those implementation-detail file digests in a host SBOM.
+	r.Files = nil
+	if opts.NoHostMetadata {
+		report(opts, "metadata", "host metadata disabled (--no-host-metadata)", false)
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		return r, nil
+	}
+	metadata := collectHostMetadata(r.OSName, r.OSVersion)
+	if opts.RedactIPs {
+		metadata.IPAddresses = nil
+	}
+	r.Host = &metadata
+	report(opts, "metadata", fmt.Sprintf("host=%s cpu=%d ram=%d bytes ip=%d",
+		metadata.Hostname, metadata.CPUCount, metadata.MemoryBytes, len(metadata.IPAddresses)), false)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	return r, nil
 }
 
 func makeHostPackageSourcesAbsolute(packages []Package) {
 	for i := range packages {
-		if packages[i].Source != "" && !strings.HasPrefix(packages[i].Source, "/") {
-			packages[i].Source = "/" + packages[i].Source
+		sources := strings.Split(packages[i].Source, ";")
+		for j, source := range sources {
+			if source != "" && !strings.HasPrefix(source, "/") {
+				sources[j] = "/" + source
+			}
 		}
+		packages[i].Source = strings.Join(sources, ";")
 	}
 }
 
+// Directory scans a local directory tree without a cancellation context.
 func Directory(root, name string, opts Options) (Result, error) {
-	fs := store{}
-	regularFiles := 0
-	indexedFiles := 0
+	return DirectoryContext(context.Background(), root, name, opts)
+}
+
+// DirectoryContext walks root (see walkTree) and catalogs the package
+// metadata it finds. Unreadable and vanished entries never abort the scan;
+// they are counted in Result.Scan, which marks the result partial. The root
+// directory "/" always gets the host policy. The only errors are an
+// unreadable root and context cancellation.
+func DirectoryContext(ctx context.Context, root, name string, opts Options) (Result, error) {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	if abs, err := filepath.Abs(filepath.Clean(root)); err == nil {
+		root = abs
+	}
+	hostPolicy := opts.hostPolicy || root == "/"
+	if hostPolicy {
+		opts.IncludeFileHashes = false
+	}
+	w := newWalkState(ctx, root, opts, hostPolicy)
 	report(opts, "walk", "walking local filesystem: "+root, false)
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			if os.IsPermission(err) {
-				return nil
-			}
-			return err
+	if hostPolicy {
+		w.meta.InContainer = detectContainer()
+		if w.meta.InContainer {
+			report(opts, "walk", "warning: running inside a container; the host scan covers this container's filesystem, not the underlying host", false)
 		}
-		if d.IsDir() {
-			if root == "/" && shouldSkipHostDir(p) {
-				return filepath.SkipDir
-			}
-			return nil
+		if w.meta.EUID != 0 {
+			report(opts, "walk", fmt.Sprintf("warning: running as uid %d; package databases under /root, /var/lib/docker may be unreadable", w.meta.EUID), false)
 		}
-		info, err := d.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			return nil
-		}
-		regularFiles++
-		if regularFiles%1000 == 0 {
-			report(opts, "walk", fmt.Sprintf("visited %d regular files, indexed %d", regularFiles, indexedFiles), false)
-		}
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
-		if !opts.IncludeFileHashes && !interesting(rel) {
-			return nil
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return nil
-		}
-		defer f.Close()
-		rec, err := readFile(rel, f, info.Size(), "")
-		if err == nil {
-			fs[rel] = rec
-			indexedFiles++
-			report(opts, "file", fmt.Sprintf("%s (%d bytes)", rel, info.Size()), true)
-		}
-		return nil
-	})
-	if err != nil {
+	}
+	if len(w.mounts) > 0 {
+		report(opts, "walk", fmt.Sprintf("%d mount point(s) below the root will not be entered", len(w.mounts)), true)
+	}
+	err := walkTree(ctx, root, opts, w)
+	if err != nil && !errors.Is(err, errWalkLimit) {
 		return Result{}, err
 	}
-	report(opts, "walk", fmt.Sprintf("filesystem walk complete: %d visited, %d indexed", regularFiles, indexedFiles), false)
-	r := buildResult(name, root, "directory", fs, nil, opts.Now, opts)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	meta := w.metadata()
+	report(opts, "walk", fmt.Sprintf("scan summary: visited=%d indexed=%d denied=%d errors=%d metadata-skipped=%d excluded=%d partial=%t",
+		meta.FilesVisited, w.indexed, meta.PermissionDenied, meta.SkippedErrors, meta.MetadataSkipped, meta.ExcludedCount, meta.Partial), false)
+	if meta.Partial {
+		report(opts, "walk", fmt.Sprintf("warning: partial scan (denied=%d errors=%d metadata-skipped=%d limit=%q); the inventory may be incomplete",
+			meta.PermissionDenied, meta.SkippedErrors, meta.MetadataSkipped, meta.LimitReached), false)
+	}
+	report(opts, "catalog", "finishing streamed package catalog", false)
+	extra, _ := w.binaries.finish()
+	for _, p := range extra {
+		// Binary discoveries are already deduplicated. Replay their bounded
+		// source list separately to preserve mergePackage's source cap.
+		for _, source := range strings.Split(p.Source, ";") {
+			p.Source = source
+			w.catalog.addPackage(p)
+		}
+	}
+	r := Result{Name: name, Source: root, SourceType: "directory", ScannedAt: opts.Now.UTC(), Scan: &meta}
+	r.Packages, r.OS = w.catalog.finish()
+	if r.OS != nil {
+		r.OSName, r.OSVersion = r.OS.ID, r.OS.VersionID
+	}
+	if w.hashFiles {
+		r.Files = make([]File, 0, len(w.fs))
+		for _, f := range w.fs {
+			r.Files = append(r.Files, f)
+		}
+		sort.Slice(r.Files, func(i, j int) bool { return r.Files[i].Path < r.Files[j].Path })
+	}
+	report(opts, "catalog", fmt.Sprintf("catalog complete: %d packages; os=%s %s", len(r.Packages), r.OSName, r.OSVersion), false)
+	for _, p := range r.Packages {
+		report(opts, "package", fmt.Sprintf("%s %s (%s)", p.Name, p.Version, p.Type), true)
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	return r, nil
 }
 
-func shouldSkipHostDir(p string) bool {
-	switch filepath.Clean(p) {
-	case "/proc", "/sys", "/dev", "/run", "/tmp", "/mnt", "/media":
-		return true
-	}
-	return false
-}
-
-func dockerSave(ctx context.Context, ref string, container bool, opts Options) (Result, error) {
-	if strings.TrimSpace(ref) == "" {
-		return Result{}, fmt.Errorf("empty Docker reference")
-	}
-	image := ref
-	if container {
-		report(opts, "docker", "resolving container image ID", false)
-		out, err := exec.CommandContext(ctx, "docker", "container", "inspect", "--format", "{{.Image}}", ref).Output()
-		if err != nil {
-			return Result{}, fmt.Errorf("docker inspect %s: %w", ref, err)
-		}
-		image = strings.TrimSpace(string(out))
-	}
-	tmp, err := os.CreateTemp("", "bongsu-image-*.tar")
-	if err != nil {
-		return Result{}, err
-	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
-	report(opts, "docker", "exporting image with docker image save", false)
-	cmd := exec.CommandContext(ctx, "docker", "image", "save", "-o", tmpPath, image)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return Result{}, fmt.Errorf("docker image save: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	r, err := Archive(tmpPath, opts)
-	if err == nil {
-		r.Name, r.Source = ref, map[bool]string{true: "container://", false: "docker://"}[container]+ref
-		r.SourceType = map[bool]string{true: "container", false: "docker-image"}[container]
-		// The temporary docker-save tar is an implementation detail, not a
-		// stable source artifact, so its digest must not appear in the SBOM.
-		r.SourceHash = ""
-	}
-	return r, err
-}
-
+// Archive scans a local tar (optionally gzip/bzip2 compressed, detected by
+// magic bytes): a docker save archive, an OCI image layout, or a plain root
+// filesystem. See image.go for the implementation.
 func Archive(file string, opts Options) (Result, error) {
-	report(opts, "hash", "calculating source archive SHA-256", false)
-	digest, err := digestFile(file)
-	if err != nil {
-		return Result{}, err
-	}
-	report(opts, "archive", "indexing tar entries", false)
-	entries, cleanup, err := readOuter(file, opts)
-	if err != nil {
-		return Result{}, err
-	}
-	defer cleanup()
-	fs, layers, kind, err := unpackImage(entries, opts)
-	if err != nil {
-		return Result{}, err
-	}
-	if kind == "" {
-		kind = "archive"
-		fs = store{}
-		report(opts, "archive", "plain root filesystem archive detected", false)
-		if err := applyTarFile(file, fs, ""); err != nil {
-			return Result{}, err
-		}
-	}
-	report(opts, "archive", fmt.Sprintf("%s ready: %d files, %d layers", kind, len(fs), len(layers)), false)
-	r := buildResult(filepath.Base(file), file, kind, fs, layers, opts.Now, opts)
-	r.SourceHash = digest
-	return r, nil
+	return archiveContext(context.Background(), file, opts)
 }
 
-type outerEntry struct {
-	Data []byte
-	Temp string
-	Size int64
-	Hash string
-}
-
-func readOuter(file string, opts Options) (map[string]outerEntry, func(), error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, func() {}, err
-	}
-	defer f.Close()
-	tempDir, err := os.MkdirTemp("", "bongsu-archive-*")
-	if err != nil {
-		return nil, func() {}, err
-	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
-	var rd io.Reader = f
-	if strings.HasSuffix(strings.ToLower(file), ".gz") || strings.HasSuffix(strings.ToLower(file), ".tgz") {
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			cleanup()
-			return nil, func() {}, err
-		}
-		defer gz.Close()
-		rd = gz
-	}
-	tr := tar.NewReader(rd)
-	out := map[string]outerEntry{}
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			cleanup()
-			return nil, func() {}, err
-		}
-		if !h.FileInfo().Mode().IsRegular() {
-			continue
-		}
-		report(opts, "archive-entry", fmt.Sprintf("%s (%d bytes)", clean(h.Name), h.Size), true)
-		sum := sha256.New()
-		entry := outerEntry{Size: h.Size}
-		if h.Size > maxMetadata {
-			tmp, err := os.CreateTemp(tempDir, "entry-*")
-			if err != nil {
-				cleanup()
-				return nil, func() {}, err
-			}
-			if _, err := io.Copy(io.MultiWriter(tmp, sum), tr); err != nil {
-				tmp.Close()
-				cleanup()
-				return nil, func() {}, err
-			}
-			if err := tmp.Close(); err != nil {
-				cleanup()
-				return nil, func() {}, err
-			}
-			entry.Temp = tmp.Name()
-		} else {
-			b, err := io.ReadAll(io.TeeReader(tr, sum))
-			if err != nil {
-				cleanup()
-				return nil, func() {}, err
-			}
-			entry.Data = b
-		}
-		entry.Hash = hex.EncodeToString(sum.Sum(nil))
-		out[clean(h.Name)] = entry
-	}
-	return out, cleanup, nil
-}
-
-func unpackImage(entries map[string]outerEntry, opts Options) (store, []File, string, error) {
-	if e, ok := entries["manifest.json"]; ok { // docker-archive
-		report(opts, "archive", "Docker save manifest detected", false)
-		var manifests []struct {
-			Config   string
-			RepoTags []string
-			Layers   []string
-		}
-		if err := json.Unmarshal(e.Data, &manifests); err != nil || len(manifests) == 0 {
-			return nil, nil, "", fmt.Errorf("invalid Docker manifest.json")
-		}
-		fs := store{}
-		var layers []File
-		for _, layer := range manifests[0].Layers {
-			e, ok := entries[clean(layer)]
-			if !ok {
-				return nil, nil, "", fmt.Errorf("Docker layer %q missing", layer)
-			}
-			layers = append(layers, File{Path: layer, Size: e.Size, SHA256: e.Hash})
-			report(opts, "layer", fmt.Sprintf("applying %s (%d bytes)", layer, e.Size), false)
-			if err := applyOuterLayer(e, fs, layer); err != nil {
-				return nil, nil, "", err
-			}
-			report(opts, "layer", fmt.Sprintf("applied %s; merged filesystem has %d files", layer, len(fs)), false)
-		}
-		return fs, layers, "docker-archive", nil
-	}
-	if idx, ok := entries["index.json"]; ok && entries["oci-layout"].Data != nil {
-		report(opts, "archive", "OCI image layout detected", false)
-		var index struct {
-			Manifests []struct {
-				Digest string `json:"digest"`
-			} `json:"manifests"`
-		}
-		if err := json.Unmarshal(idx.Data, &index); err != nil || len(index.Manifests) == 0 {
-			return nil, nil, "", fmt.Errorf("invalid OCI index")
-		}
-		manifestEntry, ok := entries[digestPath(index.Manifests[0].Digest)]
-		if !ok {
-			return nil, nil, "", fmt.Errorf("OCI manifest blob missing")
-		}
-		var manifest struct {
-			Layers []struct {
-				Digest    string `json:"digest"`
-				MediaType string `json:"mediaType"`
-				Size      int64  `json:"size"`
-			} `json:"layers"`
-		}
-		if err := json.Unmarshal(manifestEntry.Data, &manifest); err != nil {
-			return nil, nil, "", err
-		}
-		fs := store{}
-		var layers []File
-		for _, l := range manifest.Layers {
-			e, ok := entries[digestPath(l.Digest)]
-			if !ok {
-				return nil, nil, "", fmt.Errorf("OCI layer %s missing", l.Digest)
-			}
-			layers = append(layers, File{Path: l.Digest, Size: e.Size, SHA256: strings.TrimPrefix(l.Digest, "sha256:")})
-			report(opts, "layer", fmt.Sprintf("applying %s (%d bytes)", l.Digest, e.Size), false)
-			if err := applyOuterLayer(e, fs, l.Digest); err != nil {
-				return nil, nil, "", err
-			}
-			report(opts, "layer", fmt.Sprintf("applied %s; merged filesystem has %d files", l.Digest, len(fs)), false)
-		}
-		return fs, layers, "oci-archive", nil
-	}
-	return nil, nil, "", nil
-}
-
+// digestPath maps an OCI digest ("sha256:abc") to its blob path in a layout.
 func digestPath(d string) string {
 	p := strings.SplitN(d, ":", 2)
 	if len(p) != 2 {
@@ -372,98 +352,58 @@ func digestPath(d string) string {
 	return "blobs/" + p[0] + "/" + p[1]
 }
 
-func applyTarFile(file string, fs store, layer string) error {
-	f, err := os.Open(file)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	var rd io.Reader = f
-	if strings.HasSuffix(strings.ToLower(file), ".gz") || strings.HasSuffix(strings.ToLower(file), ".tgz") {
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			return err
-		}
-		defer gz.Close()
-		rd = gz
-	}
-	return applyTar(rd, fs, layer)
+// walkContextReader checks cancellation between filesystem reads. A read
+// already blocked in the kernel cannot be interrupted by this wrapper.
+type walkContextReader struct {
+	ctx context.Context
+	r   io.Reader
 }
 
-func applyOuterLayer(entry outerEntry, fs store, layer string) error {
-	if entry.Temp != "" {
-		f, err := os.Open(entry.Temp)
-		if err != nil {
-			return err
+func (r walkContextReader) Read(p []byte) (int, error) {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
 		}
-		defer f.Close()
-		return applyLayerReader(f, fs, layer)
 	}
-	return applyLayerReader(bytes.NewReader(entry.Data), fs, layer)
+	n, err := r.r.Read(p)
+	if r.ctx != nil && r.ctx.Err() != nil {
+		return n, r.ctx.Err()
+	}
+	return n, err
 }
 
-func applyLayerReader(input io.Reader, fs store, layer string) error {
-	buf := bufio.NewReader(input)
-	var rd io.Reader = buf
-	header, err := buf.Peek(2)
-	if err != nil && err != io.EOF {
-		return err
-	}
-	if len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b {
-		gz, err := gzip.NewReader(buf)
-		if err != nil {
-			return err
-		}
-		defer gz.Close()
-		rd = gz
-	}
-	return applyTar(rd, fs, layer)
-}
+var errMetadataLimit = errors.New("metadata exceeds read limit")
 
-func applyTar(rd io.Reader, fs store, layer string) error {
-	tr := tar.NewReader(rd)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
+// readFileForWalk bounds both allocation and growth beyond the stat snapshot.
+// Archive readers retain their separate entry-boundary handling in readFile.
+func readFileForWalk(ctx context.Context, name string, r io.Reader, size, allowed int64) (File, error) {
+	limit := min(size, allowed, int64(maxMetadata))
+	if limit < 0 {
+		return File{}, errMetadataLimit
+	}
+	// The stat snapshot already bounds the read. Allocate once, including
+	// one sentinel byte to detect growth, instead of ReadAll's repeated
+	// geometric expansions. Keep EOF, read-error and cancellation precedence.
+	data := make([]byte, 0, int(limit)+1)
+	reader := walkContextReader{ctx, r}
+	for len(data) < cap(data) {
+		n, err := reader.Read(data[len(data):cap(data)])
+		data = data[:len(data)+n]
 		if err != nil {
-			return err
-		}
-		name := clean(h.Name)
-		if name == "" || strings.HasPrefix(name, "../") {
-			continue
-		}
-		base := path.Base(name)
-		if strings.HasPrefix(base, ".wh.") {
-			dir := path.Dir(name)
-			if base == ".wh..wh..opq" {
-				prefix := strings.TrimPrefix(dir+"/", "./")
-				for p := range fs {
-					if strings.HasPrefix(p, prefix) {
-						delete(fs, p)
-					}
-				}
-			} else {
-				victim := path.Join(dir, strings.TrimPrefix(base, ".wh."))
-				delete(fs, victim)
-				for p := range fs {
-					if strings.HasPrefix(p, victim+"/") {
-						delete(fs, p)
-					}
-				}
+			if err != io.EOF {
+				return File{}, err
 			}
-			continue
+			break
 		}
-		if !h.FileInfo().Mode().IsRegular() {
-			continue
-		}
-		rec, err := readFile(name, tr, h.Size, layer)
-		if err != nil {
-			return err
-		}
-		fs[name] = rec
 	}
+	if int64(len(data)) > limit {
+		return File{}, errMetadataLimit
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return File{}, ctx.Err()
+	}
+	digest := sha256.Sum256(data)
+	return File{Path: name, Size: size, SHA256: hex.EncodeToString(digest[:]), Data: data}, nil
 }
 
 func readFile(name string, r io.Reader, size int64, layer string) (File, error) {
@@ -481,38 +421,48 @@ func readFile(name string, r io.Reader, size int64, layer string) (File, error) 
 	return File{Path: name, Size: size, SHA256: hex.EncodeToString(h.Sum(nil)), Data: data, Layer: layer}, nil
 }
 
+// clean normalizes an archive entry name to a root-relative slash path:
+// backslashes become slashes, leading "/" and "./" are dropped, and "." (the
+// root itself) becomes "". Names that still start with ".." escape the root
+// and are rejected by callers via unsafePath.
 func clean(p string) string {
-	return strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "./")
+	p = path.Clean(strings.TrimLeft(strings.ReplaceAll(p, "\\", "/"), "/"))
+	if p == "." {
+		return ""
+	}
+	return strings.TrimPrefix(p, "./")
 }
 
 func interesting(p string) bool {
-	p = strings.ToLower(p)
+	p = strings.TrimPrefix(strings.ToLower(p), "/")
 	base := path.Base(p)
-	if p == "var/lib/dpkg/status" || p == "lib/apk/db/installed" || strings.HasSuffix(p, "/os-release") {
+	switch p {
+	// Only the root's own os-release counts; nested copies (container
+	// layers, chroots, test fixtures) must not override the host identity.
+	case "etc/os-release", "usr/lib/os-release",
+		"var/lib/dpkg/status", "lib/apk/db/installed", "usr/lib/apk/db/installed":
+		return true
+	}
+	if strings.HasPrefix(p, "var/lib/dpkg/status.d/") && !strings.HasSuffix(base, ".md5sums") {
+		return true
+	}
+	if isRPMDatabase(p) {
 		return true
 	}
 	switch base {
-	case "package-lock.json", "npm-shrinkwrap.json", "go.mod", "go.sum", "requirements.txt",
-		"cargo.lock", "pom.properties", "metadata":
+	case "package-lock.json", ".package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+		"go.mod", "requirements.txt", "poetry.lock", "pipfile.lock", "uv.lock", "pkg-info",
+		"cargo.lock", "pom.properties", "gemfile.lock", "composer.lock", "packages.lock.json":
 		return true
 	}
-	return strings.HasSuffix(p, ".dist-info/metadata")
+	return strings.HasSuffix(p, ".dist-info/metadata") || strings.HasSuffix(p, ".egg-info") || strings.HasSuffix(base, ".deps.json")
 }
 
-func buildResult(name, source, kind string, fs store, layers []File, now time.Time, opts Options) Result {
-	files := make([]File, 0, len(fs))
-	for _, f := range fs {
-		files = append(files, f)
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	r := Result{Name: name, Source: source, SourceType: kind, ScannedAt: now.UTC(), Files: files, Layers: layers}
-	report(opts, "catalog", fmt.Sprintf("cataloging package metadata from %d files", len(files)), false)
-	r.Packages, r.OSName, r.OSVersion = catalog(files)
-	report(opts, "catalog", fmt.Sprintf("catalog complete: %d packages; os=%s %s", len(r.Packages), r.OSName, r.OSVersion), false)
-	for _, p := range r.Packages {
-		report(opts, "package", fmt.Sprintf("%s %s (%s)", p.Name, p.Version, p.Type), true)
-	}
-	return r
+// buildResult catalogs a merged filesystem without image metadata; extra
+// carries packages found outside metadata files (Go binary build info).
+// Image and archive scans use assembleResult (image.go) directly.
+func buildResult(name, source, kind string, fs store, layers []File, extra []Package, now time.Time, opts Options) Result {
+	return assembleResult(name, source, kind, fs, layers, nil, extra, now, opts)
 }
 
 func digestFile(file string) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -15,10 +16,11 @@ import (
 	"time"
 )
 
-const Version = 1
+const Version = 2
 
 // Record contains everything required to reconstruct the signed payload.
-// The signature covers domain, target digest, signing time, and random salt.
+// Both versions sign the target digest, signing time, and random salt under a
+// version-specific domain. Version 2 also authenticates Target and Signer.
 type Record struct {
 	Version      int       `json:"version"`
 	Algorithm    string    `json:"algorithm"`
@@ -34,6 +36,27 @@ type Record struct {
 func payload(digest string, at time.Time, salt []byte) []byte {
 	return []byte("bongsu-signature-v1\nsha256:" + digest + "\nsigned-at:" +
 		at.UTC().Format(time.RFC3339Nano) + "\nsalt:" + base64.RawStdEncoding.EncodeToString(salt) + "\n")
+}
+
+// payloadV2 prefixes each field with its byte length as a big-endian uint64.
+// The fields are the digest hex, target, signer, UTC RFC3339Nano time, and raw salt.
+func payloadV2(digest, target, signer string, at time.Time, salt []byte) []byte {
+	b := []byte("bongsu-signature-v2\n")
+	for _, field := range [][]byte{
+		[]byte(digest), []byte(target), []byte(signer),
+		[]byte(at.UTC().Format(time.RFC3339Nano)), salt,
+	} {
+		b = binary.BigEndian.AppendUint64(b, uint64(len(field)))
+		b = append(b, field...)
+	}
+	return b
+}
+
+// Authenticated reports whether this format signs the Signer and Target fields.
+// Callers must first successfully Verify the record. This does not establish
+// publisher identity without a trusted public key.
+func (r Record) Authenticated() bool {
+	return r.Version == 2
 }
 
 func Generate() (ed25519.PublicKey, ed25519.PrivateKey, error) {
@@ -130,7 +153,7 @@ func Create(digest, target, signer string, priv ed25519.PrivateKey, now time.Tim
 	saltInput := append(randomSalt, []byte(now.Format(time.RFC3339Nano))...)
 	effectiveSalt := sha256.Sum256(saltInput)
 	salt := effectiveSalt[:]
-	sig := ed25519.Sign(priv, payload(digest, now, salt))
+	sig := ed25519.Sign(priv, payloadV2(digest, target, signer, now, salt))
 	return Record{Version: Version, Algorithm: "ed25519", Signer: signer,
 		PublicKey: hex.EncodeToString(priv.Public().(ed25519.PublicKey)), Target: target,
 		DigestSHA256: digest, SignedAt: now, Salt: base64.RawStdEncoding.EncodeToString(salt),
@@ -138,7 +161,7 @@ func Create(digest, target, signer string, priv ed25519.PrivateKey, now time.Tim
 }
 
 func (r Record) Verify(pub ed25519.PublicKey) error {
-	if r.Version != Version || r.Algorithm != "ed25519" {
+	if (r.Version != 1 && r.Version != 2) || r.Algorithm != "ed25519" {
 		return fmt.Errorf("unsupported signature format")
 	}
 	embedded, err := ParsePublic([]byte(r.PublicKey))
@@ -156,7 +179,11 @@ func (r Record) Verify(pub ed25519.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("invalid signature encoding")
 	}
-	if !ed25519.Verify(embedded, payload(r.DigestSHA256, r.SignedAt, salt), sig) {
+	message := payload(r.DigestSHA256, r.SignedAt, salt)
+	if r.Version == 2 {
+		message = payloadV2(r.DigestSHA256, r.Target, r.Signer, r.SignedAt, salt)
+	}
+	if !ed25519.Verify(embedded, message, sig) {
 		return fmt.Errorf("signature verification failed")
 	}
 	return nil
