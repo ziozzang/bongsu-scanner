@@ -1,6 +1,44 @@
+# Build output and release artifacts
 /dist/
+/bscan
+/bscan_*
+*.test
+__debug_bin*
+
+# Scan and signing outputs (SBOMs, manifests, signatures, scrambled payloads)
 *.sig
 *.sha256
 *.spdx.json
 *.cdx.json
 *.bgs
+/*.sarif
+/*.csv
+/*.html
+/scan-results/
+/host-scan/
+/results/
+
+# Vulnerability catalogs and local state (live under $BONGSU_HOME, never in the repo)
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+/db/
+/db.prev/
+/db.tmp-*/
+/.bongsu/
+/cache/
+
+# Profiling and coverage
+*.prof
+*.pprof
+coverage*.out
+
+# Local tooling and editors
+.env
+.env.*
+/.claude/
+/.codex/
+/.idea/
+/.vscode/
+*.swp
+.DS_Store
