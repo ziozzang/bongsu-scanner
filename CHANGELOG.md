@@ -88,6 +88,8 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Fixed
 
+- Scope Red Hat VEX deletions to their source, checkpoint the latest event per path across resumptions, tolerate isolated missing delta documents, and resolve equal-instant timestamps with deletion/delta precedence.
+
 - Scope Ubuntu USN CVE aliases and vendor ratings to each release, and preserve
   Red Hat VEX not-affected EVRs so exclusions do not suppress older versions.
 

@@ -35,6 +35,24 @@ type vexDeltaEntry struct {
 func (e vexDeltaEntry) key() string { return fmt.Sprintf("%t:%s", e.Deleted, e.Path) }
 func (e vexDeltaEntry) id() string  { return strings.ToUpper(strings.TrimSuffix(e.Path[5:], ".json")) }
 
+// Keep the original on-disk key format, but checkpoint a path across BOTH event
+// kinds. This also understands old ledgers containing just the selected kind.
+// At the same instant a deletion is newer than a change.
+func (e vexDeltaEntry) done(ledger map[string]time.Time) bool {
+	if !e.At.After(ledger[e.key()]) {
+		return true
+	}
+	other := vexDeltaEntry{Path: e.Path, Deleted: !e.Deleted}
+	at := ledger[other.key()]
+	return at.After(e.At) || at.Equal(e.At) && !e.Deleted
+}
+
+func (e vexDeltaEntry) checkpoint(ledger map[string]time.Time) {
+	other := vexDeltaEntry{Path: e.Path, Deleted: !e.Deleted}
+	delete(ledger, other.key())
+	ledger[e.key()] = e.At
+}
+
 type vexDeltaFeed struct {
 	baseURL      string
 	archiveDate  time.Time
@@ -87,7 +105,7 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 		}
 	}
 	// Parse always runs, including a changes.csv 304, to apply independent
-	// deletions and resume a bounded update from its per-event ledger.
+	// deletions and resume a bounded update from its per-path ledger.
 	var progress func(string)
 	if opts.Progress != nil {
 		progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
@@ -97,6 +115,7 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 	m.ArchiveDate = d.archiveDate
 	m.DeltaThrough, m.DeltaDocuments, m.DeltaDeleted = d.meta.DeltaThrough, d.meta.DeltaDocuments, d.meta.DeltaDeleted
 	m.DeltaFetched, m.DeltaMalformed, m.DeltaOversized, m.DeltaRemaining, m.DeltaBytes = d.meta.DeltaFetched, d.meta.DeltaMalformed, d.meta.DeltaOversized, d.meta.DeltaRemaining, d.meta.DeltaBytes
+	m.DeltaMissing = d.meta.DeltaMissing
 	m.DataThrough, m.Records = d.meta.DataThrough, count
 	if err == nil {
 		err = writeJSON(filepath.Join(stage, ledgerRel), d.ledger)
@@ -107,7 +126,7 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 		m.Error = httpx.Sanitize(err.Error())
 	}
 	if progress != nil {
-		progress(fmt.Sprintf("redhat-vex deltas: fetched=%d documents=%d deleted=%d malformed=%d oversized=%d remaining=%d bytes=%d", m.DeltaFetched, m.DeltaDocuments, m.DeltaDeleted, m.DeltaMalformed, m.DeltaOversized, m.DeltaRemaining, m.DeltaBytes))
+		progress(fmt.Sprintf("redhat-vex deltas: fetched=%d documents=%d deleted=%d malformed=%d oversized=%d missing=%d remaining=%d bytes=%d", m.DeltaFetched, m.DeltaDocuments, m.DeltaDeleted, m.DeltaMalformed, m.DeltaOversized, m.DeltaMissing, m.DeltaRemaining, m.DeltaBytes))
 	}
 	return m, err
 }
@@ -145,7 +164,7 @@ func readVEXDeltaList(ctx context.Context, filename string, deleted bool, archiv
 			continue
 		}
 		e := vexDeltaEntry{Path: row[0], At: at.UTC(), Deleted: deleted}
-		if !e.At.After(archive) || !e.At.After(ledger[e.key()]) {
+		if !e.At.After(archive) || e.done(ledger) {
 			continue
 		}
 		if prev, ok := entries[e.Path]; !ok || e.At.After(prev.At) {
@@ -220,12 +239,23 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 		return sp.append(r.ID, append(b, '\n'))
 	}
 	if d.oldCache != "" {
-		if err := readFeedCache(d.oldCache, d.cacheLimit, appendRecord); err != nil {
+		if err := readFeedCache(d.oldCache, d.cacheLimit, func(r *Record) error {
+			// Older conversion caches lack the tie-break marker. Recover it from
+			// the ledger without invalidating an otherwise resumable delta cache.
+			if parts := strings.Split(r.ID, "-"); r.VEXDelta == "" && len(parts) == 3 {
+				e := vexDeltaEntry{Path: parts[1] + "/" + strings.ToLower(r.ID) + ".json", Deleted: r.Withdrawn != ""}
+				if at := d.ledger[e.key()]; !at.IsZero() {
+					r.VEXDelta = at.UTC().Format(time.RFC3339Nano)
+				}
+			}
+			return appendRecord(r)
+		}); err != nil {
 			return err
 		}
 	}
 	budget := &vexDeltaBudget{left: d.budget}
 	processed := 0
+	attempted := 0
 	for processed < len(pending) && processed < d.maxDocuments {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -244,9 +274,20 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 			e := batch[i]
 			if errors.Is(result.err, errVEXBudget) {
 				stop = true
-				continue
+				break // Do not checkpoint later events past this budget gap.
+			}
+			if !e.Deleted {
+				attempted++
 			}
 			if result.err != nil {
+				var status *httpx.StatusError
+				if errors.As(result.err, &status) && status.StatusCode == http.StatusNotFound {
+					d.meta.DeltaMissing++
+					if progress != nil {
+						progress(fmt.Sprintf("redhat-vex: skipping missing delta document %s (HTTP 404); will retry", e.Path))
+					}
+					continue // A transient missing document is not a checkpoint.
+				}
 				return result.err
 			}
 			if result.oversized {
@@ -269,7 +310,7 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 			}
 			// Individual checkpoints preserve ties, late entries and budget gaps.
 			// Rejected documents are retried only when the publisher changes their row.
-			d.ledger[e.key()] = e.At
+			e.checkpoint(d.ledger)
 		}
 		processed = end
 		if progress != nil && processed%100 == 0 {
@@ -280,11 +321,16 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 		}
 	}
 	for _, e := range pending {
-		if e.At.After(d.ledger[e.key()]) {
+		if !e.done(d.ledger) {
 			d.meta.DeltaRemaining++
 		}
 	}
 	d.meta.DeltaBytes = d.budget - budget.left
+	// Tolerate one missing document even in a small update. Multiple missing
+	// documents above 10% of attempted downloads indicate a broken feed.
+	if d.meta.DeltaMissing > 1 && d.meta.DeltaMissing*10 > attempted {
+		return fmt.Errorf("redhat-vex: %d of %d delta documents missing (over 10%%)", d.meta.DeltaMissing, attempted)
+	}
 	if err := sp.close(); err != nil {
 		return err
 	}
@@ -323,7 +369,7 @@ func (w vexDeltaWriter) Write(p []byte) (int, error) {
 
 func (d *vexDeltaFeed) document(ctx context.Context, stage string, e vexDeltaEntry, budget *vexDeltaBudget) vexDeltaResult {
 	if e.Deleted {
-		return vexDeltaResult{record: &Record{ID: e.id(), Source: SourceRedHatVEX, Modified: e.At.Format(time.RFC3339Nano), Withdrawn: e.At.Format(time.RFC3339Nano)}}
+		return vexDeltaResult{record: &Record{ID: e.id(), Source: SourceRedHatVEX, Modified: e.At.Format(time.RFC3339Nano), Withdrawn: e.At.Format(time.RFC3339Nano), VEXDelta: e.At.Format(time.RFC3339Nano)}}
 	}
 	f, err := os.CreateTemp(stage, ".vex-delta-*.json")
 	if err != nil {
@@ -378,6 +424,7 @@ func (d *vexDeltaFeed) document(ctx context.Context, stage string, e vexDeltaEnt
 	if r == nil {
 		r = &Record{ID: e.id(), Source: SourceRedHatVEX, Modified: at.UTC().Format(time.RFC3339Nano)}
 	}
+	r.VEXDelta = e.At.UTC().Format(time.RFC3339Nano)
 	return vexDeltaResult{record: r}
 }
 func vexRetryable(err error) bool {
@@ -399,7 +446,7 @@ func (m SourceMeta) VEXStatus() string {
 	if !m.DeltaThrough.IsZero() {
 		through = m.DeltaThrough.UTC().Format("2006-01-02T15:04Z")
 	}
-	return fmt.Sprintf("archive %s, deltas through %s (%s documents); deleted=%d skipped=%d remaining=%d", m.ArchiveDate.UTC().Format(time.DateOnly), through, formatCount(m.DeltaDocuments), m.DeltaDeleted, m.DeltaMalformed+m.DeltaOversized, m.DeltaRemaining)
+	return fmt.Sprintf("archive %s, deltas through %s (%s documents); deleted=%d skipped=%d remaining=%d", m.ArchiveDate.UTC().Format(time.DateOnly), through, formatCount(m.DeltaDocuments), m.DeltaDeleted, m.DeltaMalformed+m.DeltaOversized+m.DeltaMissing, m.DeltaRemaining)
 }
 
 // Resolve VEX versions before a same-ID record from another source can turn

@@ -276,11 +276,23 @@ func Merge(dst, src *Record) {
 	// Resolve VEX snapshots before combining them with other sources. A union
 	// would retain obsolete affected products when a newer document clears them.
 	if dst.ID == src.ID && dst.Source == SourceRedHatVEX && src.Source == SourceRedHatVEX {
-		newest := mergeRFC3339(dst.Modified, src.Modified, false)
-		if newest == src.Modified && (src.Modified != dst.Modified || src.Withdrawn != "" || dst.Withdrawn == "") {
+		order := compareRFC3339(src.Modified, dst.Modified)
+		if order > 0 || order == 0 && (src.Withdrawn != "" || dst.Withdrawn == "" && compareRFC3339(src.VEXDelta, dst.VEXDelta) >= 0) {
 			*dst = *src
 		}
 		return
+	}
+	// VEX versions are consolidated before cross-source union. A deletion is
+	// only a VEX tombstone: retain an empty withdrawn stub when VEX stands alone,
+	// but contribute nothing (including provenance/metadata) to another source.
+	if dst.ID == src.ID {
+		if src.Source == SourceRedHatVEX && src.Withdrawn != "" {
+			return
+		}
+		if dst.Source == SourceRedHatVEX && dst.Withdrawn != "" {
+			*dst = *src
+			return
+		}
 	}
 	for _, provenance := range src.Provenance {
 		addProvenance(dst, provenance)
@@ -441,6 +453,27 @@ func mergeRFC3339(dst, src string, earliest bool) string {
 		return dst
 	}
 	return src
+}
+
+// compareRFC3339 compares valid timestamps by instant, including equal instants
+// written with different offsets. Empty timestamps sort first; malformed values
+// sort below valid ones, with lexical ordering only between malformed values.
+func compareRFC3339(a, b string) int {
+	if a == "" || b == "" {
+		return strings.Compare(a, b)
+	}
+	x, xerr := time.Parse(time.RFC3339Nano, a)
+	y, yerr := time.Parse(time.RFC3339Nano, b)
+	if xerr == nil && yerr == nil {
+		return x.Compare(y)
+	}
+	if xerr == nil {
+		return 1
+	}
+	if yerr == nil {
+		return -1
+	}
+	return strings.Compare(a, b)
 }
 
 func joinSources(a, b string) string {

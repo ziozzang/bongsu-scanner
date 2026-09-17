@@ -84,6 +84,9 @@ type Record struct {
 	References       []Reference    `json:"references,omitempty"`
 	Source           string         `json:"source"` // provenance: osv, alpine-secdb, debian-tracker, ghsa, ...
 	Database         map[string]any `json:"database_specific,omitempty"`
+	// VEXDelta preserves the delta event instant in conversion caches so equal
+	// tracking dates prefer the latest delta over the archive in either order.
+	VEXDelta string `json:"vex_delta,omitempty"`
 }
 
 // SourceMeta describes one fetched source feed.
@@ -110,6 +113,7 @@ type SourceMeta struct {
 	DeltaDeleted   int       `json:"delta_deleted,omitempty"`
 	DeltaMalformed int       `json:"delta_malformed,omitempty"`
 	DeltaOversized int       `json:"delta_oversized,omitempty"`
+	DeltaMissing   int       `json:"delta_missing,omitempty"`
 	DeltaRemaining int       `json:"delta_remaining,omitempty"`
 	DeltaBytes     int64     `json:"delta_bytes,omitempty"`
 }
