@@ -154,6 +154,12 @@ func FuzzDebianTracker(f *testing.F) {
 			}
 			last = r.ID
 			for _, a := range r.Affected {
+				if status := a.Database["debian_status"]; status == "not-affected" || status == "undetermined" {
+					if !strings.HasPrefix(a.Ecosystem, "Debian:") || len(a.Ranges) != 0 || len(a.Versions) != 0 {
+						t.Fatalf("debian status marker %+v", a)
+					}
+					continue
+				}
 				if !strings.HasPrefix(a.Ecosystem, "Debian:") || len(a.Ranges) != 1 {
 					t.Fatalf("debian affected %+v", a)
 				}

@@ -56,6 +56,7 @@ func commandRegistry() []commandSpec {
 		{"fail-on", "", "exit 2 when a finding meets this severity", "string", false},
 		{"ignore", "", "comma-separated advisory IDs to ignore", "string", false},
 		{"include-unimportant", "false", "include Debian unimportant advisories", "bool", false},
+		{"severity-source", "cvss", "severity policy: cvss, distro, or max", "string", false},
 		{"details", "false", "include full advisory details text in findings", "bool", false},
 		{"only-fixed", "false", "include only findings with a known fix", "bool", false},
 		{"pubkey", "", "require database signature from trusted name, PEM file, or hex key", "string", false},
@@ -92,6 +93,7 @@ func commandRegistry() []commandSpec {
 		{"force", "false", "fetch feeds without conditional request headers", "bool", false},
 		{"no-keep-raw", "false", "omit original feeds from installed database", "bool", false},
 		{"max-feed-bytes", "536870912", "maximum bytes per downloaded feed", "int64", false},
+		{"max-feed-uncompressed", "17179869184", "maximum total uncompressed bytes per OSV/GHSA archive", "int64", false},
 		{"timeout", "30m0s", "overall update timeout", "duration", false},
 	}
 	scrambleFlags := []commandFlag{

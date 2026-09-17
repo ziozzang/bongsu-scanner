@@ -334,6 +334,18 @@ func newWalkState(ctx context.Context, root string, opts Options, hostPolicy boo
 		fs:         store{},
 		rules:      compileExcludes(root, opts, hostPolicy),
 	}
+	// Nested declaration selection also recognizes an empty node_modules.
+	// Open beneath the scan root so a symlink cannot escape the target.
+	w.catalog.includeDeclared = opts.IncludeDeclared
+	w.catalog.hasDir = func(dir string) bool {
+		r, err := os.OpenRoot(root)
+		if err != nil {
+			return false
+		}
+		defer r.Close()
+		info, err := r.Stat(dir)
+		return err == nil && info.IsDir()
+	}
 	if w.maxBytes <= 0 {
 		w.maxBytes = defaultWalkMaxTotalBytes
 	}
@@ -493,7 +505,7 @@ func (w *walkState) preloadInventory(rel string) error {
 		return nil
 	}
 	if !info.IsDir() {
-		if !info.Mode().IsRegular() || (!interesting(rel) && !isRPMDatabase(rel)) {
+		if !info.Mode().IsRegular() || (!interestingPackageMetadata(rel) && !isRPMDatabase(rel)) {
 			return nil
 		}
 		w.preloaded[p] = true
@@ -692,7 +704,7 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 	// Parser inputs live only until addFile returns. Ordinary files are
 	// hashed/probed without buffering their contents.
 	rpm := isRPMDatabase(rel)
-	keep := interesting(rel) || rpm
+	keep := interestingPackageMetadata(rel) || rpm
 	if !keep && !w.hashFiles && !w.probe {
 		return nil
 	}
@@ -727,7 +739,7 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		w.skipMetadata(p, "metadata budget")
 		keep = false
 	}
-	if keep && isInstalledNPMPackage(rel) {
+	if keep && isNPMPackageJSON(rel) {
 		if w.parallel != nil {
 			if w.parallel.npmFiles.Add(1) > int64(maxInstalledNPM) {
 				return errParallelBudget

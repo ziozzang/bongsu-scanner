@@ -686,7 +686,7 @@ func classifyOuter(a *outerArchive) string {
 		return "oci-archive"
 	}
 	for _, name := range a.names {
-		if rootfsTrace(name) || interesting(name) {
+		if rootfsTrace(name) || interestingPackageMetadata(name) {
 			return "archive"
 		}
 	}
@@ -747,7 +747,7 @@ func archiveContext(ctx context.Context, file string, opts Options) (Result, err
 		return Result{}, err
 	}
 	report(opts, "archive", fmt.Sprintf("%s ready: %d files, %d layers", kind, len(u.fs), len(layers)), false)
-	r := assembleRPMResult(filepath.Base(file), file, kind, u.fs, layers, image, u.extraPackages(), opts.Now, opts, u.rpmFiles)
+	r := assembleRPMResult(filepath.Base(file), file, kind, u.fs, layers, image, u.extraPackages(), opts.Now, opts, u.rpmFiles, u.kinds)
 	r.SourceHash = digest
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -781,7 +781,7 @@ func rootfsArchive(ctx context.Context, file string, opts Options) (Result, erro
 		return Result{}, err
 	}
 	report(opts, "archive", fmt.Sprintf("root filesystem ready: %d files", len(u.fs)), false)
-	r := assembleRPMResult(filepath.Base(file), file, "archive", u.fs, nil, nil, u.extraPackages(), opts.Now, opts, u.rpmFiles)
+	r := assembleRPMResult(filepath.Base(file), file, "archive", u.fs, nil, nil, u.extraPackages(), opts.Now, opts, u.rpmFiles, u.kinds)
 	r.SourceHash = digest
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -827,7 +827,7 @@ func assembleResult(name, source, kind string, fs store, layers []File, image *I
 	return assembleRPMResult(name, source, kind, fs, layers, image, extra, now, opts, nil)
 }
 
-func assembleRPMResult(name, source, kind string, fs store, layers []File, image *ImageMetadata, extra []Package, now time.Time, opts Options, rpmFiles map[string]string) Result {
+func assembleRPMResult(name, source, kind string, fs store, layers []File, image *ImageMetadata, extra []Package, now time.Time, opts Options, rpmFiles map[string]string, directoryKinds ...map[string]byte) Result {
 	files := make([]File, 0, len(fs))
 	for _, f := range fs {
 		files = append(files, f)
@@ -836,6 +836,16 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 	r := Result{Name: name, Source: source, SourceType: kind, ScannedAt: now.UTC(), Files: files, Layers: layers, Image: image}
 	report(opts, "catalog", fmt.Sprintf("cataloging package metadata from %d files (+%d packages from binaries)", len(files), len(extra)), false)
 	var c cataloger
+	c.includeDeclared = opts.IncludeDeclared
+	// Use the final merged directory view, including empty directories and
+	// whiteouts, to select declarations backed by nested node_modules.
+	for _, kinds := range directoryKinds {
+		for name, kind := range kinds {
+			if kind == tar.TypeDir && path.Base(name) == "node_modules" {
+				c.observePath(name + "/package.json")
+			}
+		}
+	}
 	var meta ScanMetadata
 	for _, f := range files {
 		switch {
@@ -859,7 +869,11 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 	meta.MetadataSkipped += c.metadataSkipped
 	c.addPackages(extra)
 	r.Packages, r.OS = c.finish()
-	if meta.MetadataSkipped != 0 || meta.SkippedErrors != 0 {
+	if n := c.declaredSkipped; n > 0 {
+		meta.DeclaredSkipped = n
+		report(opts, "catalog", fmt.Sprintf("skipped %d declared-only dependencies bundled inside installed packages (use --include-declared to keep them)", n), false)
+	}
+	if meta.MetadataSkipped != 0 || meta.SkippedErrors != 0 || meta.DeclaredSkipped != 0 {
 		meta.Partial = true
 		r.Scan = &meta
 	}
@@ -1166,7 +1180,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 	r = contextReader{u.ctx, r}
 	sum := sha256.New()
 	diskLimit := diskMetadataLimit(name)
-	keep := size <= maxFileMetadata && interesting(name) && diskLimit == 0
+	keep := size <= maxFileMetadata && interestingPackageMetadata(name) && diskLimit == 0
 	probe := goBinaryCandidate(name, h.Mode, size)
 	var data []byte
 	switch {
@@ -1228,7 +1242,7 @@ func (u *unpacker) recordBinary(name, layer string, data []byte) {
 // cross-layer targets do not matter.
 func (u *unpacker) finish() error {
 	for name, link := range u.symlinks {
-		if _, exists := u.fs[name]; exists || !interesting(name) {
+		if _, exists := u.fs[name]; exists || !interestingPackageMetadata(name) {
 			continue
 		}
 		target := link.target
@@ -1261,7 +1275,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 	// Aliases may cross between an in-memory metadata file and a disk-backed
 	// RPM database or Java archive. Preserve the destination's retention policy.
 	for name, rec := range u.fs {
-		if !interesting(name) {
+		if !interestingPackageMetadata(name) {
 			continue
 		}
 		if diskMetadataLimit(name) != 0 && rec.Data != nil && rec.Size <= diskMetadataLimit(name) {
@@ -1283,7 +1297,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 	}
 	wanted := map[int]map[int][]string{}
 	for name, content := range u.contents {
-		if !interesting(name) || u.fs[name].Size > metadataFileLimit(name) {
+		if !interestingPackageMetadata(name) || u.fs[name].Size > metadataFileLimit(name) {
 			continue
 		}
 		if wanted[content.source] == nil {

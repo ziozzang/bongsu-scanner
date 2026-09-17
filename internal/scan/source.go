@@ -53,6 +53,11 @@ type Options struct {
 	// Workers bounds the number of directories walked concurrently during
 	// host and directory scans (0 = min(8, NumCPU); 1 = sequential).
 	Workers int
+	// IncludeDeclared keeps dependencies declared by lock/requirement files
+	// that live inside an installed package (for example a Gemfile.lock
+	// bundled in an installed gem). They are not installed software and are
+	// skipped by default; when kept they carry Evidence "declared".
+	IncludeDeclared bool
 	// NoHostMetadata leaves Result.Host empty for host scans.
 	NoHostMetadata bool
 	// RedactIPs drops IP addresses from the host metadata.
@@ -316,6 +321,10 @@ func DirectoryContext(ctx context.Context, root, name string, opts Options) (Res
 	}
 	r := Result{Name: name, Source: root, SourceType: "directory", ScannedAt: opts.Now.UTC(), Scan: &meta}
 	r.Packages, r.OS = w.catalog.finish()
+	if n := w.catalog.declaredSkipped; n > 0 {
+		meta.DeclaredSkipped = n
+		report(opts, "catalog", fmt.Sprintf("skipped %d declared-only dependencies bundled inside installed packages (use --include-declared to keep them)", n), false)
+	}
 	if r.OS != nil {
 		r.OSName, r.OSVersion = r.OS.ID, r.OS.VersionID
 	}

@@ -116,6 +116,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	isolation := fs.String("db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
 	format := fs.String("format", "table", "table, json, cyclonedx, html, markdown, csv, or sarif")
 	out := fs.String("o", "", "output file (default stdout)")
+	severitySource := fs.String("severity-source", "cvss", "severity policy: cvss, distro, or max")
 	minimum := fs.String("min-severity", "", "minimum severity to include")
 	fail := fs.String("fail-on", "", "exit 2 when a finding meets this severity")
 	ignore := fs.String("ignore", "", "comma-separated advisory IDs to ignore")
@@ -161,6 +162,10 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	}
 	if (*format == "cyclonedx" || reportFormat) && fs.NArg() != 1 {
 		return fmt.Errorf("%s output requires exactly one SBOM input", *format)
+	}
+	severityPolicy, err := matcher.NormalizeSeveritySource(*severitySource)
+	if err != nil {
+		return err
 	}
 	min, err := severityLevel(*minimum)
 	if err != nil {
@@ -237,12 +242,13 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 			return fmt.Errorf("%s: %w", input, err)
 		}
 		matchReport, err := matcher.Run(ctx, store, doc.Subjects, matcher.Options{
-			Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
+			SeveritySource: severityPolicy, Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", input, err)
 		}
 		logf("match", "%s: db updated %s; %d subjects; %d findings\n", httpx.Sanitize(input), matchReport.DB.UpdatedAt.UTC().Format(time.RFC3339), matchReport.Subjects, len(matchReport.Findings))
+		logMissingCoverage("match", matchReport)
 		if len(matchReport.Skipped) > 0 {
 			warnf("match", "skipped: %v\n", matchReport.Skipped)
 		}
@@ -268,7 +274,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		}
 		if reportFormat {
 			in := report.Input{Report: matchReport, Target: filepath.Base(input), SBOMPath: input, GeneratedAt: time.Now().UTC(), ToolVersion: version,
-				Options: matcher.Options{Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
+				Options: matcher.Options{SeveritySource: severityPolicy, Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
 			if target, scanMeta, osMeta, image, host, err := report.ContextFromSBOM(input); err == nil {
 				in.Scan, in.OS, in.Image, in.Host = scanMeta, osMeta, image, host
 				if target != "" {
@@ -346,4 +352,10 @@ func (a *loggedAnalyzer) Analyze(ctx context.Context, input assessment.Input) (a
 		logf("match:llm", "%s (cached=%t)\n", result.Status, result.Cached)
 	}
 	return result, err
+}
+
+func logMissingCoverage(scope string, r matcher.Report) {
+	for _, warning := range r.MissingCoverage {
+		warnf(scope, "WARNING: %s\n", httpx.Sanitize(warning))
+	}
 }

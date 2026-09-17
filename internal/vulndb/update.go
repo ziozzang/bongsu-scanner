@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,7 +20,7 @@ import (
 
 // conversionCacheVersion must change whenever feed conversion semantics change.
 // Stored per feed in SourceMeta so a 304 cannot reuse stale converted records.
-const conversionCacheVersion = 1
+const conversionCacheVersion = 2
 
 // Update builds a complete replacement beside dir. Any failed feed leaves the
 // current database intact; the returned metadata still describes every attempt.
@@ -227,8 +228,9 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		fetched.NotModified = false // Reparse retained raw bytes with this converter.
 	}
 	var parsedCount int
+	cacheLimit := feedCacheLimit(feed.Source, opts)
 	if err == nil && fetched.NotModified {
-		err = readRecords(filepath.Join(dir, cacheRel), func(r *Record) error {
+		err = readFeedCache(filepath.Join(dir, cacheRel), cacheLimit, func(r *Record) error {
 			if !validID(r.ID) {
 				return errors.New("feed emitted invalid advisory")
 			}
@@ -259,7 +261,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		if opts.Progress != nil {
 			progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
 		}
-		parsedCount, err = streamFeedCacheSpool(ctx, feed, filepath.Join(stage, rawRel), filepath.Join(stage, cacheRel), fetched.Meta.Bytes, progress, 1<<30, 64<<20, spool.append)
+		parsedCount, err = streamFeedCacheSpool(ctx, feed, filepath.Join(stage, rawRel), filepath.Join(stage, cacheRel), fetched.Meta.Bytes, progress, cacheLimit, 64<<20, spool.append)
 	}
 	m := fetched.Meta
 	m.Records = parsedCount
@@ -284,8 +286,29 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	return m, err
 }
 
-// streamFeedCache applies the same expanded-byte and record bounds as the
-// cache reader, during parsing. Nothing is retained in a per-feed record slice.
+// Converted OSV/GHSA feeds can exceed the legacy 1 GiB cache budget too.
+// Use the configured expansion budget for both cache writes and 304 reads,
+// retaining the legacy minimum because conversion adds provenance metadata.
+func feedCacheLimit(source string, opts Options) int64 {
+	limit := int64(1 << 30)
+	if source == SourceOSV || source == SourceGHSA {
+		limit = max(limit, int64(opts.maxFeedUncompressedBytes()))
+	}
+	// readRecordsBounded reserves one extra byte to detect an exceeded limit.
+	return min(limit, math.MaxInt64-1)
+}
+
+func readFeedCache(path string, maxBytes int64, emit Emit) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return readRecordsBounded(f, emit, maxBytes, 64<<20)
+}
+
+// streamFeedCache applies the caller's expanded-byte budget and per-record
+// bound while parsing. Nothing is retained in a per-feed record slice.
 func streamFeedCache(ctx context.Context, feed Feed, rawPath, cachePath string, size int64, progress func(string), maxBytes int64, maxRecord int) (count int, err error) {
 	return streamFeedCacheSpool(ctx, feed, rawPath, cachePath, size, progress, maxBytes, maxRecord, nil)
 }

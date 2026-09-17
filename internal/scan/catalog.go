@@ -3,6 +3,7 @@ package scan
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"path"
 	"regexp"
 	"sort"
@@ -70,16 +71,24 @@ func findOSRelease(files []File) *OSRelease {
 // os-release has the same effect as the archive catalog's original two passes.
 // The zero value is ready for use.
 type cataloger struct {
-	osr             *OSRelease
-	osRank          int
-	seen            map[string]Package
-	order           []string
-	npmFiles        int
-	metadataSkipped int
+	osr               *OSRelease
+	osRank            int
+	seen              map[string]Package
+	order             []string
+	npmFiles          int
+	metadataSkipped   int
+	declaredSkipped   int
+	includeDeclared   bool
+	npmBundlePrefixes []string
+	opts              Options
+	pending           []Package
+	npmDirs           map[string]bool
+	hasDir            func(string) bool
 }
 
 func (c *cataloger) addFile(f File) {
-	if isInstalledNPMPackage(f.Path) {
+	c.observePath(f.Path)
+	if isNPMPackageJSON(f.Path) {
 		if c.npmFiles >= maxInstalledNPM {
 			c.metadataSkipped++
 			return
@@ -99,7 +108,7 @@ func (c *cataloger) addFile(f File) {
 			c.osr, c.osRank = &o, rank
 		}
 	}
-	scanFile(f, c.addPackage)
+	scanFileWithPrefixes(f, c.npmBundlePrefixes, c.addPackage)
 }
 
 // addRPMFile catalogs a trusted disk path without retaining database bytes.
@@ -123,6 +132,18 @@ func packageKey(p Package) string {
 }
 
 func (c *cataloger) addPackage(p Package) {
+	if p.Evidence == "" && p.Type == "rpm" {
+		p.Evidence = "installed"
+	}
+	c.observePath(p.Source)
+	if p.Evidence == "lockfile" && internalDeclaration(p.Source) && strings.TrimSpace(p.Name) != "" {
+		c.pending = append(c.pending, clonePackage(p))
+		return
+	}
+	c.addInventoryPackage(p)
+}
+
+func (c *cataloger) addInventoryPackage(p Package) {
 	p.Name = strings.TrimSpace(p.Name)
 	if p.Name == "" {
 		return
@@ -194,14 +215,55 @@ func clonePackage(p Package) Package {
 	p.SourceVersion = strings.Clone(p.SourceVersion)
 	p.Layer = strings.Clone(p.Layer)
 	p.Evidence = strings.Clone(p.Evidence)
+	p.VersionOriginal = strings.Clone(p.VersionOriginal)
 	return p
 }
 
 func (c *cataloger) finish() ([]Package, *OSRelease) {
+	skipped := map[string]int{}
+	for _, p := range c.pending {
+		declared := true
+		if dir := npmDeclarationDirectory(p.Source); dir != "" && !nonNPMInternalDeclaration(p.Source) {
+			nested := path.Join(dir, "node_modules")
+			declared = !c.npmDirs[nested] && (c.hasDir == nil || !c.hasDir(nested))
+		}
+		if declared {
+			if !c.includeDeclared {
+				c.declaredSkipped++
+				skipped[p.Source]++
+				continue
+			}
+			p.Evidence = "declared"
+		}
+		c.addInventoryPackage(p)
+	}
+	c.pending = nil
+	sources := make([]string, 0, len(skipped))
+	for source := range skipped {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	for _, source := range sources {
+		report(c.opts, "catalog", fmt.Sprintf("skipped %d declared dependencies from %s", skipped[source], source), false)
+	}
+	installed := map[string]map[string]bool{}
+	for _, p := range c.seen {
+		if p.Evidence == "installed" {
+			name := packageNameKey(p)
+			if installed[name] == nil {
+				installed[name] = map[string]bool{}
+			}
+			installed[name][p.Version] = true
+		}
+	}
 	out := make([]Package, 0, len(c.order))
 	resolved := make(map[string]int, len(c.order))
 	for _, key := range c.order {
 		p := c.seen[key]
+		if versions := installed[packageNameKey(p)]; p.Evidence == "lockfile" && len(versions) > 0 && !versions[p.Version] {
+			report(c.opts, "catalog", fmt.Sprintf("dropped lockfile version %s@%s from %s: installed version takes precedence", p.Name, p.Version, p.Source), true)
+			continue
+		}
 		if p.Type == "deb" || p.Type == "apk" || p.Type == "rpm" {
 			if p.Namespace == "" {
 				if c.osr != nil {
@@ -261,6 +323,12 @@ func catalog(files []File, extra []Package) ([]Package, *OSRelease) {
 // maxPackageSources), and empty descriptive fields are filled in.
 func mergePackage(prev *Package, p Package) {
 	mergeJavaEvidence(prev, p)
+	if evidenceRank(p.Evidence) > evidenceRank(prev.Evidence) {
+		prev.Evidence = p.Evidence
+	}
+	if prev.VersionOriginal == "" {
+		prev.VersionOriginal = p.VersionOriginal
+	}
 	if p.Source != "" {
 		srcs := strings.Split(prev.Source, ";")
 		dup := false
@@ -307,14 +375,27 @@ func mergePackage(prev *Package, p Package) {
 
 // scanFile dispatches one metadata file to the matching parser.
 func scanFile(f File, add func(Package)) {
+	scanFileWithPrefixes(f, nil, add)
+}
+
+func scanFileWithPrefixes(f File, prefixes []string, add func(Package)) {
+	emit := add
+	add = func(p Package) {
+		if isDeclarationFile(f.Path) {
+			p.Evidence = "lockfile"
+		} else if p.Evidence == "" {
+			p.Evidence = "installed"
+		}
+		emit(p)
+	}
 	p := normPath(f.Path)
 	base := path.Base(p)
 	src, layer := f.Path, f.Layer
 	switch {
 	case isJavaArchive(f.Path):
 		scanJavaFile(f, "", add)
-	case isInstalledNPMPackage(f.Path):
-		scanInstalledNPM(f, add)
+	case isNPMPackageJSON(f.Path):
+		scanInstalledNPMWithPrefixes(f, prefixes, add)
 	case isInstalledGemspec(f.Path):
 		scanInstalledGemspec(f, add)
 	case isRPMDatabase(p):
@@ -336,7 +417,7 @@ func scanFile(f File, add func(Package)) {
 		scanPnpmLock(string(f.Data), src, layer, add)
 	case base == "go.mod":
 		scanGoMod(string(f.Data), src, layer, add)
-	case base == "requirements.txt":
+	case isRequirementsFile(base):
 		scanRequirements(string(f.Data), src, layer, add)
 	case strings.HasSuffix(p, ".dist-info/metadata"), base == "pkg-info", strings.HasSuffix(p, ".egg-info"):
 		scanPythonMetadata(f.Data, src, layer, add)
@@ -1137,16 +1218,29 @@ func isInstalledNPMPackage(p string) bool {
 	return path.Base(p) == "package.json" && strings.Contains("/"+p, "/node_modules/")
 }
 func scanInstalledNPM(f File, add func(Package)) {
+	scanInstalledNPMWithPrefixes(f, nil, add)
+}
+
+func scanInstalledNPMWithPrefixes(f File, prefixes []string, add func(Package)) {
 	var v struct {
 		Name    string
 		Version string
 		Link    bool
+		Private bool
+		Bin     json.RawMessage
 	}
 	if json.Unmarshal(f.Data, &v) != nil || v.Link || strings.TrimSpace(v.Name) == "" || !npmVersionOK(strings.TrimSpace(v.Version)) {
 		return
 	}
 	pkg := npmPackage(v.Name, v.Version, f.Path, f.Layer, false)
-	pkg.Evidence = "package.json"
+	if isInstalledNPMPackage(f.Path) {
+		pkg.Evidence = "installed"
+	} else {
+		if v.Private || (!hasNPMBin(v.Bin) && !npmBundlePath(f.Path, prefixes)) {
+			return
+		}
+		pkg.Evidence = "package.json"
+	}
 	add(pkg)
 }
 func isInstalledGemspec(p string) bool {
@@ -1169,6 +1263,131 @@ func scanInstalledGemspec(f File, add func(Package)) {
 		}
 	}
 	if name != "" && version != "" {
-		add(Package{Name: name, Version: version, Type: "gem", Source: f.Path, Layer: f.Layer, Evidence: "gemspec"})
+		add(Package{Name: name, Version: version, Type: "gem", Source: f.Path, Layer: f.Layer, Evidence: "installed"})
 	}
+}
+
+// packageNameKey includes the namespace: two npm scopes or Maven groups are
+// distinct packages even when their final name is the same.
+func packageNameKey(p Package) string {
+	typ, ns, name, _, _ := purlParts(p)
+	return strings.Join([]string{typ, ns, name}, "\x00")
+}
+
+func evidenceRank(e string) int {
+	switch e {
+	case "installed":
+		return 4
+	case "package.json":
+		return 3
+	case "lockfile":
+		return 2
+	case "declared":
+		return 1
+	}
+	return 0
+}
+
+func isRequirementsFile(base string) bool {
+	return strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt")
+}
+
+func isDeclarationFile(p string) bool {
+	base := path.Base(normPath(p))
+	switch base {
+	case "gemfile.lock", "poetry.lock", "uv.lock", "pipfile.lock", "package-lock.json", ".package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "go.mod", "cargo.lock", "composer.lock", "packages.lock.json":
+		return true
+	}
+	return isRequirementsFile(base)
+}
+
+var installedGemDirectory = regexp.MustCompile(`/gems/[^/]+-[0-9][^/]*/`)
+
+func nonNPMInternalDeclaration(p string) bool {
+	p = "/" + strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/")
+	if strings.Contains(p, "/vendor/bundle/") || installedGemDirectory.MatchString(p) {
+		return true
+	}
+	for _, marker := range []string{"/site-packages/", "/dist-packages/"} {
+		if _, tail, ok := strings.Cut(p, marker); ok && strings.Contains(tail, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// The innermost package owns a nested lockfile. A hidden lock directly in
+// node_modules describes that directory, rather than a bundled package.
+func npmDeclarationDirectory(p string) string {
+	p = strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/")
+	parts := strings.Split(p, "/")
+	root := ""
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] != "node_modules" {
+			continue
+		}
+		end := i + 2
+		if strings.HasPrefix(parts[i+1], "@") {
+			end++
+		}
+		if end < len(parts) {
+			root = strings.Join(parts[:end], "/")
+		}
+	}
+	return root
+}
+
+func internalDeclaration(p string) bool {
+	return nonNPMInternalDeclaration(p) || npmDeclarationDirectory(p) != ""
+}
+
+// Remember only node_modules ancestors, not the entire scanned file tree.
+func (c *cataloger) observePath(p string) {
+	parts := strings.Split(strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/"), "/")
+	for i, part := range parts[:len(parts)-1] {
+		if part == "node_modules" {
+			if c.npmDirs == nil {
+				c.npmDirs = map[string]bool{}
+			}
+			c.npmDirs[strings.Join(parts[:i+1], "/")] = true
+		}
+	}
+}
+
+func isNPMPackageJSON(p string) bool { return path.Base(p) == "package.json" }
+
+func hasNPMBin(raw json.RawMessage) bool {
+	var single string
+	if json.Unmarshal(raw, &single) == nil {
+		return single != ""
+	}
+	var bins map[string]string
+	if json.Unmarshal(raw, &bins) == nil {
+		for _, bin := range bins {
+			if bin != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func npmBundlePath(p string, prefixes []string) bool {
+	if prefixes == nil {
+		prefixes = []string{"/opt", "/usr/lib", "/usr/local/lib", "/usr/share", "/srv", "/app"}
+	}
+	p = "/" + strings.TrimPrefix(path.Clean(p), "/")
+	for _, prefix := range prefixes {
+		prefix = "/" + strings.Trim(path.Clean(prefix), "/")
+		if prefix != "/." && strings.HasPrefix(p, strings.TrimSuffix(prefix, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// interestingPackageMetadata extends the shared selector for application
+// bundles and requirements variants without changing other input classes.
+func interestingPackageMetadata(p string) bool {
+	return interesting(p) || isNPMPackageJSON(p) || isDeclarationFile(p)
 }

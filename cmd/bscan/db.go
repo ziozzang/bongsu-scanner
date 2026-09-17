@@ -258,6 +258,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	force := fs.Bool("force", false, "fetch feeds without conditional request headers")
 	noRaw := fs.Bool("no-keep-raw", false, "omit original feeds from installed database")
 	maxBytes := fs.Int64("max-feed-bytes", vulndb.DefaultMaxFeedBytes, "maximum bytes per downloaded feed")
+	maxUncompressed := fs.Int64("max-feed-uncompressed", vulndb.DefaultMaxFeedUncompressedBytes, "maximum total uncompressed bytes per OSV/GHSA archive")
 	timeout := fs.Duration("timeout", 30*time.Minute, "overall update timeout")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -267,6 +268,9 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	}
 	if *maxBytes <= 0 || *timeout <= 0 {
 		return errors.New("--max-feed-bytes and --timeout must be positive")
+	}
+	if *maxUncompressed <= 0 {
+		return errors.New("--max-feed-uncompressed must be positive")
 	}
 	cfg, _, err := config.Load()
 	if err != nil {
@@ -278,8 +282,9 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	opts := vulndb.Options{
 		Sources: splitCSV(*sources), Ecosystems: splitCSV(*ecosystems), AlpineReleases: splitCSV(*releases),
 		OSVBaseURL: *mirror, Force: *force, NoKeepRaw: *noRaw, MaxFeedBytes: *maxBytes,
-		Client:   dbHTTPClient(*timeout),
-		Progress: func(message string) { logf("db", "%s\n", httpx.Sanitize(message)) },
+		MaxFeedUncompressedBytes: *maxUncompressed,
+		Client:                   dbHTTPClient(*timeout),
+		Progress:                 func(message string) { logf("db", "%s\n", httpx.Sanitize(message)) },
 	}
 	opts.Client.UserAgent = "bscan/" + version
 	if err := setDBSigning(cfg, &opts); err != nil {

@@ -285,6 +285,7 @@ type scanFlags struct {
 	containers          bool
 	skipBinaries        bool
 	workers             int
+	includeDeclared     bool
 	platform            string
 	allowDigestMismatch bool
 	failOnPartial       bool
@@ -314,6 +315,7 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	fs.BoolVar(&f.containers, "containers", false, "after a host scan, also scan every running Docker container into its own SBOM")
 	fs.BoolVar(&f.skipBinaries, "skip-binaries", false, "do not extract Go build info from ELF executables")
 	fs.IntVar(&f.workers, "workers", 0, "directories walked concurrently for host/directory scans (0 = min(8, CPUs), 1 = sequential)")
+	fs.BoolVar(&f.includeDeclared, "include-declared", false, "keep dependencies declared by lockfiles bundled inside installed packages (not installed software)")
 	fs.StringVar(&f.platform, "platform", "", "image platform to select from multi-arch archives, os/arch[/variant]")
 	fs.BoolVar(&f.allowDigestMismatch, "allow-digest-mismatch", false, "record mismatching layer digests instead of failing")
 	fs.BoolVar(&f.failOnPartial, "fail-on-partial", false, "exit with an error when a walk was partial (permission denied, I/O errors, limits)")
@@ -336,6 +338,7 @@ func (f scanFlags) options() scan.Options {
 		IncludeContainers:   f.containers,
 		SkipBinaries:        f.skipBinaries,
 		Workers:             f.workers,
+		IncludeDeclared:     f.includeDeclared,
 	}
 }
 

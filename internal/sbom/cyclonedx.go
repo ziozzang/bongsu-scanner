@@ -219,6 +219,7 @@ func packageComponent(p scan.Package, ref string) cdxComponent {
 	c.Licenses = cdxLicenses(p.License)
 	addProperty(&c.Properties, "bscan:source", p.Source)
 	addProperty(&c.Properties, "bscan:evidence", p.Evidence)
+	addProperty(&c.Properties, "bscan:version-original", p.VersionOriginal)
 	if isBinarySource(p) {
 		addProperty(&c.Properties, "bscan:source-kind", "binary")
 	}
@@ -333,6 +334,9 @@ func scanProperties(s scan.ScanMetadata) []cdxProperty {
 	}
 	if s.MetadataSkipped > 0 {
 		addProperty(&props, "bscan:scan:metadata-skipped", strconv.Itoa(s.MetadataSkipped))
+	}
+	if s.DeclaredSkipped > 0 {
+		addProperty(&props, "bscan:scan:declared-skipped", strconv.Itoa(s.DeclaredSkipped))
 	}
 	if s.FilesVisited > 0 {
 		addProperty(&props, "bscan:scan:files-visited", strconv.FormatInt(s.FilesVisited, 10))

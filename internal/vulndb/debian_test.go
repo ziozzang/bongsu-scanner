@@ -18,15 +18,24 @@ func TestDebianTrackerStatuses(t *testing.T) {
 	if err := parseDebianTracker(context.Background(), path, func(r *Record) error { got = append(got, r); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || len(got[0].Affected) != 2 {
+	if len(got) != 1 || len(got[0].Affected) != 5 {
 		t.Fatalf("unexpected records: %+v", got)
 	}
 	a := got[0].Affected
-	if a[0].Ecosystem != "Debian:12" || len(a[0].Ranges[0].Events) != 1 {
-		t.Fatalf("open: %+v", a[0])
+	if a[2].Ecosystem != "Debian:12" || len(a[2].Ranges[0].Events) != 1 {
+		t.Fatalf("open: %+v", a[2])
 	}
-	if a[1].Ecosystem != "Debian:13" || a[1].Ranges[0].Events[1].Fixed != "8.1-2" || a[1].Database["urgency"] != "unimportant" {
-		t.Fatalf("resolved: %+v", a[1])
+	if a[3].Ecosystem != "Debian:13" || a[3].Ranges[0].Events[1].Fixed != "8.1-2" || a[3].Database["urgency"] != "unimportant" {
+		t.Fatalf("resolved: %+v", a[3])
+	}
+	for _, i := range []int{0, 1, 4} {
+		want := "not-affected"
+		if i == 0 {
+			want = "undetermined"
+		}
+		if len(a[i].Ranges) != 0 || a[i].Database["debian_status"] != want {
+			t.Fatalf("status marker: %+v", a[i])
+		}
 	}
 	sentinel := errors.New("stop")
 	if err := parseDebianTracker(context.Background(), path, func(*Record) error { return sentinel }); !errors.Is(err, sentinel) {

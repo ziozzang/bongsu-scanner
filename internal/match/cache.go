@@ -3,7 +3,6 @@ package match
 import (
 	"container/list"
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -25,6 +24,7 @@ type RecordSummary struct {
 	Published        string   `json:"published,omitempty"`
 	Modified         string   `json:"modified,omitempty"`
 	Severity         string   `json:"severity,omitempty"`
+	DistroSeverity   string   `json:"distro_severity,omitempty"`
 	Score            float64  `json:"score,omitempty"`
 	Vector           string   `json:"vector,omitempty"`
 	Source           string   `json:"source"`
@@ -51,8 +51,9 @@ type preparedRecord struct {
 // Only evaluated outcomes survive the visitor; parsed version ranges and maps
 // are scratch space for one affected entry. Quiet misses need no retained row.
 type evaluatedAffected struct {
-	version, release string
-	unimportant      bool
+	version, release             string
+	unimportant                  bool
+	distroStatus, distroSeverity string
 	versionMatch
 	detail *findingAffected
 }
@@ -230,11 +231,14 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		}
 		prepared := cache.prepareAffected(eco, a)
 		release := vulndb.EcosystemRelease(a.Ecosystem)
-		unimportant := strings.EqualFold(fmt.Sprint(a.Database["urgency"]), "unimportant")
+		urgency := distroSeverity(r, a)
+		status, _ := a.Database["debian_status"].(string)
+		status = strings.ToLower(strings.TrimSpace(status))
+		unimportant := urgency == "unimportant"
 		var detail *findingAffected
 		for _, v := range versions {
 			hit, fixed, low, reason := cache.affectedVersion(eco, v, prepared)
-			if !hit && reason == "" && !unimportant {
+			if !hit && reason == "" && !unimportant && status == "" && urgency == "" {
 				continue
 			}
 			if hit && detail == nil {
@@ -242,7 +246,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
 			}
-			result := evaluatedAffected{version: v, release: release, unimportant: unimportant, versionMatch: versionMatch{hit, fixed, low, reason}}
+			result := evaluatedAffected{version: v, release: release, unimportant: unimportant, distroStatus: status, distroSeverity: urgency, versionMatch: versionMatch{hit, fixed, low, reason}}
 			if hit {
 				result.detail = detail
 			}
@@ -267,6 +271,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		}
 		rec.related = unique(append([]string{r.ID}, r.Aliases...))
 		rec.summary = &RecordSummary{ID: r.ID, Aliases: r.Aliases, Summary: summary, Published: r.Published, Modified: r.Modified, Source: r.Source, Withdrawn: r.Withdrawn}
+		rec.summary.DistroSeverity = distroSeverity(r, vulndb.Affected{})
 		rec.summary.Severity, rec.summary.Score, rec.summary.Vector = cache.severity(r, vulndb.Affected{})
 		rec.summary.assessmentText = &advisoryText{r.Summary, r.Details, vulndb.DetailsMayBeTruncated(r), r.References}
 		if details {
@@ -406,13 +411,13 @@ func preparedBytes(records []preparedRecord) int64 {
 		n += int64(len(r.ID)+len(r.Withdrawn)) + stringBytes(r.Aliases) + stringBytes(r.related)
 		n += int64(cap(r.affected)) * int64(unsafe.Sizeof(evaluatedAffected{}))
 		for _, a := range r.affected {
-			n += int64(len(a.version)+len(a.release)+len(a.reason)) + stringBytes(a.fixed)
+			n += int64(len(a.version)+len(a.release)+len(a.reason)+len(a.distroStatus)+len(a.distroSeverity)) + stringBytes(a.fixed)
 			if a.detail != nil {
 				n += affectedBytes(a.detail.affected) + 40 + int64(len(a.detail.severity)+len(a.detail.vector))
 			}
 		}
 		if s := r.summary; s != nil {
-			n += int64(unsafe.Sizeof(*s)) + int64(len(s.ID)+len(s.Summary)+len(s.Details)+len(s.Published)+len(s.Modified)+len(s.Severity)+len(s.Vector)+len(s.Source)+len(s.Withdrawn)) + stringBytes(s.Aliases) + stringBytes(s.References)
+			n += int64(unsafe.Sizeof(*s)) + int64(len(s.ID)+len(s.Summary)+len(s.Details)+len(s.Published)+len(s.Modified)+len(s.Severity)+len(s.DistroSeverity)+len(s.Vector)+len(s.Source)+len(s.Withdrawn)) + stringBytes(s.Aliases) + stringBytes(s.References)
 			if a := s.assessmentText; a != nil {
 				n += int64(unsafe.Sizeof(*a)) + int64(len(a.summary)+len(a.details)) + int64(cap(a.references))*32
 				for _, ref := range a.references {

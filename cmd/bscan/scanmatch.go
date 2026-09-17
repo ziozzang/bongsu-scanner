@@ -20,6 +20,7 @@ type scanMatchFlags struct {
 	match                  bool
 	reports, db, isolation string
 	minimum, fail          string
+	severitySource         string
 	onlyFixed, unimportant bool
 }
 
@@ -28,6 +29,7 @@ func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.StringVar(&f.reports, "report", "", "comma-separated html, markdown, csv, or sarif reports (requires --match)")
 	fs.StringVar(&f.db, "db", "", "local vulnerability database directory (default configured db directory)")
 	fs.StringVar(&f.isolation, "db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
+	fs.StringVar(&f.severitySource, "severity-source", "cvss", "severity policy: cvss, distro, or max")
 	fs.StringVar(&f.minimum, "min-severity", "", "minimum severity to include")
 	fs.StringVar(&f.fail, "fail-on", "", "exit 2 when a finding meets this severity")
 	fs.BoolVar(&f.onlyFixed, "only-fixed", false, "include only findings with a known fix")
@@ -70,7 +72,11 @@ func prepareScanMatch(ctx context.Context, f scanMatchFlags) (*scanMatcher, erro
 	if err != nil {
 		return nil, err
 	}
-	m.options = matcher.Options{MinSeverity: min, OnlyFixed: f.onlyFixed, IncludeUnimportant: f.unimportant}
+	severityPolicy, err := matcher.NormalizeSeveritySource(f.severitySource)
+	if err != nil {
+		return nil, err
+	}
+	m.options = matcher.Options{SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, IncludeUnimportant: f.unimportant}
 	if f.db == "" {
 		f.db, err = databaseDir()
 		if err != nil {
@@ -125,6 +131,7 @@ func (m *scanMatcher) write(ctx context.Context, sboms []string, reserved *scanO
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", input, err)
 	}
+	logMissingCoverage("scan:match", r)
 	logf("scan:match", "%d subjects, %d findings (critical=%d high=%d)\n",
 		r.Subjects, len(r.Findings), r.BySeverity["CRITICAL"], r.BySeverity["HIGH"])
 	paths := []string{base + ".findings.json"}

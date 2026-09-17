@@ -93,9 +93,9 @@ type debianRelease struct {
 // Known tracker codenames map to Debian release versions (e.g. Debian:12);
 // the original codename is retained in database metadata.
 // A resolved fixed_version of "0" means not affected. Undetermined entries
-// and resolved entries lacking a concrete fixed version do not establish
-// an affected range and are omitted, rather than asserting all versions
-// vulnerable. See the official export implementation in lib/python/security_db.py:
+// and resolved entries lacking a concrete fixed version are retained as
+// distro status markers without affected ranges. See the official export
+// implementation in lib/python/security_db.py:
 // https://salsa.debian.org/security-tracker-team/security-tracker
 func parseDebianTracker(ctx context.Context, path string, emit Emit) error {
 	if err := ctx.Err(); err != nil {
@@ -147,9 +147,15 @@ func parseDebianTracker(ctx context.Context, path string, emit Emit) error {
 				}
 				fixed := strings.TrimSpace(state.FixedVersion)
 				events := []Event{{Introduced: "0"}}
+				var debianStatus string
 				switch state.Status {
 				case "resolved":
-					if fixed == "" || fixed == "0" || fixed == "undetermined" || strings.HasPrefix(fixed, "<") {
+					if fixed == "" || fixed == "0" {
+						debianStatus = "not-affected"
+						events = nil
+						break
+					}
+					if fixed == "undetermined" || strings.HasPrefix(fixed, "<") {
 						continue
 					}
 					events = append(events, Event{Fixed: fixed})
@@ -157,6 +163,9 @@ func parseDebianTracker(ctx context.Context, path string, emit Emit) error {
 					if fixed != "" { // Contradictory input cannot establish a range.
 						continue
 					}
+				case "undetermined":
+					debianStatus = "undetermined"
+					events = nil
 				default:
 					continue
 				}
@@ -169,6 +178,9 @@ func parseDebianTracker(ctx context.Context, path string, emit Emit) error {
 				// Select deterministically when one CVE spans multiple packages.
 				mergeDetails(r, &Record{Details: truncateDetails(issue.Description), DetailsTruncated: len(issue.Description) > MaxDetails})
 				metadata := map[string]any{"status": state.Status}
+				if debianStatus != "" {
+					metadata["debian_status"] = debianStatus
+				}
 				for key, value := range map[string]string{"urgency": state.Urgency, "scope": issue.Scope, "nodsa": state.NoDSA, "nodsa_reason": state.NoDSAReason} {
 					if value != "" {
 						metadata[key] = value
@@ -176,9 +188,12 @@ func parseDebianTracker(ctx context.Context, path string, emit Emit) error {
 				}
 				version := NormalizeDebianRelease(release)
 				metadata["release"] = release
-				r.Affected = append(r.Affected, Affected{Ecosystem: "Debian:" + version, Package: name,
-					PURL:   (purl.PURL{Type: "deb", Namespace: "debian", Name: name, Qualifiers: map[string]string{"distro": release}}).String(),
-					Ranges: []Range{{Type: "ECOSYSTEM", Events: events}}, Database: metadata})
+				affected := Affected{Ecosystem: "Debian:" + version, Package: name,
+					PURL: (purl.PURL{Type: "deb", Namespace: "debian", Name: name, Qualifiers: map[string]string{"distro": release}}).String(), Database: metadata}
+				if len(events) > 0 {
+					affected.Ranges = []Range{{Type: "ECOSYSTEM", Events: events}}
+				}
+				r.Affected = append(r.Affected, affected)
 			}
 		}
 	}

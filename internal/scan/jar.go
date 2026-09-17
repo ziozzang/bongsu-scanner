@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -138,9 +139,11 @@ func scanJavaArchive(rd io.ReaderAt, size int64, f File, add func(Package)) (ski
 				v = javaManifest(read(manifest, maxFileMetadata))
 			}
 			evidence := "filename"
+			manifestVersion := false
 			for _, key := range []string{"implementation-version", "bundle-version", "specification-version"} {
 				if ver := v[key]; javaCoordinatePart(ver) {
 					version, evidence = ver, "manifest"
+					manifestVersion = true
 					break
 				}
 			}
@@ -156,6 +159,11 @@ func scanJavaArchive(rd io.ReaderAt, size int64, f File, add func(Package)) (ski
 			}
 			if javaCoordinatePart(name) && javaCoordinatePart(version) {
 				p := javaPackage(name, group, version, source, f.Layer, evidence)
+				if manifestVersion && p.Type == "maven" {
+					if normalized := normalizeManifestMavenVersion(version); normalized != version {
+						p.Version, p.VersionOriginal = normalized, version
+					}
+				}
 				if isJavaRuntimeTitle(v["implementation-title"]) {
 					p = javaRuntimePackage(version, v["implementation-vendor"]+" "+v["implementation-vendor-id"]+" "+v["implementation-title"], source, f.Layer, "manifest")
 				}
@@ -220,7 +228,7 @@ func javaPackage(name, group, version, source, layer, evidence string) Package {
 	if group != "" {
 		typ = "maven"
 	}
-	return Package{Name: name, Namespace: group, Version: version, Type: typ, Source: source, Layer: layer, Evidence: evidence}
+	return Package{Name: name, Namespace: group, Version: version, Type: typ, Source: source, Layer: layer, Evidence: "installed"}
 }
 
 // Require a domain-shaped identifier, rather than a vendor's display name.
@@ -317,7 +325,7 @@ func javaReleasePackage(data []byte, source, layer string) (Package, bool) {
 }
 
 func isJavaRuntimePackage(p Package) bool {
-	return p.Type == "generic" && (p.Name == "java-runtime" || p.Name == "openjdk") && (p.Evidence == "manifest" || p.Evidence == "release-file")
+	return p.Type == "generic" && (p.Name == "java-runtime" || p.Name == "openjdk") && (p.Evidence == "installed" || p.Evidence == "manifest" || p.Evidence == "release-file")
 }
 
 func mergeJavaEvidence(prev *Package, p Package) {
@@ -384,4 +392,19 @@ func installedNameVersion(name string) (string, string) {
 		}
 	}
 	return name, ""
+}
+
+// OSGi date qualifiers describe builds, while .RELEASE and ordinary Maven
+// prereleases remain part of the published coordinate. Only explicit
+// SNAPSHOT timestamp suffixes are removed; Maven timestamp versions stay intact.
+var osgiBuildQualifier = regexp.MustCompile(`\.v[0-9]{8}(-[0-9]{4})?$`)
+var snapshotBuildQualifier = regexp.MustCompile(`(-SNAPSHOT)-[0-9]{8}(?:-[0-9]{4}|\.[0-9]{6}(?:-[0-9]+)?)$`)
+
+func normalizeManifestMavenVersion(version string) string {
+	normalized := osgiBuildQualifier.ReplaceAllString(version, "")
+	normalized = snapshotBuildQualifier.ReplaceAllString(normalized, "${1}")
+	if normalized == "" {
+		return version
+	}
+	return normalized
 }

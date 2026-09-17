@@ -15,10 +15,10 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
 
-var columns = []string{"Package", "Version", "Ecosystem", "Vulnerability ID", "Related IDs", "Severity", "Score", "Vector", "Fixed-in", "Matched-by", "Confidence", "Summary", "Links", "Assessment status", "Assessment reason", "PURL", "Source", "Withdrawn"}
+var columns = []string{"Package", "Version", "Ecosystem", "Vulnerability ID", "Related IDs", "Severity", "Score", "Vector", "Fixed-in", "Matched-by", "Confidence", "Summary", "Links", "Assessment status", "Assessment reason", "PURL", "Source", "Withdrawn", "Distro severity", "Distro status"}
 
 func cells(f Finding) []string {
-	return []string{f.Package, f.Version, f.Ecosystem, f.ID, strings.Join(f.RelatedIDs, ", "), f.Severity, strconv.FormatFloat(f.Score, 'f', 1, 64), f.Vector, strings.Join(f.FixedIn, ", "), f.MatchedBy, f.Confidence, f.Summary, strings.Join(f.Links, " "), f.AssessmentStatus, f.AssessmentReason, f.PURL, f.Source, f.Withdrawn}
+	return []string{f.Package, f.Version, f.Ecosystem, f.ID, strings.Join(f.RelatedIDs, ", "), f.Severity, strconv.FormatFloat(f.Score, 'f', 1, 64), f.Vector, strings.Join(f.FixedIn, ", "), f.MatchedBy, f.Confidence, f.Summary, strings.Join(f.Links, " "), f.AssessmentStatus, f.AssessmentReason, f.PURL, f.Source, f.Withdrawn, f.DistroSeverity, f.DistroStatus}
 }
 func metadata(d Document) Document { d.Findings = nil; return d }
 func renderCSV(w io.Writer, d Document) error {
@@ -114,6 +114,9 @@ type field struct{ Name, Value string }
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func headerFields(d Document) []field {
 	out := []field{{"Target", d.Target}, {"SBOM file", d.SBOMPath}, {"Generated at (UTC)", d.GeneratedAt.Format("2006-01-02T15:04:05Z07:00")}, {"Tool version", d.GeneratedBy.Version}, {"DB updated_at", d.DB.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")}, {"DB record count", strconv.Itoa(d.DB.Records)}, {"DB sources", sourcesText(d.DB.Sources)}, {"Options", optionsText(d.Options)}, {"Options provenance", d.OptionsNote}, {"Skipped reasons", countsText(d.Summary.Skipped)}}
+	for _, warning := range d.MissingCoverage {
+		out = append(out, field{"WARNING", warning})
+	}
 	if d.Scan == nil {
 		out = append(out, field{"Scan completeness", "Unknown (no scan metadata supplied)"})
 	} else {
@@ -158,6 +161,9 @@ func sourcesText(sources []vulndb.SourceMeta) string {
 
 func optionsText(o match.Options) string {
 	var parts []string
+	if o.SeveritySource != "" {
+		parts = append(parts, "severity-source="+clean(o.SeveritySource))
+	}
 	if o.MinSeverity != "" {
 		parts = append(parts, "min-severity="+clean(o.MinSeverity))
 	}

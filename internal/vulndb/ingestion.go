@@ -179,6 +179,7 @@ func visitIngestionPartition(ctx context.Context, spools []*ingestionSpool, i in
 			return err
 		}
 		r := records[id]
+		applyDebianStatusMarkers(r)
 		if added, exists := previous[id]; exists {
 			r.AddedAt = added
 		} else {
@@ -190,6 +191,32 @@ func visitIngestionPartition(ctx context.Context, spools []*ingestionSpool, i in
 		}
 	}
 	return nil
+}
+
+// Native negative/uncertain status applies to the package and release even
+// when OSV supplies different ranges. Preserve both entries, extending the
+// native metadata precedence used by Merge beyond identical affected keys.
+func applyDebianStatusMarkers(r *Record) {
+	if !nativeAffectedSource("Debian", r.Source) {
+		return
+	}
+	type key struct{ ecosystem, name string }
+	markers := map[key]string{}
+	for _, a := range r.Affected {
+		if BaseEcosystem(a.Ecosystem) != "Debian" || len(a.Ranges) != 0 || len(a.Versions) != 0 {
+			continue
+		}
+		status, _ := a.Database["debian_status"].(string)
+		if status == "not-affected" || status == "undetermined" {
+			markers[key{a.Ecosystem, NormalizeName(a.Ecosystem, a.Package)}] = status
+		}
+	}
+	for i := range r.Affected {
+		a := &r.Affected[i]
+		if status := markers[key{a.Ecosystem, NormalizeName(a.Ecosystem, a.Package)}]; status != "" {
+			a.Database = mergeSpecificMaps(a.Database, map[string]any{"debian_status": status}, true)
+		}
+	}
 }
 
 func (s *ingestionSpool) loadPartition(ctx context.Context, i int, records map[string]*Record) error {

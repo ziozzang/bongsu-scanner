@@ -196,6 +196,7 @@ bscan scan [flags] TARGET
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
+| `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
 | `--include-unimportant` | `false` | include Debian unimportant advisories |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
 | `--max-files` | `0` | stop the directory walk after N regular files (0 = unlimited) |
@@ -210,6 +211,7 @@ bscan scan [flags] TARGET
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
 | `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
+| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
 | `--timeout` | `0s` | abort the scan after this duration (e.g. 10m; 0 = none) |
@@ -237,6 +239,7 @@ bscan batch [flags] TARGET...
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
+| `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
 | `--include-unimportant` | `false` | include Debian unimportant advisories |
 | `--jobs` | `0` | parallel scans |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
@@ -251,6 +254,7 @@ bscan batch [flags] TARGET...
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
 | `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
+| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
 | `--timeout` | `0s` | abort the scan after this duration (e.g. 10m; 0 = none) |
@@ -399,6 +403,7 @@ bscan db update [flags]
 | `--ecosystem` | `""` | comma-separated OSV ecosystems |
 | `--force` | `false` | fetch feeds without conditional request headers |
 | `--max-feed-bytes` | `536870912` | maximum bytes per downloaded feed |
+| `--max-feed-uncompressed` | `17179869184` | maximum total uncompressed bytes per OSV/GHSA archive |
 | `--mirror` | `""` | HTTPS OSV mirror base URL |
 | `--no-keep-raw` | `false` | omit original feeds from installed database |
 | `--nvd-years` | `""` | NVD years: range or comma-separated list (default: current year and previous two) |
@@ -535,6 +540,7 @@ bscan match [flags] SBOM...
 | `-o` | `""` | output file (default stdout) |
 | `--only-fixed` | `false` | include only findings with a known fix |
 | `--pubkey` | `""` | require database signature from trusted name, PEM file, or hex key |
+| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
 | `--target-arch` | `""` | LLM context architecture override, e.g. amd64 |
 | `--target-os` | `""` | LLM context OS override, e.g. linux or windows |
 

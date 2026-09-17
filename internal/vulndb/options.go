@@ -7,6 +7,9 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/httpx"
 )
 
+// DefaultMaxFeedUncompressedBytes bounds the total expanded size of an OSV/GHSA archive.
+const DefaultMaxFeedUncompressedBytes int64 = 16 << 30
+
 // Options selects upstream feeds and allows deployments to use mirrors.
 // Empty source, ecosystem, release and URL fields use the defaults in source.go.
 type Options struct {
@@ -46,6 +49,17 @@ type Options struct {
 	PublicKey      ed25519.PublicKey
 	Signer         string
 	Progress       func(string)
+
+	// MaxFeedUncompressedBytes limits total expanded OSV/GHSA archive bytes.
+	// Non-positive values use DefaultMaxFeedUncompressedBytes.
+	MaxFeedUncompressedBytes int64
+}
+
+func (o Options) maxFeedUncompressedBytes() uint64 {
+	if o.MaxFeedUncompressedBytes <= 0 {
+		return uint64(DefaultMaxFeedUncompressedBytes)
+	}
+	return uint64(o.MaxFeedUncompressedBytes)
 }
 
 func (o Options) isolationMode() (string, error) {

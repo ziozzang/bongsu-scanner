@@ -39,6 +39,9 @@ type Package struct {
 	Dev           bool   `json:"dev,omitempty"`
 	Layer         string `json:"layer,omitempty"`
 	Evidence      string `json:"evidence,omitempty"`
+
+	// VersionOriginal preserves a manifest version before Maven normalization.
+	VersionOriginal string `json:"version_original,omitempty"`
 }
 
 // OSRelease is the parsed /etc/os-release of the scanned root.
@@ -102,6 +105,8 @@ type ScanMetadata struct {
 	LimitReached string `json:"limit_reached,omitempty"`
 	// MetadataSkipped counts metadata omitted by byte/size limits or growth.
 	MetadataSkipped int `json:"metadata_skipped,omitempty"`
+	// DeclaredSkipped counts dependencies omitted from bundled declaration files.
+	DeclaredSkipped int `json:"declared_skipped,omitempty"`
 }
 
 type HostMetadata struct {

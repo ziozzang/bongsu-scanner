@@ -192,3 +192,66 @@ func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (f
 	}
 	return level, 0, vector
 }
+
+// Package/release urgency takes precedence over record-wide urgency. Preserve
+// non-ranked values (for example end-of-life) for presentation, not scoring.
+func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
+	for _, database := range []map[string]any{a.Database, a.Specific, rec.Database} {
+		if urgency, ok := database["urgency"].(string); ok && strings.TrimSpace(urgency) != "" {
+			return strings.ToLower(strings.TrimSpace(urgency))
+		}
+	}
+	for _, prefix := range []string{"RLSA-", "ALSA-", "RHSA-", "USN-", "DSA-", "DLA-"} {
+		if strings.HasPrefix(rec.ID, prefix) {
+			// Prefer the vendor's textual rating over aggregate CVSS scores.
+			if label, ok := rec.Database["severity"].(string); ok {
+				if level := normalizeSeverity(label); level != "UNKNOWN" {
+					return strings.ToLower(level)
+				}
+			}
+			for _, rating := range rec.Severity {
+				if level := normalizeSeverity(rating.Score); level != "UNKNOWN" {
+					return strings.ToLower(level)
+				}
+			}
+			// With no separate vendor label, retain the erratum's rating.
+			// Multiple CVE aliases still remain one advisory finding.
+			sev, _, _ := severity(rec, vulndb.Affected{})
+			if sev != "UNKNOWN" {
+				return strings.ToLower(sev)
+			}
+			break
+		}
+	}
+	return ""
+}
+
+// NormalizeSeveritySource validates the policy for both CLI entry points and Run.
+func NormalizeSeveritySource(source string) (string, error) {
+	switch source {
+	case "", "cvss":
+		return "cvss", nil
+	case "distro", "max":
+		return source, nil
+	default:
+		return "", fmt.Errorf("invalid severity source %q (want cvss, distro, or max)", source)
+	}
+}
+
+func selectedSeverity(cvss, distro, source string) string {
+	level := normalizeSeverity(distro)
+	if level != "UNKNOWN" && (source == "distro" || source == "max" && SeverityRank(level) > SeverityRank(cvss)) {
+		return level
+	}
+	return cvss
+}
+
+func mergeDistroSeverity(a, b string) string {
+	if a == "unimportant" || b == "unimportant" {
+		return "unimportant"
+	}
+	if a == "" || SeverityRank(normalizeSeverity(b)) > SeverityRank(normalizeSeverity(a)) {
+		return b
+	}
+	return a
+}

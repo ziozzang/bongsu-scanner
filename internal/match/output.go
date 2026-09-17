@@ -26,7 +26,7 @@ func Write(w io.Writer, format string, r Report, d Document) error {
 				break
 			}
 		}
-		header := "PACKAGE\tVERSION\tECOSYSTEM\tVULN-ID\tSEVERITY\tSCORE\tFIXED-IN\tMATCHED-BY"
+		header := "PACKAGE\tVERSION\tECOSYSTEM\tVULN-ID\tSEVERITY\tSCORE\tFIXED-IN\tMATCHED-BY\tDISTRO-SEVERITY\tDISTRO-STATUS"
 		if withAssessment {
 			header += "\tLLM-APPLICABILITY\tLLM-REASON"
 		}
@@ -38,7 +38,7 @@ func Write(w io.Writer, format string, r Report, d Document) error {
 			if f.Score > 0 {
 				score = fmt.Sprintf("%.1f", f.Score)
 			}
-			cells := []string{f.Subject.Name, f.Subject.Version, f.Subject.Ecosystem, f.ID, f.Severity, score, strings.Join(f.FixedIn, ","), f.MatchedBy}
+			cells := []string{f.Subject.Name, f.Subject.Version, f.Subject.Ecosystem, f.ID, f.Severity, score, strings.Join(f.FixedIn, ","), f.MatchedBy, f.DistroSeverity, f.DistroStatus}
 			if withAssessment {
 				status, reason := "not_assessed", ""
 				if f.Assessment != nil {
@@ -67,6 +67,11 @@ func Write(w io.Writer, format string, r Report, d Document) error {
 		for _, k := range keys {
 			if _, e := fmt.Fprintf(w, "Skipped %s: %d\n", httpx.Sanitize(k), r.Skipped[k]); e != nil {
 				return e
+			}
+		}
+		for _, warning := range r.MissingCoverage {
+			if _, err := fmt.Fprintln(w, "WARNING: "+httpx.Sanitize(warning)); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -200,6 +205,13 @@ func writeCycloneDX(w io.Writer, r Report, d Document) error {
 
 	// Stream top-level arrays, including vulnerabilities, so neither the
 	// object tree nor encoding/json needs a report-sized temporary buffer.
+	if len(r.MissingCoverage) > 0 {
+		properties := append([]any(nil), arr(out["properties"])...)
+		for _, warning := range r.MissingCoverage {
+			properties = append(properties, map[string]any{"name": "bscan:coverage-warning", "value": warning})
+		}
+		out["properties"] = properties
+	}
 	out["vulnerabilities"] = nil
 	// The CLI uses an atomic output buffer. Avoid retaining its geometrically
 	// growing intermediate copies alongside the CycloneDX compatibility tree.
@@ -310,6 +322,11 @@ func cycloneDXFinding(f Finding) map[string]any {
 		description = description[:500]
 	}
 	v := map[string]any{"id": f.ID, "source": source, "ratings": []any{rating}, "description": string(description), "affects": []any{map[string]any{"ref": f.Subject.Ref, "versions": []any{map[string]any{"version": f.Subject.Version, "status": "affected"}}}}, "properties": []any{map[string]any{"name": "bscan:fixed-in", "value": strings.Join(f.FixedIn, ",")}, map[string]any{"name": "bscan:matched-by", "value": f.MatchedBy}, map[string]any{"name": "bscan:confidence", "value": f.Confidence}}}
+	for _, property := range []struct{ name, value string }{{"distro-severity", f.DistroSeverity}, {"distro-status", f.DistroStatus}} {
+		if property.value != "" {
+			v["properties"] = append(arr(v["properties"]), map[string]any{"name": "bscan:" + property.name, "value": property.value})
+		}
+	}
 	if f.Assessment != nil {
 		properties := arr(v["properties"])
 		appendProperty := func(name, value string) {

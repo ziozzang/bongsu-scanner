@@ -59,8 +59,8 @@ func TestJavaCoordinateDerivation(t *testing.T) {
 			if len(pkgs) != 1 || pkgs[0].PURL != tc.want {
 				t.Fatalf("packages = %+v; want %s", pkgs, tc.want)
 			}
-			if got := packageJSONField(t, pkgs[0], "evidence"); got != tc.evidence {
-				t.Errorf("evidence = %q; want %q", got, tc.evidence)
+			if got := packageJSONField(t, pkgs[0], "evidence"); got != "installed" {
+				t.Errorf("evidence = %q; want %q", got, "installed")
 			}
 		})
 	}
@@ -79,7 +79,7 @@ func TestJavaArchiveRelease(t *testing.T) {
 		t.Run(vendor, func(t *testing.T) {
 			data := gapZIP(t, map[string][]byte{"jre/release": []byte("JAVA_VERSION=\"17.0.20\"\nIMPLEMENTOR=\"" + vendor + "\"\n")})
 			pkgs, _ := catalog([]File{{Path: "runtime.jar", Data: data}}, nil)
-			if len(pkgs) != 1 || pkgs[0].Type != "generic" || pkgs[0].Version != "17.0.20" || pkgs[0].Evidence != "release-file" {
+			if len(pkgs) != 1 || pkgs[0].Type != "generic" || pkgs[0].Version != "17.0.20" || pkgs[0].Evidence != "installed" {
 				t.Fatalf("packages = %+v", pkgs)
 			}
 			wantName, wantCPE := "openjdk", "cpe:2.3:a:oracle:openjdk:17.0.20:*:*:*:*:*:*:*"
@@ -126,7 +126,7 @@ func TestJavaRuntimeManifestDeduplication(t *testing.T) {
 		t.Fatalf("packages = %+v", pkgs)
 	}
 	p := pkgs[0]
-	if p.Type != "generic" || p.Name != "openjdk" || p.Version != "17.0.20" || p.CPE != "cpe:2.3:a:oracle:openjdk:17.0.20:*:*:*:*:*:*:*" || packageJSONField(t, p, "evidence") != "manifest" {
+	if p.Type != "generic" || p.Name != "openjdk" || p.Version != "17.0.20" || p.CPE != "cpe:2.3:a:oracle:openjdk:17.0.20:*:*:*:*:*:*:*" || packageJSONField(t, p, "evidence") != "installed" {
 		t.Fatalf("runtime = %+v", p)
 	}
 }
@@ -135,7 +135,7 @@ func TestJavaPOMEvidence(t *testing.T) {
 	for _, group := range []string{"org.example", ""} {
 		data := gapZIP(t, map[string][]byte{"META-INF/maven/org.example/lib/pom.properties": []byte("groupId=" + group + "\nartifactId=lib\nversion=1\n")})
 		pkgs, _ := catalog([]File{{Path: "lib.jar", Data: data}}, nil)
-		if len(pkgs) != 1 || packageJSONField(t, pkgs[0], "evidence") != "pom.properties" {
+		if len(pkgs) != 1 || packageJSONField(t, pkgs[0], "evidence") != "installed" {
 			t.Fatalf("packages = %+v", pkgs)
 		}
 		if group == "" && pkgs[0].PURL != "pkg:generic/lib@1" {
@@ -149,7 +149,7 @@ func TestJavaEvidenceMerge(t *testing.T) {
 	pom := File{Path: "lib-copy.jar", Data: gapZIP(t, map[string][]byte{"META-INF/maven/org.example/lib/pom.properties": []byte("groupId=org.example\nartifactId=lib\nversion=1\n")})}
 	for _, files := range [][]File{{manifest, pom}, {pom, manifest}} {
 		pkgs, _ := catalog(files, nil)
-		if len(pkgs) != 1 || pkgs[0].Evidence != "pom.properties" {
+		if len(pkgs) != 1 || pkgs[0].Evidence != "installed" {
 			t.Fatalf("packages = %+v", pkgs)
 		}
 	}

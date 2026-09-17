@@ -80,7 +80,7 @@ func TestInventoryInstalledNPM(t *testing.T) {
 		"app/node_modules/plain/package.json":                 `{"name":"plain","version":"2.0.0"}`,
 		"app/node_modules/link/package.json":                  `{"name":"link","version":"1.0.0","link":true}`,
 		"app/node_modules/workspace/package.json":             `{"name":"workspace","private":true}`,
-		"app/package.json":                                    `{"name":"root","version":"9.0.0"}`,
+		"app/package.json":                                    `{"name":"root","version":"9.0.0","private":true}`,
 		"app/node_modules/plain/Package.json":                 `{"name":"wrongcase","version":"9.0.0"}`,
 		"app/package-lock.json":                               `{"lockfileVersion":3,"packages":{"node_modules/plain":{"version":"2.0.0"}}}`,
 	} {
@@ -362,7 +362,7 @@ func TestInstalledNPMAndGemspecEvidence(t *testing.T) {
 	add := func(p Package) { got = append(got, p) }
 	scanInstalledNPM(File{Path: "usr/lib/node_modules/abbrev/package.json", Data: []byte(`{"name":"abbrev","version":"3.0.1"}`)}, add)
 	scanInstalledGemspec(File{Path: "usr/local/lib/ruby/gems/3.3.0/specifications/base64-0.2.0.gemspec", Data: []byte("Gem::Specification.new do |s|\n  s.name = \"base64\"\n  s.version = \"0.2.0\"\nend\n")}, add)
-	if len(got) != 2 || got[0].Evidence != "package.json" || got[1].Evidence != "gemspec" {
+	if len(got) != 2 || got[0].Evidence != "installed" || got[1].Evidence != "installed" {
 		t.Fatalf("evidence not recorded: %+v", got)
 	}
 }

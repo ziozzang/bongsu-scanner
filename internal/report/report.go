@@ -38,22 +38,23 @@ var severities = []string{"CRITICAL", "HIGH", "MEDIUM", "LOW", "NEGLIGIBLE", "UN
 // Document is report schema version 1. Findings contain presentation fields;
 // match.Report remains the interchange format accepted by LoadMatchJSON.
 type Document struct {
-	SchemaVersion int                 `json:"report_schema_version"`
-	GeneratedBy   Generator           `json:"generated_by"`
-	Target        string              `json:"target"`
-	SBOMPath      string              `json:"sbom_file"`
-	GeneratedAt   time.Time           `json:"generated_at"`
-	DB            vulndb.Meta         `json:"database"`
-	Options       match.Options       `json:"options"`
-	OptionsNote   string              `json:"options_note"`
-	Summary       Summary             `json:"summary"`
-	Scan          *scan.ScanMetadata  `json:"scan"`
-	OS            *scan.OSRelease     `json:"os,omitempty"`
-	Image         *scan.ImageMetadata `json:"image,omitempty"`
-	Host          *scan.HostMetadata  `json:"host,omitempty"`
-	Packages      []Package           `json:"packages"`
-	TopPackages   []Package           `json:"top_packages"`
-	Findings      []Finding           `json:"findings"`
+	MissingCoverage []string            `json:"missing_coverage,omitempty"`
+	SchemaVersion   int                 `json:"report_schema_version"`
+	GeneratedBy     Generator           `json:"generated_by"`
+	Target          string              `json:"target"`
+	SBOMPath        string              `json:"sbom_file"`
+	GeneratedAt     time.Time           `json:"generated_at"`
+	DB              vulndb.Meta         `json:"database"`
+	Options         match.Options       `json:"options"`
+	OptionsNote     string              `json:"options_note"`
+	Summary         Summary             `json:"summary"`
+	Scan            *scan.ScanMetadata  `json:"scan"`
+	OS              *scan.OSRelease     `json:"os,omitempty"`
+	Image           *scan.ImageMetadata `json:"image,omitempty"`
+	Host            *scan.HostMetadata  `json:"host,omitempty"`
+	Packages        []Package           `json:"packages"`
+	TopPackages     []Package           `json:"top_packages"`
+	Findings        []Finding           `json:"findings"`
 }
 type Generator struct {
 	Name    string `json:"name"`
@@ -75,6 +76,8 @@ type Package struct {
 	Unfixed    int            `json:"findings_without_fix"`
 }
 type Finding struct {
+	DistroSeverity   string   `json:"distro_severity,omitempty"`
+	DistroStatus     string   `json:"distro_status,omitempty"`
 	Package          string   `json:"package"`
 	Version          string   `json:"version"`
 	Ecosystem        string   `json:"ecosystem"`
@@ -209,7 +212,7 @@ func prepare(in Input) Document {
 	if in.GeneratedAt.IsZero() {
 		in.GeneratedAt = time.Now()
 	}
-	d := Document{SchemaVersion: 1, GeneratedBy: Generator{"bscan", clean(in.ToolVersion)}, Target: clean(in.Target), SBOMPath: clean(in.SBOMPath), GeneratedAt: in.GeneratedAt.UTC(), DB: in.Report.DB, Options: in.Options,
+	d := Document{MissingCoverage: cleanList(in.Report.MissingCoverage), SchemaVersion: 1, GeneratedBy: Generator{"bscan", clean(in.ToolVersion)}, Target: clean(in.Target), SBOMPath: clean(in.SBOMPath), GeneratedAt: in.GeneratedAt.UTC(), DB: in.Report.DB, Options: in.Options,
 		OptionsNote: "Options are caller-supplied; original match JSON does not record options. Zero values from --from do not establish the original matching policy.",
 		Summary:     Summary{in.Report.Subjects, in.Report.Matched, len(in.Report.Findings), counts(), in.Report.Skipped}, Scan: in.Scan, OS: in.OS, Image: in.Image, Host: in.Host, Packages: []Package{}, TopPackages: []Package{}, Findings: make([]Finding, 0, len(in.Report.Findings))}
 	d.DB.UpdatedAt = d.DB.UpdatedAt.UTC()
@@ -244,7 +247,7 @@ func prepare(in Input) Document {
 		if len(summary) > 200 {
 			summary = summary[:200]
 		}
-		row := Finding{Package: clean(f.Subject.Name), Version: clean(f.Subject.Version), Ecosystem: eco, PURL: clean(f.Subject.PURL.String()), ID: clean(f.ID), RelatedIDs: cleanList(f.RelatedIDs), Severity: severity(f.Severity), Score: f.Score, Vector: clean(f.Vector), FixedIn: cleanList(f.FixedIn), MatchedBy: clean(f.MatchedBy), Confidence: clean(f.Confidence), Summary: clean(string(summary)), Links: links(f), AssessmentStatus: "not_assessed", Source: clean(f.Record.Source), Withdrawn: clean(f.Record.Withdrawn)}
+		row := Finding{DistroSeverity: clean(f.DistroSeverity), DistroStatus: clean(f.DistroStatus), Package: clean(f.Subject.Name), Version: clean(f.Subject.Version), Ecosystem: eco, PURL: clean(f.Subject.PURL.String()), ID: clean(f.ID), RelatedIDs: cleanList(f.RelatedIDs), Severity: severity(f.Severity), Score: f.Score, Vector: clean(f.Vector), FixedIn: cleanList(f.FixedIn), MatchedBy: clean(f.MatchedBy), Confidence: clean(f.Confidence), Summary: clean(string(summary)), Links: links(f), AssessmentStatus: "not_assessed", Source: clean(f.Record.Source), Withdrawn: clean(f.Record.Withdrawn)}
 		if row.PURL == "" {
 			row.PURL = (purl.PURL{Type: "generic", Name: row.Package, Version: row.Version, Qualifiers: map[string]string{"ecosystem": eco}}).String()
 		}

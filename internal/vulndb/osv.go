@@ -18,7 +18,7 @@ import (
 const (
 	osvEntryMaxBytes               = 64 << 20
 	osvMaxEntries                  = 2_000_000
-	osvMaxUncompressedBytes uint64 = 4 << 30
+	osvMaxUncompressedBytes uint64 = uint64(DefaultMaxFeedUncompressedBytes)
 	osvMaxSummary                  = 1 << 10
 	osvMaxAliases                  = 100
 	osvMaxReferences               = 100
@@ -132,6 +132,12 @@ func ConvertOSV(v *osvVuln, source string) (*Record, bool) {
 		if len(a.Database) > 0 {
 			out.Database = a.Database
 		}
+		if BaseEcosystem(eco) == "Debian" {
+			if urgency, ok := a.Specific["urgency"]; ok {
+				// Explicit database metadata takes precedence over the OSV fallback.
+				out.Database = mergeSpecificMaps(out.Database, map[string]any{"urgency": urgency}, false)
+			}
+		}
 		r.Affected = append(r.Affected, out)
 	}
 	if len(r.Affected) == 0 {
@@ -212,7 +218,7 @@ func parseOSVZipBounded(ctx context.Context, zipPath string, source string, acce
 			return 0, err
 		}
 		if f.UncompressedSize64 > maxBytes-expanded {
-			return 0, fmt.Errorf("OSV zip exceeds %d total uncompressed bytes", maxBytes)
+			return 0, fmt.Errorf("OSV zip exceeds %d total uncompressed bytes; increase --max-feed-uncompressed BYTES", maxBytes)
 		}
 		expanded += f.UncompressedSize64
 	}
@@ -337,7 +343,7 @@ func (osvSource) Feeds(opts *Options) ([]Feed, error) {
 			Ecosystems: []string{eco},
 			MaxBytes:   opts.MaxFeedBytes,
 			Parse: func(ctx context.Context, p string, _ int64, emit Emit, progress func(string)) error {
-				_, err := parseOSVZip(ctx, p, SourceOSV, nil, emit, progress)
+				_, err := parseOSVZipBounded(ctx, p, SourceOSV, nil, emit, progress, osvMaxEntries, opts.maxFeedUncompressedBytes())
 				return err
 			},
 		})
@@ -370,9 +376,9 @@ func (ghsaSource) Feeds(opts *Options) ([]Feed, error) {
 		File:     "advisory-database-main.zip",
 		MaxBytes: max,
 		Parse: func(ctx context.Context, p string, _ int64, emit Emit, progress func(string)) error {
-			_, err := parseOSVZip(ctx, p, SourceGHSA, func(name string) bool {
+			_, err := parseOSVZipBounded(ctx, p, SourceGHSA, func(name string) bool {
 				return strings.Contains(name, "/advisories/github-reviewed/") || strings.HasPrefix(name, "advisories/github-reviewed/")
-			}, emit, progress)
+			}, emit, progress, osvMaxEntries, opts.maxFeedUncompressedBytes())
 			return err
 		},
 	}}, nil

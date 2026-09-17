@@ -106,6 +106,7 @@ var registry = map[string]SourceFactory{
 	SourceGHSA:   func() Source { return &ghsaSource{} },
 	"github":     func() Source { return &ghsaSource{} },
 	SourceNVD:    func() Source { return &nvdSource{} },
+	"rubysec":    func() Source { return &rubysecSource{} },
 }
 
 // RegisterSource adds or replaces a source plugin under name.
@@ -470,10 +471,11 @@ func firstFixedVersion(a Affected) string {
 // idPattern accepts advisory identifiers such as CVE-2024-1234,
 // GHSA-xxxx-xxxx-xxxx, ALPINE-13661, DW202402-001 or RLSA-2019:0975 (Rocky
 // and AlmaLinux errata carry a colon): an alphabetic prefix, a dash, and a
-// non-empty alphanumeric tail whose segments are joined by '-', ':' or '.'.
+// non-empty alphanumeric tail (underscores allowed, e.g. rubysec fallback
+// ids) whose segments are joined by '-', ':', '.' or '_'.
 // GHSA identifiers can contain letters only; requiring a digit silently
 // discards valid advisories.
-var idPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:[-:.][A-Za-z0-9]+)*$`)
+var idPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9_]+(?:[-:._][A-Za-z0-9_]+)*$`)
 
 func validID(id string) bool { return len(id) <= 128 && idPattern.MatchString(id) }
 

@@ -14,35 +14,43 @@ type Options struct {
 	Details            bool
 	IncludeUnimportant bool
 	MinSeverity        string
+	SeveritySource     string
 	IgnoreIDs          []string
 	FailOn             string
 	OnlyFixed          bool
 }
 type Finding struct {
-	ID         string
-	RelatedIDs []string
-	Subject    Subject
-	Record     RecordSummary
-	Affected   vulndb.Affected
-	MatchedBy  string
-	FixedIn    []string
-	Severity   string
-	Score      float64
-	Vector     string
-	Confidence string
-	Assessment *assessment.Result `json:"assessment,omitempty"`
+	ID             string
+	RelatedIDs     []string
+	Subject        Subject
+	Record         RecordSummary
+	Affected       vulndb.Affected
+	MatchedBy      string
+	FixedIn        []string
+	Severity       string
+	Score          float64
+	Vector         string
+	Confidence     string
+	DistroSeverity string
+	DistroStatus   string
+	Assessment     *assessment.Result `json:"assessment,omitempty"`
 }
 type Report struct {
-	Findings   []Finding
-	Subjects   int
-	Matched    int
-	Skipped    map[string]int
-	BySeverity map[string]int
-	DB         vulndb.Meta
+	Findings        []Finding
+	Subjects        int
+	Matched         int
+	Skipped         map[string]int
+	BySeverity      map[string]int
+	DB              vulndb.Meta
+	MissingCoverage []string
 }
 
 func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Options) (Report, error) {
 	report := Report{Subjects: len(subjects), Findings: make([]Finding, 0, len(subjects)), Skipped: map[string]int{}, BySeverity: map[string]int{}}
+	source, err := NormalizeSeveritySource(opts.SeveritySource)
+	if err != nil {
+		return report, err
+	}
 	meta, err := store.Meta()
 	if err != nil {
 		return report, err
@@ -86,12 +94,20 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		}
 	}
 	found := map[string]int{}
+	missing := map[string]int{}
 	for si, s := range subjects {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
 		if reason := subjectSkip(s, coverage); reason != "" {
 			report.Skipped[reason]++
+			if reason == "ecosystem-not-in-database" || reason == "release-not-in-database" {
+				key := s.Ecosystem
+				if s.Release != "" {
+					key += ":" + s.Release
+				}
+				missing[key]++
+			}
 			continue
 		}
 		queries := subjectQueries(s)
@@ -142,6 +158,27 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 			canonicalCache.put(canonicalKey, canonical, canonicalBytes(canonical))
 		}
 		for qi, q := range queries {
+			// Query records already share the base ecosystem and normalized package.
+			// Keep markers scoped to the same advisory and exact distro release.
+			statuses := map[string]string{}
+			urgencies := map[string]string{}
+			for _, rec := range queryRecords[qi] {
+				if rec.Withdrawn != "" {
+					continue
+				}
+				for _, a := range rec.affected {
+					if a.version != q.ver || a.release != s.Release {
+						continue
+					}
+					id := canonical[rec.ID]
+					if a.distroStatus == "not-affected" || a.distroStatus == "undetermined" && statuses[id] != "not-affected" {
+						statuses[id] = a.distroStatus
+					}
+					if a.distroSeverity != "" {
+						urgencies[id] = mergeDistroSeverity(urgencies[id], a.distroSeverity)
+					}
+				}
+			}
 			for _, rec := range queryRecords[qi] {
 				if rec.Withdrawn != "" {
 					report.Skipped["withdrawn"]++
@@ -163,27 +200,38 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if rel := prepared.release; rel != "" && rel != s.Release {
 						continue
 					}
-					if !opts.IncludeUnimportant && prepared.unimportant {
+					status := statuses[id]
+					urgency := mergeDistroSeverity(prepared.distroSeverity, urgencies[id])
+					if status == "not-affected" && prepared.hit && len(prepared.detail.affected.Ranges) > 0 {
+						report.Skipped["distro-not-affected"]++
+						continue
+					}
+					if prepared.distroStatus == "not-affected" {
+						continue
+					}
+					if !opts.IncludeUnimportant && (prepared.unimportant || urgency == "unimportant") {
 						report.Skipped["unimportant"]++
 						continue
 					}
 					result := prepared.versionMatch
 					affected, fixed, low, reason := result.hit, result.fixed, result.low, result.reason
 					if !affected {
-						if reason != "" {
+						if reason != "" && prepared.distroStatus != "undetermined" {
 							report.Skipped[reason]++
 						}
 						continue
 					}
 					a := prepared.detail.affected
 					sev, score, vector := prepared.detail.severity, prepared.detail.score, prepared.detail.vector
-					if opts.MinSeverity != "" && SeverityRank(sev) < SeverityRank(opts.MinSeverity) {
-						continue
-					}
 					if opts.OnlyFixed && len(fixed) == 0 {
 						continue
 					}
-					f := Finding{ID: id, RelatedIDs: rec.related, Subject: s, Record: *rec.summary, Affected: a, MatchedBy: q.by, FixedIn: fixed, Severity: sev, Score: score, Vector: vector, Confidence: "high"}
+					f := Finding{ID: id, RelatedIDs: rec.related, Subject: s, Record: *rec.summary, Affected: a, MatchedBy: q.by, FixedIn: fixed, Severity: sev, Score: score, Vector: vector, Confidence: "high", DistroSeverity: urgency}
+					f.Record.DistroSeverity = urgency
+					if status == "undetermined" {
+						f.DistroStatus = status
+						low = true
+					}
 					if low {
 						f.Confidence = "low"
 					}
@@ -198,11 +246,27 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 			}
 		}
 	}
+	for key, count := range missing {
+		eco := vulndb.BaseEcosystem(key)
+		if strings.ContainsAny(eco, " \t") {
+			eco = "'" + eco + "'"
+		}
+		report.MissingCoverage = append(report.MissingCoverage, fmt.Sprintf("coverage gap: %s (%d subjects) — run bscan db update --ecosystem %s", key, count, eco))
+	}
+	sort.Strings(report.MissingCoverage)
 	matched := map[string]bool{}
+	filtered := report.Findings[:0]
 	for _, f := range report.Findings {
+		f.Severity = selectedSeverity(f.Severity, f.DistroSeverity, source)
+		if opts.MinSeverity != "" && SeverityRank(f.Severity) < SeverityRank(opts.MinSeverity) {
+			continue
+		}
+		filtered = append(filtered, f)
 		matched[f.Subject.Ref] = true
 		report.BySeverity[f.Severity]++
 	}
+	clear(report.Findings[len(filtered):])
+	report.Findings = filtered
 	report.Matched = len(matched)
 	sort.SliceStable(report.Findings, func(i, j int) bool {
 		a, b := report.Findings[i], report.Findings[j]
@@ -387,7 +451,14 @@ func mergeFinding(dst *Finding, src Finding) {
 	if SeverityRank(src.Severity) > SeverityRank(dst.Severity) || (SeverityRank(src.Severity) == SeverityRank(dst.Severity) && src.Score > dst.Score) {
 		dst.Severity, dst.Score, dst.Vector = src.Severity, src.Score, src.Vector
 	}
-	if src.Confidence == "high" {
+	dst.DistroSeverity = mergeDistroSeverity(dst.DistroSeverity, src.DistroSeverity)
+	dst.Record.DistroSeverity = dst.DistroSeverity
+	if src.DistroStatus == "undetermined" {
+		dst.DistroStatus = src.DistroStatus
+	}
+	if dst.DistroStatus == "undetermined" {
+		dst.Confidence = "low"
+	} else if src.Confidence == "high" {
 		dst.Confidence = "high"
 	}
 }
