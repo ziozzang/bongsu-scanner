@@ -74,10 +74,10 @@ func TestSecurityHTTPTimeouts(t *testing.T) {
 						w.WriteHeader(http.StatusOK)
 						w.(http.Flusher).Flush()
 					}
-					select {
-					case <-r.Context().Done():
-					case <-done:
-					}
+					// Block until the client has observed its timeout. Returning on
+					// r.Context().Done() raced the client's cancellation: a clean
+					// end-of-body could arrive first and surface as a decode error.
+					<-done
 				}))
 				defer srv.Close()
 				defer close(done)
