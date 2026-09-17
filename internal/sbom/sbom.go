@@ -53,7 +53,11 @@ func Write(path, format string, r scan.Result) (err error) {
 	default:
 		return fmt.Errorf("unsupported SBOM format %q", format)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- The caller explicitly selects the local SBOM output path.
+	// SBOMs are deliverables meant to be shared and read by other tools and
+	// users (CI collectors, container smoke tests running as another uid), so
+	// they get the conventional 0644 subject to the umask; the catalog and
+	// keys under BONGSU_HOME keep their private modes.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // #nosec G302,G304 -- Deliverable output at a caller-chosen path; readable on purpose.
 	if err != nil {
 		return err
 	}

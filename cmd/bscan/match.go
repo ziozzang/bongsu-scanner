@@ -349,6 +349,10 @@ func writeCommandOutput(path string, data []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
+	// Findings and reports are deliverables: conventional 0644 (umask applies).
+	if err = os.Chmod(f.Name(), 0o644); err != nil { // #nosec G302 -- Deliverable output; readable on purpose.
+		return err
+	}
 	return os.Rename(f.Name(), path)
 }
 
