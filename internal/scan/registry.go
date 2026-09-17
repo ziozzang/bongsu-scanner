@@ -502,6 +502,11 @@ func (c *registryClient) authenticate(ctx context.Context, h http.Header) error 
 	if err != nil {
 		return registryNetworkError(ctx, err, "cannot read registry token response")
 	}
+	// A cancelled operation reports the cancellation, not the parse error of
+	// whatever partial body the closing connection happened to deliver.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var token struct {
 		Token       string `json:"token"`
 		AccessToken string `json:"access_token"`

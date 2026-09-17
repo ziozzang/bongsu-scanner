@@ -20,29 +20,57 @@ with `gofmt`, `go vet`, `make lint` and `go test -race ./...` before push.
 | RPM epoch | Epoch qualifier ignored when the component carried a version (fixed packages reported) | Applied after version selection in both loaders | 80cda58 |
 | Output permissions | 0600 (broke container smoke), then chmod 0644 ignoring umask | Created 0644 subject to the umask; existing targets keep their mode | 8bae539, 80cda58 |
 | Exit codes / help | `--findings-exit-code` reset before exit (D9); root help missed two flags (D10) | Pinned before global-flag restore, subprocess test; help synced with a registry test | 868414a |
+| OSV exports | Per-release exports recommended (frozen since 2024-10) | Release-qualified selections map to the maintained base export; `data through` per source; 60-day staleness warning; feed bound 1 GiB, expansion 32 GiB | cf85cdd, 3024bb2 |
+| AlmaLinux | CVEs only in `related`; rating only in the title | CVE aliases promoted for ALSA/ALBA/ALEA; title rating is the distro severity | cf85cdd |
+| RPM modules / ownership | Non-modular RPMs matched against module builds; RPM-owned Python matched by upstream version | MODULARITYLABEL and owned metadata paths from headers, dpkg lists and apk db; `module-mismatch` / `distro-owned` skips; `bscan:owner` and `bscan:modularity` properties | 19fbb06, d2077c9 |
+| Red Hat unfixed CVEs / ratings | RHSA-only export | Opt-in `redhat-vex` CSAF source: fixed builds, affected / fix-deferred / will-not-fix / under-investigation / out-of-support states, not-affected markers, Red Hat ratings, module streams | 3024bb2, d2077c9 |
+| Config template | `init` pinned feed limits, freezing old defaults | Limits commented out in the template; warning when a pinned limit is below the built-in default | 3024bb2 |
 
-## Independent review (R6) of 8bae539..765150e
+## Independent reviews
 
-No P1. Four P2 findings fixed in 80cda58 (RHEL 10 minor mixing, RPM epoch,
-stale conversion cache, `--add-ecosystem` without the OSV source), plus the
-umask issue and CentOS spelling (P3). Left as documented behaviour: `score`
-is omitted when no CVSS score exists (a genuine 0.0 is indistinguishable);
-old manifests restore only the OSV ecosystem selection.
+- **R6** (8bae539..765150e): no P1; four P2 fixed in 80cda58 (RHEL 10 minor
+  mixing, RPM epoch, stale conversion cache, `--add-ecosystem` without the
+  OSV source) plus umask handling and CentOS spellings.
+- **R15** (80cda58..1ddd44d): one P1 — a `not-affected` marker for one
+  module stream (nodejs:20) suppressed a real finding for another
+  (nodejs:18); P2 — VEX documents were decoded whole before structure
+  limits applied, HTTP 304 reuse bypassed a lowered expansion budget,
+  language packages were skipped for owners absent from the SBOM, a
+  per-binary Red Hat rating was raised by the source-package aggregate,
+  ownership lookups were quadratic, and Save() commented out explicit
+  limits. All fixed in d2077c9 (token-streaming VEX decoder with hard
+  bounds and a 256 MiB document ceiling that keeps the broadest CVEs).
+
+## Accuracy validation
+
+`2026-09-17-accuracy-round7.md` (R4, commit 36bb586) and its "After fixes
+(round 7b)" section (R14, commit 1ddd44d): seven pinned images against
+Trivy 0.74.0 and Grype 0.118.0.
+
+| Measure | Round 7 | Round 7b |
+|---|---|---|
+| Inventory agreement (6 supported images) | 857/862 | 857/862 |
+| CVE agreement, default catalog + Ubuntu | 767/1,672 | 767/1,672 (stale Ubuntu results replaced: 27 false and 32 missed fixed) |
+| CVE agreement with `redhat-vex` on UBI | n/a | 1,655/1,672; 16 of the 17 Trivy-only pairs are Red Hat "Not affected" |
+| ubi8 module false positives | 349 CVE pairs | 0 |
+| RPM-owned PyPI warnings on UBI | 38 | 0 (55 packages kept in the SBOM with `bscan:owner`) |
+| AlmaLinux CVE ids / UNKNOWN ratings | 0 ids in output, 8/8 UNKNOWN | 48 ids, 0 UNKNOWN |
+| Severity agreement with Trivy on common UBI CVEs | 158/327 | 685/685 (VEX) |
+
+Still open after 7b (with owners): USN per-release CVE maps and
+version-specific VEX not-affected markers (R18), VEX source entries
+without module labels (Red Hat data), Ubuntu "Needs evaluation" shown with
+high confidence (OSV carries no triage state), advisory-level CVE
+propagation for Rocky/Alma errata, weekly VEX archive lag.
 
 ## Known limits
 
-- Red Hat OSV records carry CVSS only, so RHEL severity is CVSS-derived; Red
-  Hat's own Important/Moderate rating would need the CSAF/VEX feed.
-- Multi-CVE RPM errata are advisory-level: an installed build older than the
-  erratum is reported for every CVE the erratum lists (for example openssl
-  3.0.7 on UBI 9.4 against RHSA-2026:1473 / CVE-2025-11187). The finding ID is
-  the erratum with the CVEs as related IDs.
-- Fedora, Amazon Linux and Oracle Linux have no supported advisory feed; their
-  packages are skipped as `unknown-ecosystem`.
-- Ubuntu per-release feeds are opt-in (`--add-ecosystem Ubuntu:24.04`); the
-  default catalog is already ~670 MB of OSV downloads.
-
-## Accuracy validation (R4)
-
-See `2026-09-17-accuracy-round7.md` (written by the R4 job) for the
-ubi9/ubi8/rocky/alma/ubuntu comparison against Trivy and Grype.
+- Red Hat's own rating and unfixed states need the opt-in `redhat-vex`
+  source (317 MB archive, ~20 GB expanded, 4–8 minutes to convert).
+- Multi-CVE RPM errata from the OSV exports are advisory-level: an
+  installed build older than the erratum is reported for every CVE the
+  erratum lists. VEX replaces this for RHEL; Rocky/Alma keep it.
+- Fedora, Amazon Linux and Oracle Linux have no supported advisory feed;
+  their packages are skipped as `unknown-ecosystem`.
+- OSV per-release exports are frozen (2024-10); Ubuntu needs the 700 MB
+  base export (`--add-ecosystem Ubuntu`, opt-in).
