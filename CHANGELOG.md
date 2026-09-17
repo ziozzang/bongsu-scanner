@@ -21,6 +21,17 @@ Historical entries are grouped by commit date rather than inferred release versi
 - CLI build metadata in `version`, `--version` and `about`; global quiet,
   JSON logging and no-color compatibility options; configuration override
   plumbing; Bash, Zsh and Fish completion and a generated command reference.
+- Distribution status and severity in findings: Debian "not affected"
+  entries suppress OSV range hits, "undetermined" lowers confidence,
+  `--severity-source cvss|distro|max`, and coverage-gap warnings when an
+  ecosystem or release is missing from the catalog.
+- `rubysec` (ruby-advisory-db) as a default source with a dependency-free
+  YAML subset reader; `--max-feed-uncompressed` so the Ubuntu OSV feed
+  installs; conversion cache versioning.
+- 45 fuzz targets across parsers, feed converters, purl/version code,
+  configuration, signatures and archive handling (`make fuzz-smoke`).
+- Dockerfile, systemd/cron deployment examples, `make dist`/`image`,
+  darwin/windows/freebsd builds and multi-arch image publishing.
 
 ### Changed
 
@@ -38,6 +49,16 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 - Prioritize OS/package metadata when scanning large hosts; preserve partial
   scan diagnostics and propagate container failures and cancellation.
+- Lockfiles bundled inside installed packages no longer produce phantom
+  packages (`--include-declared` keeps them as declared dependencies);
+  `package.json` application bundles outside `node_modules` are inventoried;
+  OSGi qualifiers are stripped from manifest-derived Maven versions.
+- Parser reliability issues found by fuzzing: empty names after namespace
+  splitting, quadratic RPM header scans, unvalidated BerkeleyDB lengths,
+  unbounded layer references, whiteout cost, purl round trips, and
+  normalization idempotence.
+- `--fail-on-partial` exits 3; interruption prints one line and exits 130;
+  stdout carries only primary results.
 - Correct OSV limits, distro source-package/release matching, PURL-only
   affected records, package-level severity and ambiguous multi-CVE grouping.
 - Correct language lockfile parsing, SPDX fields, CycloneDX identifiers,

@@ -61,8 +61,9 @@ var DefaultOSVEcosystems = []string{
 var DefaultAlpineReleases = []string{"v3.18", "v3.19", "v3.20", "v3.21", "v3.22"}
 
 // DefaultSources are fetched when Options.Sources is empty. GHSA and NVD
-// are opt-in because their archives can be large.
-var DefaultSources = []string{SourceOSV, SourceAlpine, SourceDebian}
+// are opt-in because their archives can be large; rubysec is small (a few
+// MB) and fills gaps in OSV's RubyGems coverage, so it is on by default.
+var DefaultSources = []string{SourceOSV, SourceAlpine, SourceDebian, "rubysec"}
 
 // Emit receives one converted record. Parsers call it once per record and
 // stop when it returns an error.
