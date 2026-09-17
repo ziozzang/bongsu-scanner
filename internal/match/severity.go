@@ -292,7 +292,10 @@ func ubuntuCVESeverity(a vulndb.Affected) string {
 }
 
 // Scope ranks record fallbacks below affected-entry ratings, and direct binary
-// ratings above source-package ratings. Equal scopes retain maximum severity.
+// ratings above source-package ratings. Equal mapped Ubuntu scopes retain
+// maximum severity; legacy ratings preserve their exclusion precedence.
+const ubuntuMappedSeverityScope uint8 = 3
+
 type distroRating struct {
 	label string
 	scope uint8
@@ -311,7 +314,11 @@ func mergeDistroRating(a, b distroRating) distroRating {
 		return b
 	}
 	if b.label != "" && b.scope == a.scope {
-		a.label = mergeDistroSeverity(a.label, b.label)
+		if a.scope < ubuntuMappedSeverityScope {
+			a.label = mergeDistroSeverity(a.label, b.label)
+		} else if SeverityRank(distroSeverityLevel(b.label)) > SeverityRank(distroSeverityLevel(a.label)) {
+			a.label = b.label
+		}
 	}
 	return a
 }

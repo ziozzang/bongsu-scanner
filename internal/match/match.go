@@ -195,7 +195,14 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 			var identities []advisoryIdentity
 			for _, records := range queryRecords {
 				for _, rec := range records {
-					identities = append(identities, advisoryIdentity{rec.ID, rec.aliasesForRelease(s.Release)})
+					if rec.identitiesByRelease == nil {
+						identities = append(identities, advisoryIdentity{ID: rec.ID, Aliases: rec.Aliases})
+						continue
+					}
+					identities = append(identities, rec.identitiesByRelease[s.Release]...)
+					if s.Release != "" {
+						identities = append(identities, rec.identitiesByRelease[""]...)
+					}
 				}
 			}
 			canonical = aliasIdentityIDs(identities)
@@ -214,7 +221,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if a.version != q.ver || a.release != s.Release || !a.matchesModule(s) {
 						continue
 					}
-					id := canonical[rec.ID]
+					identity := a.identity(rec)
+					id := identity.groupKey(canonical[identity.key()])
 					if a.distroStatus == "not-affected" || a.distroStatus == "undetermined" && statuses[id] != "not-affected" {
 						statuses[id] = a.distroStatus
 					}
@@ -229,14 +237,12 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					report.Skipped["withdrawn"]++
 					continue
 				}
-				id := canonical[rec.ID]
-				skip := ignored[id] || ignored[rec.ID]
-				for _, a := range rec.aliasesForRelease(s.Release) {
-					skip = skip || ignored[a]
-				}
-				if skip {
-					report.Skipped["ignored"]++
-					continue
+				if rec.identitiesByRelease == nil {
+					identity := advisoryIdentity{ID: rec.ID, Aliases: rec.Aliases}
+					if identity.ignored(canonical[identity.key()], ignored) {
+						report.Skipped["ignored"]++
+						continue
+					}
 				}
 				for _, prepared := range rec.affected {
 					if prepared.version != q.ver {
@@ -249,11 +255,18 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						report.Skipped["module-mismatch"]++
 						continue
 					}
-					status := statuses[id]
+					identity := prepared.identity(rec)
+					id := canonical[identity.key()]
+					group := identity.groupKey(id)
+					if rec.identitiesByRelease != nil && identity.ignored(id, ignored) {
+						report.Skipped["ignored"]++
+						continue
+					}
+					status := statuses[group]
 					if status == "" {
 						status = prepared.distroStatus
 					}
-					rating := mergeDistroRating(prepared.rating(q.by), urgencies[id])
+					rating := mergeDistroRating(prepared.rating(q.by), urgencies[group])
 					urgency := rating.label
 					if status == "not-affected" && prepared.hit {
 						report.Skipped["distro-not-affected"]++
@@ -262,7 +275,12 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if prepared.distroStatus == "not-affected" {
 						continue
 					}
-					if opts.ExcludeUnimportant && (prepared.unimportant || urgency == "unimportant" || urgency == "negligible") {
+					// Mapped ratings are excluded only after merging their scope.
+					excluded := urgency == "unimportant" || urgency == "negligible"
+					if prepared.distroSeverityScope < ubuntuMappedSeverityScope || !prepared.hit {
+						excluded = excluded || prepared.unimportant
+					}
+					if opts.ExcludeUnimportant && excluded {
 						report.Skipped["unimportant"]++
 						continue
 					}
@@ -293,7 +311,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if low {
 						f.Confidence = "low"
 					}
-					fk := s.Ref + "\x00" + id
+					fk := s.Ref + "\x00" + group
 					if at, ok := found[fk]; ok {
 						mergeFinding(&report.Findings[at], f)
 					} else {
@@ -414,17 +432,46 @@ func canonicalID(r vulndb.Record) string {
 	return r.ID
 }
 
-// aliasCanonicalIDs resolves aliases in either direction across every lookup
-// for a subject. Multi-CVE records stay independent, as in canonicalID.
+// Alias identities retain affected-entry CVE scopes across subject lookups.
 type advisoryIdentity struct {
 	ID      string
 	Aliases []string
+	scoped  bool
+}
+
+// Scoped advisory nodes must not connect independent CVEs through a shared USN.
+func (r advisoryIdentity) key() string {
+	if r.scoped {
+		return r.ID + "\x00" + strings.Join(r.Aliases, "\x00")
+	}
+	return r.ID
+}
+
+func (r advisoryIdentity) ignored(canonical string, ignored map[string]bool) bool {
+	if ignored[canonical] || ignored[r.ID] {
+		return true
+	}
+	for _, alias := range r.Aliases {
+		if ignored[alias] {
+			return true
+		}
+	}
+	return false
+}
+
+func (r advisoryIdentity) groupKey(canonical string) string {
+	if r.scoped && canonical == r.ID {
+		return r.key()
+	}
+	return canonical
 }
 
 func aliasIdentityIDs(records []advisoryIdentity) map[string]string {
 	parent := map[string]string{}
+	originalIDs := map[string]string{}
 	protected := map[string]bool{}
 	for _, r := range records {
+		originalIDs[r.key()] = r.ID
 		var cves []string
 		for _, id := range append([]string{r.ID}, r.Aliases...) {
 			if strings.HasPrefix(id, "CVE-") {
@@ -432,7 +479,7 @@ func aliasIdentityIDs(records []advisoryIdentity) map[string]string {
 			}
 		}
 		if len(unique(cves)) > 1 {
-			protected[r.ID] = true
+			protected[r.key()] = true
 		}
 	}
 	var find func(string) string
@@ -448,24 +495,27 @@ func aliasIdentityIDs(records []advisoryIdentity) map[string]string {
 		return parent[id]
 	}
 	for _, r := range records {
-		find(r.ID)
-		if protected[r.ID] {
+		find(r.key())
+		if protected[r.key()] {
 			continue
 		}
 		for _, alias := range r.Aliases {
 			if alias != "" && !protected[alias] {
-				parent[find(alias)] = find(r.ID)
+				parent[find(alias)] = find(r.key())
 			}
 		}
 	}
 	groups := map[string][]string{}
 	for id := range parent {
 		root := find(id)
+		if original, ok := originalIDs[id]; ok {
+			id = original
+		}
 		groups[root] = append(groups[root], id)
 	}
 	canonical := map[string]string{}
 	for root, ids := range groups {
-		sort.Strings(ids)
+		ids = unique(ids)
 		canonical[root] = canonicalID(vulndb.Record{ID: ids[0], Aliases: ids[1:]})
 		var cves int
 		for _, id := range ids {
@@ -481,11 +531,11 @@ func aliasIdentityIDs(records []advisoryIdentity) map[string]string {
 	}
 	result := map[string]string{}
 	for _, r := range records {
-		id, ok := canonical[find(r.ID)]
-		if !ok || protected[r.ID] {
+		id, ok := canonical[find(r.key())]
+		if !ok || protected[r.key()] {
 			id = canonicalID(vulndb.Record{ID: r.ID, Aliases: r.Aliases})
 		}
-		result[r.ID] = id
+		result[r.key()] = id
 	}
 	return result
 }

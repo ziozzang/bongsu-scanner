@@ -40,20 +40,21 @@ type advisoryText struct {
 }
 
 type preparedRecord struct {
-	ID        string
-	Aliases   []string
-	Withdrawn string
-	summary   *RecordSummary
-	related   []string
-	affected  []evaluatedAffected
-	// Nil preserves record-wide aliases for feeds without release-local CVEs.
-	aliasesByRelease map[string][]string
+	ID                  string
+	Aliases             []string
+	Withdrawn           string
+	summary             *RecordSummary
+	related             []string
+	affected            []evaluatedAffected
+	identitiesByRelease map[string][]advisoryIdentity
 }
 
 // Only evaluated outcomes survive the visitor; parsed version ranges and maps
 // are scratch space for one affected entry. RPM misses retain a row so module
 // mismatches can be counted before deciding applicability for each subject.
 type evaluatedAffected struct {
+	// Nil uses record aliases; a non-nil empty list is an explicit empty CVE scope.
+	aliases                      []string
 	modular                      bool
 	moduleStream                 string
 	distroSeverityScope          uint8
@@ -221,8 +222,8 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		return rec
 	}
 	for _, a := range r.Affected {
-		if _, ok := affectedCVEs(a); ok {
-			rec.aliasesByRelease = make(map[string][]string)
+		if _, scoped := affectedCVEs(a); scoped {
+			rec.identitiesByRelease = make(map[string][]advisoryIdentity)
 			break
 		}
 	}
@@ -259,13 +260,13 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 			}
 			aliases = unique(aliases)
 		}
-		if rec.aliasesByRelease != nil {
-			rec.aliasesByRelease[release] = unique(append(rec.aliasesByRelease[release], aliases...))
+		if rec.identitiesByRelease != nil {
+			rec.identitiesByRelease[release] = append(rec.identitiesByRelease[release], advisoryIdentity{ID: r.ID, Aliases: aliases, scoped: scoped})
 		}
 		urgency := distroSeverity(r, a)
 		var severityScope uint8
 		if ubuntuCVESeverity(a) != "" {
-			severityScope = 1
+			severityScope = ubuntuMappedSeverityScope
 		}
 		if eco == "Red Hat" {
 			if label, _ := a.Database["severity"].(string); normalizeSeverity(label) != "UNKNOWN" {
@@ -310,6 +311,9 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				}
 			}
 			result := evaluatedAffected{modular: modular, moduleStream: moduleStream, distroSeverityScope: severityScope, version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			if scoped {
+				result.aliases = aliases
+			}
 			// A range-free unimportant/negligible marker can be counted as
 			// excluded, but cannot lower a positive alias entry's rating.
 			if !hit && result.unimportant {
@@ -367,14 +371,12 @@ func affectedCVEs(a vulndb.Affected) ([]any, bool) {
 	return cves, present
 }
 
-func (r preparedRecord) aliasesForRelease(release string) []string {
-	if r.aliasesByRelease == nil {
-		return r.Aliases
+func (a evaluatedAffected) identity(r preparedRecord) advisoryIdentity {
+	aliases := a.aliases
+	if aliases == nil {
+		aliases = r.Aliases
 	}
-	if release == "" || len(r.aliasesByRelease[""]) == 0 {
-		return r.aliasesByRelease[release]
-	}
-	return unique(append(append([]string(nil), r.aliasesByRelease[""]...), r.aliasesByRelease[release]...))
+	return advisoryIdentity{ID: r.ID, Aliases: aliases, scoped: a.aliases != nil}
 }
 
 // Plans normally contain one version and release. Slices avoid two hash tables
@@ -497,14 +499,18 @@ func preparedBytes(records []preparedRecord) int64 {
 	n := int64(cap(records)) * int64(unsafe.Sizeof(preparedRecord{}))
 	for _, r := range records {
 		n += int64(len(r.ID)+len(r.Withdrawn)) + stringBytes(r.Aliases) + stringBytes(r.related)
-		if r.aliasesByRelease != nil {
+		if r.identitiesByRelease != nil {
 			n += 64
 		}
-		for release, aliases := range r.aliasesByRelease {
-			n += 96 + int64(len(release)) + stringBytes(aliases)
+		for release, identities := range r.identitiesByRelease {
+			n += 96 + int64(len(release)) + int64(cap(identities))*int64(unsafe.Sizeof(advisoryIdentity{}))
+			for _, identity := range identities {
+				n += stringBytes(identity.Aliases)
+			}
 		}
 		n += int64(cap(r.affected)) * int64(unsafe.Sizeof(evaluatedAffected{}))
 		for _, a := range r.affected {
+			n += stringBytes(a.aliases)
 			n += int64(len(a.version)+len(a.release)+len(a.reason)+len(a.distroStatus)+len(a.distroSeverity)+len(a.moduleStream)) + stringBytes(a.fixed)
 			if a.detail != nil {
 				n += affectedBytes(a.detail.affected) + 88 + int64(len(a.detail.severity)+len(a.detail.vector))
