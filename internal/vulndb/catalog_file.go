@@ -17,8 +17,10 @@ import (
 // catalogFile is opened and statted under the shared catalog lock before hashing.
 // Keep it alive so verification and SQLite refer to the same inode on Linux.
 type catalogFile struct {
-	file *os.File
-	info os.FileInfo
+	file       *os.File
+	info       os.FileInfo
+	header     [100]byte
+	headerSize int
 }
 
 const verificationMarkerName = ".verified"
@@ -131,7 +133,17 @@ func openCatalogFile(path string) (*catalogFile, error) {
 		f.Close()
 		return nil, err
 	}
-	return &catalogFile{file: f, info: info}, nil
+	source := &catalogFile{file: f, info: info}
+	// Capture the SQLite header before verification, including the change
+	// counter at offset 24. A committed write can preserve the stat tuple when
+	// filesystem timestamps coalesce. ReadAt also preserves the hash offset.
+	source.headerSize, err = f.ReadAt(source.header[:], 0)
+	if err != nil && err != io.EOF {
+		f.Close()
+		return nil, err
+	}
+	// Short/invalid catalogs still go through the ordinary integrity checks.
+	return source, nil
 }
 
 func (f *catalogFile) path() string {
@@ -149,6 +161,16 @@ func (f *catalogFile) check(message string) error {
 	}
 	if !os.SameFile(f.info, info) || f.info.Size() != info.Size() ||
 		!f.info.ModTime().Equal(info.ModTime()) || !reflect.DeepEqual(statCTime(f.info), statCTime(info)) {
+		return errors.New(message)
+	}
+	// Bypass SQLite's immutable page cache: it deliberately disables change
+	// detection, so PRAGMA data_version on that connection is insufficient.
+	var header [100]byte
+	n, err := f.file.ReadAt(header[:], 0)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	if n != f.headerSize || header != f.header {
 		return errors.New(message)
 	}
 	return nil

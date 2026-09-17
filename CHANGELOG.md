@@ -35,6 +35,11 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Changed
 
+- Default matching severity to `distro` (vendor rating first, CVSS fallback)
+  and include Debian unimportant advisories as `NEGLIGIBLE`. Add
+  `--exclude-unimportant`; retain `--include-unimportant` as a deprecated
+  no-op with a notice. Severity thresholds follow the selected policy, and
+  table/report legends describe it across match, scan and batch workflows.
 - Stream filesystem cataloging, SBOM serialization and loading, finding output
   and advisory lookups to reduce memory use. Batch database inserts, defer
   indexes, compress records and parallelize feed conversion and host walking.

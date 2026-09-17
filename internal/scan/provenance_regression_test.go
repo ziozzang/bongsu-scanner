@@ -33,9 +33,16 @@ func TestProvenanceDeclarations(t *testing.T) {
 }
 
 func TestProvenanceInternalLocks(t *testing.T) {
-	for _, dir := range []string{"usr/lib/ruby/gems/3.3.0/gems/rbs-3.4.0", "vendor/bundle/ruby/3.3.0", "usr/lib/python3/site-packages/pkg", "usr/lib/python3/dist-packages/pkg", "app/node_modules/pkg", "app/node_modules/@scope/pkg"} {
-		t.Run(dir, func(t *testing.T) {
-			got, _ := catalog([]File{{Path: dir + "/requirements.txt", Data: []byte("requests==2.31.0\n")}}, nil)
+	for _, tc := range []struct{ dir, metadata string }{
+		{"usr/lib/ruby/gems/3.3.0/gems/rbs-3.4.0", "usr/lib/ruby/gems/3.3.0/specifications/rbs-3.4.0.gemspec"},
+		{"vendor/bundle/ruby/3.3.0", ""},
+		{"usr/lib/python3/site-packages/pkg", "usr/lib/python3/site-packages/pkg-1.0.dist-info/METADATA"},
+		{"usr/lib/python3/dist-packages/pkg", "usr/lib/python3/dist-packages/pkg.egg-info/PKG-INFO"},
+		{"app/node_modules/pkg", "app/node_modules/pkg/package.json"},
+		{"app/node_modules/@scope/pkg", "app/node_modules/@scope/pkg/package.json"},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			got, _ := catalog([]File{{Path: tc.dir + "/requirements.txt", Data: []byte("requests==2.31.0\n")}, {Path: tc.metadata}}, nil)
 			if len(got) != 0 {
 				t.Fatalf("internal declaration retained: %+v", got)
 			}
@@ -56,7 +63,7 @@ func TestProvenanceNestedNPM(t *testing.T) {
 
 func TestProvenanceInstalledWins(t *testing.T) {
 	lock := File{Path: "app/requirements.txt", Data: []byte("my_pkg==1.0\n")}
-	installed := File{Path: "lib/site-packages/my_pkg-2.0.dist-info/METADATA", Data: []byte("Name: my-pkg\nVersion: 2.0\n")}
+	installed := File{Path: "app/lib/site-packages/my_pkg-2.0.dist-info/METADATA", Data: []byte("Name: my-pkg\nVersion: 2.0\n")}
 	for _, files := range [][]File{{lock, installed}, {installed, lock}} {
 		got, _ := catalog(files, nil)
 		if len(got) != 1 || got[0].Version != "2.0" || got[0].Evidence != "installed" {
@@ -123,6 +130,7 @@ func TestProvenanceDeclaredOptions(t *testing.T) {
 		var messages []string
 		c := cataloger{includeDeclared: include, opts: Options{Progress: func(p Progress) { messages = append(messages, p.Message) }}}
 		c.addFile(lock)
+		c.addFile(File{Path: "usr/local/bundle/specifications/rbs-3.4.0.gemspec"})
 		got, _ := c.finish()
 		if include {
 			if len(got) != 2 || c.declaredSkipped != 0 {
@@ -170,6 +178,11 @@ func TestProvenanceDedupeNamespacesAndLogging(t *testing.T) {
 			{Type: "npm", Namespace: "@a", Name: "dep", Version: "4", Evidence: "installed"},
 			{Type: "npm", Namespace: "@c", Name: "dep", Version: "1", Evidence: "lockfile"},
 		} {
+			if p.Evidence == "lockfile" {
+				p.Source = "app/package-lock.json"
+			} else {
+				p.Source = "app/node_modules/dep/package.json"
+			}
 			c.addPackage(p)
 		}
 		got, _ := c.finish()

@@ -204,7 +204,7 @@ CycloneDX when both formats are written (SPDX for `--format spdx`).
 The local catalog must already exist; otherwise the command stops before
 scanning and asks you to run `bscan db update`. Use `--db DIR` and
 `--db-isolation auto|copy|none` to select the catalog and reader isolation.
-`--min-severity`, `--only-fixed`, and `--include-unimportant` use the same
+`--min-severity`, `--only-fixed`, and `--exclude-unimportant` use the same
 filters as `match`; `--fail-on LEVEL` returns exit code 2 when the filtered
 findings meet the threshold, after all results have been written.
 These flags also work with `batch`. With `host --containers`, the host and
@@ -505,7 +505,23 @@ Matching accepts CycloneDX and SPDX JSON, respects OS release and upstream
 source-package identity, evaluates ecosystem version ranges and explicit
 versions, and groups unambiguous CVE aliases per component. Records with multiple
 distinct CVE aliases retain their original advisory IDs. Use `--min-severity LEVEL`,
-`--ignore ID,...`, `--include-unimportant`, and `--only-fixed` to filter results.
+`--ignore ID,...`, `--exclude-unimportant`, and `--only-fixed` to filter results.
+The default `--severity-source distro` uses the vendor/distribution rating first,
+with CVSS as the fallback. Vendor urgency maps as follows: `unimportant` →
+`NEGLIGIBLE`, `low` → `LOW`, `medium` → `MEDIUM`, `high` → `HIGH`, and
+`emergency`/`critical` → `CRITICAL`. Empty, `not yet assigned`, `end-of-life`,
+and other unranked values fall back to CVSS.
+Unimportant advisories are included by default. Use `--exclude-unimportant`
+to hide them; `--include-unimportant` remains accepted as a deprecated no-op
+and prints a one-line notice (including when set to `false`).
+With `--severity-source cvss`, `Severity` uses the CVSS rating while
+`DistroSeverity` retains the vendor urgency, including `unimportant`.
+`--severity-source max` selects the higher rating. Both `--min-severity` and
+`--fail-on` use the selected policy's `Severity`. Tables and report legends
+identify the policy; the default is
+`Severity policy: distro (vendor rating first, CVSS fallback)`.
+These defaults and options also apply to `scan --match` and `batch --match`.
+
 Multiple inputs produce separate table sections or a JSON report array;
 CycloneDX output requires one input and adds vulnerability references.
 The enriched output is a new artifact and must be signed separately if needed.

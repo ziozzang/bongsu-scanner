@@ -155,15 +155,24 @@ func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (f
 	if len(severities) == 0 {
 		severities = rec.Severity
 	}
-	for _, typ := range []string{"CVSS_V3", "CVSS_V2"} {
+	for _, typ := range []string{"CVSS_V4", "CVSS_V3", "CVSS_V2"} {
 		best := -1.0
 		vector := ""
 		for _, s := range severities {
 			if s.Type != typ {
 				continue
 			}
-			if n, e := cvss(s.Score); e == nil && n > best {
-				best, vector = n, s.Score
+			// Scores published without a vector participate in the same maximum.
+			if n, e := strconv.ParseFloat(strings.TrimSpace(s.Score), 64); e == nil {
+				if n >= 0 && n <= 10 && n > best {
+					best, vector = n, ""
+				}
+				continue
+			}
+			if typ != "CVSS_V4" {
+				if n, e := cvss(s.Score); e == nil && n > best {
+					best, vector = n, s.Score
+				}
 			}
 		}
 		if best >= 0 {
@@ -173,7 +182,7 @@ func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (f
 	vector := ""
 	level := "UNKNOWN"
 	for _, s := range severities {
-		if s.Type == "CVSS_V4" {
+		if s.Type == "CVSS_V4" && strings.HasPrefix(s.Score, "CVSS:4.0/") {
 			vector = s.Score
 		}
 		if n, e := strconv.ParseFloat(s.Score, 64); e == nil && n >= 0 && n <= 10 && s.Type != "CVSS_V4" {
@@ -229,9 +238,9 @@ func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
 // NormalizeSeveritySource validates the policy for both CLI entry points and Run.
 func NormalizeSeveritySource(source string) (string, error) {
 	switch source {
-	case "", "cvss":
-		return "cvss", nil
-	case "distro", "max":
+	case "":
+		return "distro", nil
+	case "cvss", "distro", "max":
 		return source, nil
 	default:
 		return "", fmt.Errorf("invalid severity source %q (want cvss, distro, or max)", source)
@@ -239,7 +248,7 @@ func NormalizeSeveritySource(source string) (string, error) {
 }
 
 func selectedSeverity(cvss, distro, source string) string {
-	level := normalizeSeverity(distro)
+	level := distroSeverityLevel(distro)
 	if level != "UNKNOWN" && (source == "distro" || source == "max" && SeverityRank(level) > SeverityRank(cvss)) {
 		return level
 	}
@@ -250,8 +259,30 @@ func mergeDistroSeverity(a, b string) string {
 	if a == "unimportant" || b == "unimportant" {
 		return "unimportant"
 	}
-	if a == "" || SeverityRank(normalizeSeverity(b)) > SeverityRank(normalizeSeverity(a)) {
+	if a == "" || SeverityRank(distroSeverityLevel(b)) > SeverityRank(distroSeverityLevel(a)) {
 		return b
 	}
 	return a
+}
+
+// distroSeverityLevel recognizes vendor urgency without changing CVSS parsing.
+func distroSeverityLevel(urgency string) string {
+	if strings.EqualFold(strings.TrimSpace(urgency), "emergency") {
+		return "CRITICAL"
+	}
+	return normalizeSeverity(urgency)
+}
+
+// SeverityPolicy describes the selected policy for output legends.
+func SeverityPolicy(source string) string {
+	switch source {
+	case "", "distro":
+		return "Severity policy: distro (vendor rating first, CVSS fallback)"
+	case "cvss":
+		return "Severity policy: cvss (CVSS rating)"
+	case "max":
+		return "Severity policy: max (higher of vendor rating and CVSS)"
+	default:
+		return "Severity policy: unknown"
+	}
 }

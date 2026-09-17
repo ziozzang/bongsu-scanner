@@ -19,7 +19,7 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
 
-func distroPolicyDB(t *testing.T) string {
+func distroPolicyDB(t *testing.T, urgency ...string) string {
 	t.Helper()
 	var b bytes.Buffer
 	z := zip.NewWriter(&b)
@@ -27,7 +27,11 @@ func distroPolicyDB(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = w.Write([]byte(`{"id":"CVE-2026-12345","severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],"affected":[{"package":{"ecosystem":"npm","name":"fixture"},"database_specific":{"urgency":"low"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}`))
+	data := `{"id":"CVE-2026-12345","severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],"affected":[{"package":{"ecosystem":"npm","name":"fixture"},"database_specific":{"urgency":"low"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}`
+	if len(urgency) > 0 {
+		data = strings.Replace(data, `"urgency":"low"`, `"urgency":"`+urgency[0]+`"`, 1)
+	}
+	_, err = w.Write([]byte(data))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -192,12 +192,13 @@ bscan scan [flags] TARGET
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
+| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
 | `--fail-on` | `""` | exit 2 when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
 | `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
-| `--include-unimportant` | `false` | include Debian unimportant advisories |
+| `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
 | `--max-files` | `0` | stop the directory walk after N regular files (0 = unlimited) |
 | `--memprofile` | `""` | write heap profile (hidden) |
@@ -211,7 +212,7 @@ bscan scan [flags] TARGET
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
 | `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
-| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
+| `--severity-source` | `distro` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
 | `--timeout` | `0s` | abort the scan after this duration (e.g. 10m; 0 = none) |
@@ -235,12 +236,13 @@ bscan batch [flags] TARGET...
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
+| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
 | `--fail-on` | `""` | exit 2 when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
 | `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
-| `--include-unimportant` | `false` | include Debian unimportant advisories |
+| `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |
 | `--jobs` | `0` | parallel scans |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
 | `--max-files` | `0` | stop the directory walk after N regular files (0 = unlimited) |
@@ -254,7 +256,7 @@ bscan batch [flags] TARGET...
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
 | `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
-| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
+| `--severity-source` | `distro` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
 | `--timeout` | `0s` | abort the scan after this duration (e.g. 10m; 0 = none) |
@@ -524,10 +526,11 @@ bscan match [flags] SBOM...
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--details` | `false` | include full advisory details text in findings |
 | `--env-fact` | `""` | user-declared LLM context KEY=VALUE (repeatable) |
+| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
 | `--fail-on` | `""` | exit 2 when a finding meets this severity |
 | `--format` | `table` | table, json, cyclonedx, html, markdown, csv, or sarif |
 | `--ignore` | `""` | comma-separated advisory IDs to ignore |
-| `--include-unimportant` | `false` | include Debian unimportant advisories |
+| `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |
 | `--llm` | `false` | add LLM environment applicability review; retain original findings |
 | `--llm-base-url` | `$BSCAN_LLM_BASE_URL` | OpenAI-compatible API base URL, e.g. https://server/v1 |
 | `--llm-cache` | `$BONGSU_HOME/cache/llm` | LLM cache directory (empty disables caching) |
@@ -540,7 +543,7 @@ bscan match [flags] SBOM...
 | `-o` | `""` | output file (default stdout) |
 | `--only-fixed` | `false` | include only findings with a known fix |
 | `--pubkey` | `""` | require database signature from trusted name, PEM file, or hex key |
-| `--severity-source` | `cvss` | severity policy: cvss, distro, or max |
+| `--severity-source` | `distro` | severity policy: cvss, distro, or max |
 | `--target-arch` | `""` | LLM context architecture override, e.g. amd64 |
 | `--target-os` | `""` | LLM context OS override, e.g. linux or windows |
 

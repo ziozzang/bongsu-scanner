@@ -234,11 +234,21 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		urgency := distroSeverity(r, a)
 		status, _ := a.Database["debian_status"].(string)
 		status = strings.ToLower(strings.TrimSpace(status))
-		unimportant := urgency == "unimportant"
+		marker := len(a.Ranges) == 0 && len(a.Versions) == 0
+		// Older native not-affected markers used the empty [0,0) range.
+		// Keep that exact representation equivalent to a range-free marker.
+		if status == "not-affected" && len(a.Versions) == 0 && len(a.Ranges) == 1 {
+			r := a.Ranges[0]
+			marker = r.Type == "ECOSYSTEM" && r.Repo == "" && len(r.Events) == 2 && r.Events[0] == (vulndb.Event{Introduced: "0"}) && r.Events[1] == (vulndb.Event{Fixed: "0"})
+		}
 		var detail *findingAffected
 		for _, v := range versions {
 			hit, fixed, low, reason := cache.affectedVersion(eco, v, prepared)
-			if !hit && reason == "" && !unimportant && status == "" && urgency == "" {
+			entryStatus, entryUrgency := status, urgency
+			if !hit && !marker {
+				entryStatus, entryUrgency = "", ""
+			}
+			if !hit && reason == "" && entryStatus == "" && entryUrgency == "" {
 				continue
 			}
 			if hit && detail == nil {
@@ -246,7 +256,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
 			}
-			result := evaluatedAffected{version: v, release: release, unimportant: unimportant, distroStatus: status, distroSeverity: urgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			result := evaluatedAffected{version: v, release: release, unimportant: entryUrgency == "unimportant", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
 			if hit {
 				result.detail = detail
 			}

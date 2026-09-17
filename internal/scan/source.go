@@ -321,10 +321,7 @@ func DirectoryContext(ctx context.Context, root, name string, opts Options) (Res
 	}
 	r := Result{Name: name, Source: root, SourceType: "directory", ScannedAt: opts.Now.UTC(), Scan: &meta}
 	r.Packages, r.OS = w.catalog.finish()
-	if n := w.catalog.declaredSkipped; n > 0 {
-		meta.DeclaredSkipped = n
-		report(opts, "catalog", fmt.Sprintf("skipped %d declared-only dependencies bundled inside installed packages (use --include-declared to keep them)", n), false)
-	}
+	reportDeclaredPolicy(opts, &meta, w.catalog.declaredSkipped)
 	if r.OS != nil {
 		r.OSName, r.OSVersion = r.OS.ID, r.OS.VersionID
 	}

@@ -139,9 +139,9 @@ func TestRunFiltersAndAliases(t *testing.T) {
 		t.Fatal("withdrawn matched")
 	}
 	rec.Affected[0].Database = map[string]any{"urgency": "unimportant"}
-	for _, include := range []bool{false, true} {
-		r, _ = Run(context.Background(), &fakeStore{records: []vulndb.Record{rec}}, []Subject{s}, Options{IncludeUnimportant: include})
-		if (len(r.Findings) > 0) != include {
+	for _, exclude := range []bool{false, true} {
+		r, _ = Run(context.Background(), &fakeStore{records: []vulndb.Record{rec}}, []Subject{s}, Options{ExcludeUnimportant: exclude})
+		if (len(r.Findings) > 0) == exclude {
 			t.Fatal("unimportant option")
 		}
 	}

@@ -869,12 +869,11 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 	meta.MetadataSkipped += c.metadataSkipped
 	c.addPackages(extra)
 	r.Packages, r.OS = c.finish()
-	if n := c.declaredSkipped; n > 0 {
-		meta.DeclaredSkipped = n
-		report(opts, "catalog", fmt.Sprintf("skipped %d declared-only dependencies bundled inside installed packages (use --include-declared to keep them)", n), false)
-	}
-	if meta.MetadataSkipped != 0 || meta.SkippedErrors != 0 || meta.DeclaredSkipped != 0 {
+	if meta.MetadataSkipped != 0 || meta.SkippedErrors != 0 {
 		meta.Partial = true
+	}
+	reportDeclaredPolicy(opts, &meta, c.declaredSkipped)
+	if meta.Partial || meta.DeclaredSkipped != 0 {
 		r.Scan = &meta
 	}
 	if r.OS != nil {

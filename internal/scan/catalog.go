@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,8 +83,18 @@ type cataloger struct {
 	npmBundlePrefixes []string
 	opts              Options
 	pending           []Package
+	sourceOrder       map[string]int
 	npmDirs           map[string]bool
+	npmPackages       map[string]bool
+	pythonPackages    map[string]bool
+	gemPackages       map[string]bool
+	installed         map[string][]installedLocation
 	hasDir            func(string) bool
+}
+
+type installedLocation struct {
+	version string
+	source  string
 }
 
 func (c *cataloger) addFile(f File) {
@@ -136,9 +147,24 @@ func (c *cataloger) addPackage(p Package) {
 		p.Evidence = "installed"
 	}
 	c.observePath(p.Source)
-	if p.Evidence == "lockfile" && internalDeclaration(p.Source) && strings.TrimSpace(p.Name) != "" {
+	if c.sourceOrder == nil {
+		c.sourceOrder = map[string]int{}
+	}
+	if _, ok := c.sourceOrder[p.Source]; !ok {
+		c.sourceOrder[strings.Clone(p.Source)] = len(c.sourceOrder)
+	}
+	if p.Evidence == "lockfile" && strings.TrimSpace(p.Name) != "" {
 		c.pending = append(c.pending, clonePackage(p))
 		return
+	}
+	if p.Evidence == "installed" {
+		if c.installed == nil {
+			c.installed = map[string][]installedLocation{}
+		}
+		key := packageNameKey(p)
+		// Keep every installation location until declarations are resolved;
+		// merged inventory sources are capped and can span projects.
+		c.installed[key] = append(c.installed[key], installedLocation{version: strings.Clone(p.Version), source: strings.Clone(p.Source)})
 	}
 	c.addInventoryPackage(p)
 }
@@ -189,7 +215,29 @@ func (c *cataloger) addInventoryPackage(p Package) {
 	}
 	if prev, ok := c.seen[key]; ok {
 		pendingPURL := isOS && (prev.PURL == "" || (prev.SourceName == "" && p.SourceName != ""))
-		mergePackage(&prev, p)
+		sources := prev.Source
+		deferred := p.Evidence == "lockfile" || p.Evidence == "declared"
+		firstSource, _, _ := strings.Cut(sources, ";")
+		if deferred && c.sourceOrder[p.Source] < c.sourceOrder[firstSource] {
+			merged := p
+			mergePackage(&merged, prev)
+			prev = merged
+		} else {
+			mergePackage(&prev, p)
+		}
+		if deferred {
+			// Deferred declarations keep their original discovery order,
+			// including when the installed source list is already full.
+			ordered := strings.Split(sources, ";")
+			if sources == "" {
+				ordered = nil
+			}
+			if p.Source != "" && !slices.Contains(ordered, p.Source) {
+				ordered = append(ordered, p.Source)
+			}
+			sort.SliceStable(ordered, func(i, j int) bool { return c.sourceOrder[ordered[i]] < c.sourceOrder[ordered[j]] })
+			prev.Source = strings.Join(ordered[:min(len(ordered), maxPackageSources)], ";")
+		}
 		if pendingPURL {
 			prev.PURL = "" // mergePackage may have generated it before OS resolution.
 		}
@@ -222,11 +270,7 @@ func clonePackage(p Package) Package {
 func (c *cataloger) finish() ([]Package, *OSRelease) {
 	skipped := map[string]int{}
 	for _, p := range c.pending {
-		declared := true
-		if dir := npmDeclarationDirectory(p.Source); dir != "" && !nonNPMInternalDeclaration(p.Source) {
-			nested := path.Join(dir, "node_modules")
-			declared = !c.npmDirs[nested] && (c.hasDir == nil || !c.hasDir(nested))
-		}
+		declared := c.internalDeclaration(p.Source)
 		if declared {
 			if !c.includeDeclared {
 				c.declaredSkipped++
@@ -235,9 +279,15 @@ func (c *cataloger) finish() ([]Package, *OSRelease) {
 			}
 			p.Evidence = "declared"
 		}
+		if !c.includeDeclared && p.Evidence == "lockfile" && c.replacedByInstallation(p) {
+			c.declaredSkipped++
+			report(c.opts, "catalog", fmt.Sprintf("dropped lockfile version %s@%s from %s: installed version takes precedence in the same project", p.Name, p.Version, p.Source), true)
+			continue
+		}
 		c.addInventoryPackage(p)
 	}
 	c.pending = nil
+	c.installed = nil
 	sources := make([]string, 0, len(skipped))
 	for source := range skipped {
 		sources = append(sources, source)
@@ -246,24 +296,10 @@ func (c *cataloger) finish() ([]Package, *OSRelease) {
 	for _, source := range sources {
 		report(c.opts, "catalog", fmt.Sprintf("skipped %d declared dependencies from %s", skipped[source], source), false)
 	}
-	installed := map[string]map[string]bool{}
-	for _, p := range c.seen {
-		if p.Evidence == "installed" {
-			name := packageNameKey(p)
-			if installed[name] == nil {
-				installed[name] = map[string]bool{}
-			}
-			installed[name][p.Version] = true
-		}
-	}
 	out := make([]Package, 0, len(c.order))
 	resolved := make(map[string]int, len(c.order))
 	for _, key := range c.order {
 		p := c.seen[key]
-		if versions := installed[packageNameKey(p)]; p.Evidence == "lockfile" && len(versions) > 0 && !versions[p.Version] {
-			report(c.opts, "catalog", fmt.Sprintf("dropped lockfile version %s@%s from %s: installed version takes precedence", p.Name, p.Version, p.Source), true)
-			continue
-		}
 		if p.Type == "deb" || p.Type == "apk" || p.Type == "rpm" {
 			if p.Namespace == "" {
 				if c.osr != nil {
@@ -1301,28 +1337,82 @@ func isDeclarationFile(p string) bool {
 	return isRequirementsFile(base)
 }
 
-var installedGemDirectory = regexp.MustCompile(`/gems/[^/]+-[0-9][^/]*/`)
+// policyPath preserves case: project paths on Linux are case-sensitive.
+func policyPath(p string) string {
+	return strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/")
+}
 
-func nonNPMInternalDeclaration(p string) bool {
-	p = "/" + strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/")
-	if strings.Contains(p, "/vendor/bundle/") || installedGemDirectory.MatchString(p) {
+func pathWithin(p, dir string) bool {
+	return dir == "." || p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+func (c *cataloger) replacedByInstallation(p Package) bool {
+	if p.Source == "" {
+		return false
+	}
+	lock := policyPath(p.Source)
+	replace := false
+	for _, installed := range c.installed[packageNameKey(p)] {
+		for _, source := range strings.Split(installed.source, ";") {
+			if source == "" {
+				continue
+			}
+			location := policyPath(source)
+			site := installationSite(location)
+			if !pathWithin(location, path.Dir(lock)) && (site == "" || !pathWithin(lock, site)) {
+				continue
+			}
+			if installed.version == p.Version {
+				return false
+			}
+			replace = true
+		}
+	}
+	return replace
+}
+
+func installationSite(p string) string {
+	parts := strings.Split(p, "/")
+	for i := len(parts) - 2; i >= 0; i-- {
+		switch parts[i] {
+		case "site-packages", "dist-packages", "node_modules":
+			return strings.Join(parts[:i+1], "/")
+		case "specifications":
+			return path.Dir(strings.Join(parts[:i+1], "/"))
+		}
+	}
+	return ""
+}
+
+func (c *cataloger) internalDeclaration(p string) bool {
+	p = policyPath(p)
+	if strings.Contains("/"+p, "/vendor/bundle/") || strings.Contains("/"+p, "/go/pkg/mod/") {
 		return true
 	}
-	for _, marker := range []string{"/site-packages/", "/dist-packages/"} {
-		if _, tail, ok := strings.Cut(p, marker); ok && strings.Contains(tail, "/") {
-			return true
+	parts := strings.Split(p, "/")
+	for i := 0; i < len(parts)-2; i++ {
+		switch parts[i] {
+		case "site-packages", "dist-packages":
+			if c.pythonPackages[strings.Join(parts[:i+1], "/")+"/"+pythonOwnerName(parts[i+1])] {
+				return true
+			}
+		case "gems":
+			if c.gemPackages[strings.Join(parts[:i+2], "/")] {
+				return true
+			}
 		}
+	}
+	if owner := c.npmDeclarationDirectory(p); owner != "" {
+		return !c.npmDirs[path.Join(owner, "node_modules")]
 	}
 	return false
 }
 
-// The innermost package owns a nested lockfile. A hidden lock directly in
-// node_modules describes that directory, rather than a bundled package.
-func npmDeclarationDirectory(p string) string {
-	p = strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/")
-	parts := strings.Split(p, "/")
-	root := ""
-	for i := 0; i < len(parts)-1; i++ {
+// A nested workspace belongs to its nearest confirmed enclosing package.
+// Hidden locks directly in node_modules do not name a package owner.
+func (c *cataloger) npmDeclarationDirectory(p string) string {
+	parts := strings.Split(policyPath(p), "/")
+	for i := len(parts) - 2; i >= 0; i-- {
 		if parts[i] != "node_modules" {
 			continue
 		}
@@ -1331,26 +1421,80 @@ func npmDeclarationDirectory(p string) string {
 			end++
 		}
 		if end < len(parts) {
-			root = strings.Join(parts[:end], "/")
+			owner := strings.Join(parts[:end], "/")
+			if c.npmPackages[owner] {
+				return owner
+			}
 		}
 	}
-	return root
+	return ""
 }
 
-func internalDeclaration(p string) bool {
-	return nonNPMInternalDeclaration(p) || npmDeclarationDirectory(p) != ""
-}
+var pythonMetadataVersion = regexp.MustCompile(`-[0-9]`)
 
-// Remember only node_modules ancestors, not the entire scanned file tree.
-func (c *cataloger) observePath(p string) {
-	parts := strings.Split(strings.TrimPrefix(path.Clean(strings.ReplaceAll(p, "\\", "/")), "/"), "/")
-	for i, part := range parts[:len(parts)-1] {
-		if part == "node_modules" {
-			if c.npmDirs == nil {
-				c.npmDirs = map[string]bool{}
-			}
-			c.npmDirs[strings.Join(parts[:i+1], "/")] = true
+func pythonOwnerName(name string) string {
+	if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
+		name = strings.TrimSuffix(strings.TrimSuffix(name, ".dist-info"), ".egg-info")
+		if loc := pythonMetadataVersion.FindStringIndex(name); loc != nil {
+			name = name[:loc[0]]
 		}
+	}
+	return normalizePyPIName(name)
+}
+
+// Remember installation metadata only. Directory observations supplied by
+// archive/walk callers cannot establish an installation by themselves.
+func (c *cataloger) observePath(p string) {
+	p = policyPath(p)
+	parts := strings.Split(p, "/")
+	if path.Base(p) == "package.json" {
+		owner := path.Dir(p)
+		site := path.Dir(owner)
+		if strings.HasPrefix(path.Base(site), "@") {
+			site = path.Dir(site)
+		}
+		if path.Base(site) == "node_modules" {
+			if c.npmPackages == nil {
+				c.npmPackages, c.npmDirs = map[string]bool{}, map[string]bool{}
+			}
+			c.npmPackages[owner], c.npmDirs[site] = true, true
+		}
+	}
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] != "site-packages" && parts[i] != "dist-packages" {
+			continue
+		}
+		metadata := parts[i+1]
+		if (strings.HasSuffix(metadata, ".dist-info") && i+3 == len(parts) && parts[i+2] == "METADATA") ||
+			(strings.HasSuffix(metadata, ".egg-info") && (i+2 == len(parts) || (i+3 == len(parts) && parts[i+2] == "PKG-INFO"))) {
+			if c.pythonPackages == nil {
+				c.pythonPackages = map[string]bool{}
+			}
+			c.pythonPackages[strings.Join(parts[:i+1], "/")+"/"+pythonOwnerName(metadata)] = true
+		}
+	}
+	if isInstalledGemspec(p) {
+		site := path.Dir(p)
+		if path.Base(site) == "default" {
+			site = path.Dir(site)
+		}
+		if c.gemPackages == nil {
+			c.gemPackages = map[string]bool{}
+		}
+		c.gemPackages[path.Join(path.Dir(site), "gems", strings.TrimSuffix(path.Base(p), ".gemspec"))] = true
+	}
+}
+
+// DeclaredSkipped is a policy exclusion, never evidence of an incomplete scan.
+func reportDeclaredPolicy(opts Options, meta *ScanMetadata, skipped int) {
+	meta.DeclaredSkipped = skipped
+	if skipped == 0 {
+		return
+	}
+	report(opts, "catalog", fmt.Sprintf("skipped %d declared dependencies by policy (use --include-declared to keep them)", skipped), false)
+	if meta.Partial {
+		report(opts, "catalog", fmt.Sprintf("warning: partial scan (denied=%d errors=%d metadata-skipped=%d limit=%q); declared-skipped=%d (policy exclusions); the inventory may be incomplete",
+			meta.PermissionDenied, meta.SkippedErrors, meta.MetadataSkipped, meta.LimitReached, skipped), false)
 	}
 }
 

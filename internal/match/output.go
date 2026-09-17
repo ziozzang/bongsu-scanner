@@ -59,6 +59,9 @@ func Write(w io.Writer, format string, r Report, d Document) error {
 		if _, e := fmt.Fprintf(w, "%d subjects, %d matched, %d vulnerabilities\n", r.Subjects, r.Matched, len(r.Findings)); e != nil {
 			return e
 		}
+		if _, err := fmt.Fprintln(w, reportSeverityPolicy(r)); err != nil {
+			return err
+		}
 		keys := make([]string, 0, len(r.Skipped))
 		for k := range r.Skipped {
 			keys = append(keys, k)
@@ -212,6 +215,8 @@ func writeCycloneDX(w io.Writer, r Report, d Document) error {
 		}
 		out["properties"] = properties
 	}
+	properties := append([]any(nil), arr(out["properties"])...)
+	out["properties"] = append(properties, map[string]any{"name": "bscan:severity-policy", "value": reportSeverityPolicy(r)})
 	out["vulnerabilities"] = nil
 	// The CLI uses an atomic output buffer. Avoid retaining its geometrically
 	// growing intermediate copies alongside the CycloneDX compatibility tree.
@@ -369,4 +374,11 @@ func cycloneDXFinding(f Finding) map[string]any {
 		v["updated"] = f.Record.Modified
 	}
 	return v
+}
+
+func reportSeverityPolicy(r Report) string {
+	if r.SeverityPolicy != "" {
+		return httpx.Sanitize(r.SeverityPolicy)
+	}
+	return SeverityPolicy("")
 }

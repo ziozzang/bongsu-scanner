@@ -17,11 +17,11 @@ import (
 )
 
 type scanMatchFlags struct {
-	match                  bool
-	reports, db, isolation string
-	minimum, fail          string
-	severitySource         string
-	onlyFixed, unimportant bool
+	match                         bool
+	reports, db, isolation        string
+	minimum, fail                 string
+	severitySource                string
+	onlyFixed, excludeUnimportant bool
 }
 
 func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
@@ -29,11 +29,12 @@ func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.StringVar(&f.reports, "report", "", "comma-separated html, markdown, csv, or sarif reports (requires --match)")
 	fs.StringVar(&f.db, "db", "", "local vulnerability database directory (default configured db directory)")
 	fs.StringVar(&f.isolation, "db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
-	fs.StringVar(&f.severitySource, "severity-source", "cvss", "severity policy: cvss, distro, or max")
+	fs.StringVar(&f.severitySource, "severity-source", "distro", "severity policy: cvss, distro, or max")
 	fs.StringVar(&f.minimum, "min-severity", "", "minimum severity to include")
 	fs.StringVar(&f.fail, "fail-on", "", "exit 2 when a finding meets this severity")
 	fs.BoolVar(&f.onlyFixed, "only-fixed", false, "include only findings with a known fix")
-	fs.BoolVar(&f.unimportant, "include-unimportant", false, "include Debian unimportant advisories")
+	addDeprecatedIncludeUnimportant(fs)
+	fs.BoolVar(&f.excludeUnimportant, "exclude-unimportant", false, "exclude Debian unimportant advisories")
 }
 
 type scanMatcher struct {
@@ -76,7 +77,7 @@ func prepareScanMatch(ctx context.Context, f scanMatchFlags) (*scanMatcher, erro
 	if err != nil {
 		return nil, err
 	}
-	m.options = matcher.Options{SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, IncludeUnimportant: f.unimportant}
+	m.options = matcher.Options{SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, ExcludeUnimportant: f.excludeUnimportant}
 	if f.db == "" {
 		f.db, err = databaseDir()
 		if err != nil {

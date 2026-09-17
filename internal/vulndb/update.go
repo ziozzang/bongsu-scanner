@@ -1,6 +1,7 @@
 package vulndb
 
 import (
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -20,7 +21,7 @@ import (
 
 // conversionCacheVersion must change whenever feed conversion semantics change.
 // Stored per feed in SourceMeta so a 304 cannot reuse stale converted records.
-const conversionCacheVersion = 2
+const conversionCacheVersion = 3
 
 // Update builds a complete replacement beside dir. Any failed feed leaves the
 // current database intact; the returned metadata still describes every attempt.
@@ -214,6 +215,18 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		feed.MaxBytes = opts.MaxFeedBytes
 	}
 	staleConversion := prev != nil && prev.ConversionVersion != conversionCacheVersion
+	// Converted JSON size cannot stand in for the original archive's expansion:
+	// descriptions and ignored members can disappear during conversion.
+	expansionLimited := feed.Source == SourceOSV || feed.Source == SourceGHSA
+	cacheMetaRel := cacheRel + ".meta.json"
+	if prev != nil && expansionLimited {
+		var cached feedExpansionMeta
+		if err := readJSON(filepath.Join(dir, cacheMetaRel), &cached); err != nil ||
+			cached.Version != 1 || cached.SHA256 != prev.SHA256 ||
+			cached.ExpandedBytes > opts.maxFeedUncompressedBytes() {
+			staleConversion = true
+		}
+	}
 	force := opts.Force
 	if staleConversion {
 		if _, err := os.Stat(filepath.Join(dir, rawRel)); errors.Is(err, os.ErrNotExist) {
@@ -225,7 +238,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	fetched, err := fetchFeed(ctx, opts.Client, feed, prev, filepath.Join(stage, rawRel), force, now)
 	if err == nil && fetched.NotModified && staleConversion {
 		err = copyFileContext(ctx, filepath.Join(dir, rawRel), filepath.Join(stage, rawRel))
-		fetched.NotModified = false // Reparse retained raw bytes with this converter.
+		fetched.NotModified = false // Reparse retained bytes with current conversion and limits.
 	}
 	var parsedCount int
 	cacheLimit := feedCacheLimit(feed.Source, opts)
@@ -251,6 +264,9 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		if err == nil {
 			err = copyFileContext(ctx, filepath.Join(dir, cacheRel), filepath.Join(stage, cacheRel))
 		}
+		if err == nil && expansionLimited {
+			err = copyFileContext(ctx, filepath.Join(dir, cacheMetaRel), filepath.Join(stage, cacheMetaRel))
+		}
 		if err == nil && !opts.NoKeepRaw {
 			if _, statErr := os.Stat(filepath.Join(dir, rawRel)); statErr == nil {
 				err = copyFileContext(ctx, filepath.Join(dir, rawRel), filepath.Join(stage, rawRel))
@@ -262,6 +278,13 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 			progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
 		}
 		parsedCount, err = streamFeedCacheSpool(ctx, feed, filepath.Join(stage, rawRel), filepath.Join(stage, cacheRel), fetched.Meta.Bytes, progress, cacheLimit, 64<<20, spool.append)
+		if err == nil && expansionLimited {
+			var expanded uint64
+			expanded, err = feedExpandedBytes(ctx, filepath.Join(stage, rawRel))
+			if err == nil {
+				err = writeJSON(filepath.Join(stage, cacheMetaRel), feedExpansionMeta{Version: 1, SHA256: fetched.Meta.SHA256, ExpandedBytes: expanded})
+			}
+		}
 	}
 	m := fetched.Meta
 	m.Records = parsedCount
@@ -284,6 +307,33 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		_ = os.Remove(filepath.Join(stage, rawRel))
 	}
 	return m, err
+}
+
+// Stored beside each converted OSV/GHSA cache and included in the database
+// manifest. Missing/obsolete metadata requires parsing the original feed again.
+type feedExpansionMeta struct {
+	Version       int    `json:"version"`
+	SHA256        string `json:"sha256"`
+	ExpandedBytes uint64 `json:"expanded_bytes"`
+}
+
+func feedExpandedBytes(ctx context.Context, filename string) (uint64, error) {
+	zr, err := zip.OpenReader(filename)
+	if err != nil {
+		return 0, err
+	}
+	defer zr.Close()
+	var expanded uint64
+	for _, f := range zr.File {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if f.UncompressedSize64 > math.MaxUint64-expanded {
+			return 0, errors.New("feed expanded size overflows uint64")
+		}
+		expanded += f.UncompressedSize64
+	}
+	return expanded, nil
 }
 
 // Converted OSV/GHSA feeds can exceed the legacy 1 GiB cache budget too.

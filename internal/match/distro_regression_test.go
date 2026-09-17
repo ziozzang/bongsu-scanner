@@ -55,13 +55,13 @@ func TestDistroUrgencySourcesExcludeUnimportant(t *testing.T) {
 			case "record-database":
 				rec.Database = urgency
 			}
-			for _, include := range []bool{false, true} {
-				r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{rec}}, []Subject{distroSubject()}, Options{IncludeUnimportant: include})
+			for _, exclude := range []bool{false, true} {
+				r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{rec}}, []Subject{distroSubject()}, Options{ExcludeUnimportant: exclude})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if (len(r.Findings) == 1) != include {
-					t.Fatalf("include=%v: %+v", include, r)
+				if (len(r.Findings) == 1) == exclude {
+					t.Fatalf("exclude=%v: %+v", exclude, r)
 				}
 			}
 		})
@@ -110,7 +110,7 @@ func TestDistroSeverityPolicies(t *testing.T) {
 						t.Fatalf("%+v %v", r, err)
 					}
 					want := "CRITICAL"
-					if mode == "distro" {
+					if mode == "" || mode == "distro" {
 						switch urgency {
 						case "low":
 							want = "LOW"
@@ -255,12 +255,12 @@ func TestDistroUnimportantDuplicatePolicy(t *testing.T) {
 	tracker.ID = "TRACKER-1"
 	tracker.Aliases = []string{rec.ID}
 	tracker.Affected[0].Specific = map[string]any{"urgency": "unimportant"}
-	for _, include := range []bool{false, true} {
-		r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{rec, tracker}}, []Subject{distroSubject()}, Options{IncludeUnimportant: include})
-		if err != nil || (len(r.Findings) == 1) != include {
+	for _, exclude := range []bool{false, true} {
+		r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{rec, tracker}}, []Subject{distroSubject()}, Options{ExcludeUnimportant: exclude})
+		if err != nil || (len(r.Findings) == 1) == exclude {
 			t.Fatalf("duplicate unimportant: %+v %v", r, err)
 		}
-		if include && r.Findings[0].DistroSeverity != "unimportant" {
+		if !exclude && r.Findings[0].DistroSeverity != "unimportant" {
 			t.Fatalf("lost urgency: %+v", r)
 		}
 	}

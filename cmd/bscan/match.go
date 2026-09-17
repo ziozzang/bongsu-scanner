@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,11 +117,12 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	isolation := fs.String("db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
 	format := fs.String("format", "table", "table, json, cyclonedx, html, markdown, csv, or sarif")
 	out := fs.String("o", "", "output file (default stdout)")
-	severitySource := fs.String("severity-source", "cvss", "severity policy: cvss, distro, or max")
+	severitySource := fs.String("severity-source", "distro", "severity policy: cvss, distro, or max")
 	minimum := fs.String("min-severity", "", "minimum severity to include")
 	fail := fs.String("fail-on", "", "exit 2 when a finding meets this severity")
 	ignore := fs.String("ignore", "", "comma-separated advisory IDs to ignore")
-	unimportant := fs.Bool("include-unimportant", false, "include Debian unimportant advisories")
+	addDeprecatedIncludeUnimportant(fs)
+	excludeUnimportant := fs.Bool("exclude-unimportant", false, "exclude Debian unimportant advisories")
 	details := fs.Bool("details", false, "include full advisory details text in findings")
 	fixed := fs.Bool("only-fixed", false, "include only findings with a known fix")
 	pub := fs.String("pubkey", "", "require database signature from trusted name, PEM file, or hex key")
@@ -242,7 +244,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 			return fmt.Errorf("%s: %w", input, err)
 		}
 		matchReport, err := matcher.Run(ctx, store, doc.Subjects, matcher.Options{
-			SeveritySource: severityPolicy, Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
+			SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", input, err)
@@ -274,7 +276,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		}
 		if reportFormat {
 			in := report.Input{Report: matchReport, Target: filepath.Base(input), SBOMPath: input, GeneratedAt: time.Now().UTC(), ToolVersion: version,
-				Options: matcher.Options{SeveritySource: severityPolicy, Details: *details, IncludeUnimportant: *unimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
+				Options: matcher.Options{SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
 			if target, scanMeta, osMeta, image, host, err := report.ContextFromSBOM(input); err == nil {
 				in.Scan, in.OS, in.Image, in.Host = scanMeta, osMeta, image, host
 				if target != "" {
@@ -358,4 +360,21 @@ func logMissingCoverage(scope string, r matcher.Report) {
 	for _, warning := range r.MissingCoverage {
 		warnf(scope, "WARNING: %s\n", httpx.Sanitize(warning))
 	}
+}
+
+// Warn once per invocation, including an explicit false value. Both spellings
+// remain no-ops; exclusion is controlled solely by --exclude-unimportant.
+func addDeprecatedIncludeUnimportant(fs *flag.FlagSet) {
+	warned := false
+	fs.BoolFunc("include-unimportant", "deprecated no-op: unimportant advisories are included by default", func(value string) error {
+		if _, err := strconv.ParseBool(value); err != nil {
+			return err
+		}
+		if !warned {
+			fmt.Fprintln(os.Stderr, "bscan: --include-unimportant is deprecated and has no effect; unimportant advisories are included by default (use --exclude-unimportant to hide them)")
+			warned = true
+		}
+		return nil
+	})
+	fs.Lookup("include-unimportant").DefValue = "false"
 }

@@ -12,7 +12,8 @@ import (
 
 type Options struct {
 	Details            bool
-	IncludeUnimportant bool
+	IncludeUnimportant bool // Deprecated: unimportant advisories are included by default; ignored.
+	ExcludeUnimportant bool
 	MinSeverity        string
 	SeveritySource     string
 	IgnoreIDs          []string
@@ -36,6 +37,7 @@ type Finding struct {
 	Assessment     *assessment.Result `json:"assessment,omitempty"`
 }
 type Report struct {
+	SeverityPolicy  string `json:"SeverityPolicy,omitempty"`
 	Findings        []Finding
 	Subjects        int
 	Matched         int
@@ -51,6 +53,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	if err != nil {
 		return report, err
 	}
+	report.SeverityPolicy = SeverityPolicy(source)
 	meta, err := store.Meta()
 	if err != nil {
 		return report, err
@@ -174,7 +177,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if a.distroStatus == "not-affected" || a.distroStatus == "undetermined" && statuses[id] != "not-affected" {
 						statuses[id] = a.distroStatus
 					}
-					if a.distroSeverity != "" {
+					// Unimportant markers alone cannot override a positive entry.
+					if a.distroSeverity != "" && (a.hit || a.distroSeverity != "unimportant") {
 						urgencies[id] = mergeDistroSeverity(urgencies[id], a.distroSeverity)
 					}
 				}
@@ -202,14 +206,14 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					}
 					status := statuses[id]
 					urgency := mergeDistroSeverity(prepared.distroSeverity, urgencies[id])
-					if status == "not-affected" && prepared.hit && len(prepared.detail.affected.Ranges) > 0 {
+					if status == "not-affected" && prepared.hit {
 						report.Skipped["distro-not-affected"]++
 						continue
 					}
 					if prepared.distroStatus == "not-affected" {
 						continue
 					}
-					if !opts.IncludeUnimportant && (prepared.unimportant || urgency == "unimportant") {
+					if opts.ExcludeUnimportant && (prepared.unimportant || urgency == "unimportant") {
 						report.Skipped["unimportant"]++
 						continue
 					}

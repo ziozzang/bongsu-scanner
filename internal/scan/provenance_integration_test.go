@@ -9,6 +9,8 @@ import (
 
 func TestProvenanceDirectoryAndArchive(t *testing.T) {
 	entries := []tarEntry{
+		{name: "usr/local/bundle/specifications/rbs-3.4.0.gemspec", data: []byte("Gem::Specification.new do |s|\n  s.name = \"rbs\"\n  s.version = \"3.4.0\"\nend\n")},
+		{name: "usr/local/lib/python3/site-packages/pkg-1.0.dist-info/METADATA", data: []byte("Name: pkg\nVersion: 1.0\n")},
 		{name: "usr/local/bundle/gems/rbs-3.4.0/Gemfile.lock", data: []byte("GEM\n  specs:\n    unused (1.0.0)\n")},
 		{name: "usr/local/lib/python3/site-packages/pkg/requirements.txt", data: []byte("unused==1.0.0\n")},
 		{name: "app/node_modules/parent/package-lock.json", data: []byte(`{"packages":{"node_modules/nested":{"version":"1.0.0"}}}`)},
@@ -18,10 +20,10 @@ func TestProvenanceDirectoryAndArchive(t *testing.T) {
 	}
 	check := func(t *testing.T, r Result) {
 		t.Helper()
-		if len(r.Packages) != 3 {
+		if len(r.Packages) != 5 {
 			t.Fatalf("packages=%+v", r.Packages)
 		}
-		want := map[string]string{"app-dep": "lockfile", "nested": "installed", "yarn": "package.json"}
+		want := map[string]string{"app-dep": "lockfile", "nested": "installed", "yarn": "package.json", "rbs": "installed", "pkg": "installed"}
 		for _, p := range r.Packages {
 			if want[p.Name] != p.Evidence {
 				t.Fatalf("package=%+v", p)
@@ -145,11 +147,8 @@ func TestProvenanceNestedDirectoryEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := 1
-		if removed {
-			want = 0
-		}
-		if len(r.Packages) != want {
+		// Neither an empty directory nor its whiteout establishes an install.
+		if len(r.Packages) != 1 {
 			t.Errorf("removed=%v packages=%+v", removed, r.Packages)
 		}
 	}

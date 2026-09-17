@@ -132,8 +132,8 @@ func TestVerificationCacheRejectsChangedSQLite(t *testing.T) {
 				if err := os.Chtimes(path, stamp, stamp); err != nil {
 					t.Fatal(err)
 				}
-				changeCatalogCTime(t, path, before)
 			}
+			changeCatalogCTime(t, path, before)
 			info, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)

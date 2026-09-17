@@ -19,7 +19,7 @@ import (
 )
 
 func TestSecondReviewAutoDetectsModification(t *testing.T) {
-	for _, mutation := range []string{"unchanged", "delete", "restore-mtime"} {
+	for _, mutation := range []string{"unchanged", "delete", "delete-cached", "restore-mtime"} {
 		t.Run(mutation, func(t *testing.T) {
 			dir := readerCatalog(t)
 			st, err := Open(dir)
@@ -35,8 +35,14 @@ func TestSecondReviewAutoDetectsModification(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if mutation == "delete-cached" {
+				records, err := st.Lookup("npm", "example")
+				if err != nil || len(records) != 1 {
+					t.Fatalf("warm lookup: records=%v err=%v", records, err)
+				}
+			}
 			switch mutation {
-			case "delete":
+			case "delete", "delete-cached":
 				db, err := sql.Open("sqlite", sqliteURI(path, false))
 				if err != nil {
 					t.Fatal(err)
@@ -46,6 +52,10 @@ func TestSecondReviewAutoDetectsModification(t *testing.T) {
 				if err != nil || closeErr != nil {
 					t.Fatal(err, closeErr)
 				}
+				// Model a filesystem that assigns the same mtime/ctime tick
+				// to creation and DELETE. Inject only the baseline stat; the
+				// reader must still detect the real committed content change.
+				coalesceCatalogStat(t, st.(*sqliteStore).source)
 			case "restore-mtime":
 				// Identical bytes and restored mtime/size still change ctime.
 				data, err := os.ReadFile(path)

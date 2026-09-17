@@ -20,6 +20,25 @@ var columns = []string{"Package", "Version", "Ecosystem", "Vulnerability ID", "R
 func cells(f Finding) []string {
 	return []string{f.Package, f.Version, f.Ecosystem, f.ID, strings.Join(f.RelatedIDs, ", "), f.Severity, strconv.FormatFloat(f.Score, 'f', 1, 64), f.Vector, strings.Join(f.FixedIn, ", "), f.MatchedBy, f.Confidence, f.Summary, strings.Join(f.Links, " "), f.AssessmentStatus, f.AssessmentReason, f.PURL, f.Source, f.Withdrawn, f.DistroSeverity, f.DistroStatus}
 }
+
+// MarshalJSON adds the same policy legend to JSON and the metadata embedded in
+// CSV/SARIF, without changing their findings or existing schema fields.
+func (d Document) MarshalJSON() ([]byte, error) {
+	type document Document
+	return json.Marshal(struct {
+		document
+		SeverityPolicy string `json:"severity_policy"`
+	}{document(d), policyLegend(d)})
+}
+
+func policyLegend(d Document) string {
+	legend := match.SeverityPolicy(d.Options.SeveritySource)
+	if d.Options.SeveritySource == "" {
+		legend += "; default policy shown, original matching policy unknown"
+	}
+	return legend
+}
+
 func metadata(d Document) Document { d.Findings = nil; return d }
 func renderCSV(w io.Writer, d Document) error {
 	c := csv.NewWriter(w)
@@ -114,6 +133,7 @@ type field struct{ Name, Value string }
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func headerFields(d Document) []field {
 	out := []field{{"Target", d.Target}, {"SBOM file", d.SBOMPath}, {"Generated at (UTC)", d.GeneratedAt.Format("2006-01-02T15:04:05Z07:00")}, {"Tool version", d.GeneratedBy.Version}, {"DB updated_at", d.DB.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")}, {"DB record count", strconv.Itoa(d.DB.Records)}, {"DB sources", sourcesText(d.DB.Sources)}, {"Options", optionsText(d.Options)}, {"Options provenance", d.OptionsNote}, {"Skipped reasons", countsText(d.Summary.Skipped)}}
+	out = append(out, field{"Severity policy legend", policyLegend(d)})
 	for _, warning := range d.MissingCoverage {
 		out = append(out, field{"WARNING", warning})
 	}
@@ -173,8 +193,8 @@ func optionsText(o match.Options) string {
 	if o.OnlyFixed {
 		parts = append(parts, "only-fixed")
 	}
-	if o.IncludeUnimportant {
-		parts = append(parts, "include-unimportant")
+	if o.ExcludeUnimportant {
+		parts = append(parts, "exclude-unimportant")
 	}
 	if o.Details {
 		parts = append(parts, "details")

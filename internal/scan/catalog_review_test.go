@@ -277,8 +277,8 @@ func TestReviewCatalogerParsesImmediately(t *testing.T) {
 	var c cataloger
 	f := File{Path: "go.mod", Data: []byte("module app\nrequire example.com/first v1.2.3\n")}
 	c.addFile(f)
-	if len(c.seen) != 1 {
-		t.Fatalf("file deferred: %d packages", len(c.seen))
+	if len(c.seen)+len(c.pending) != 1 {
+		t.Fatalf("file parsing deferred: seen=%d pending=%d", len(c.seen), len(c.pending))
 	}
 	clear(f.Data)
 	pkgs, _ := c.finish()

@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/big"
 	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ziozzang/bongsu-scanner/internal/version"
 )
@@ -22,6 +24,7 @@ const (
 	rubysecMemberMaxBytes         = 1 << 20
 	rubysecMaxExpandedBytes       = 256 << 20
 	rubysecMaxEntries             = 50000
+	rubysecScalarMaxBytes         = 256 << 10
 )
 
 type rubysecSource struct{}
@@ -35,8 +38,20 @@ func (rubysecSource) Feeds(opts *Options) ([]Feed, error) {
 	}
 	return []Feed{{Source: SourceRubysec, Key: "ruby-advisory-db", URL: DefaultRubysecURL,
 		File: "ruby-advisory-db-master.zip", Ecosystems: []string{"RubyGems"}, MaxBytes: max,
-		Parse: func(ctx context.Context, p string, _ int64, emit Emit, _ func(string)) error {
-			return parseRubysecZip(ctx, p, emit)
+		Parse: func(ctx context.Context, p string, _ int64, emit Emit, progress func(string)) error {
+			unmapped := 0
+			err := parseRubysecZip(ctx, p, func(r *Record) error {
+				for _, a := range r.Affected {
+					if constraints, ok := a.Database["rubysec_unmapped"].([]string); ok {
+						unmapped += len(constraints)
+					}
+				}
+				return emit(r)
+			})
+			if err == nil && unmapped > 0 && progress != nil {
+				progress(fmt.Sprintf("[db:rubysec] warning: %d unmapped requirement entries", unmapped))
+			}
+			return err
 		},
 	}}, nil
 }
@@ -111,6 +126,9 @@ func parseRubysecZip(ctx context.Context, filename string, emit Emit) error {
 // related also accepts the upstream related: {url: [items]} block layout.
 func readRubysecYAML(data string) (map[string][]string, error) {
 	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	out := map[string][]string{}
 	for i := 0; i < len(lines); {
 		line := lines[i]
@@ -132,7 +150,7 @@ func readRubysecYAML(data string) (map[string][]string, error) {
 			i++
 		}
 		switch key {
-		case "gem", "cve", "ghsa", "osvdb", "title", "description", "date", "url", "related", "cvss_v3", "cvss_v4", "patched_versions", "unaffected_versions":
+		case "gem", "cve", "ghsa", "osvdb", "title", "description", "date", "url", "related", "cvss_v2", "cvss_v3", "cvss_v4", "patched_versions", "unaffected_versions":
 		default:
 			continue
 		}
@@ -140,8 +158,17 @@ func readRubysecYAML(data string) (map[string][]string, error) {
 			return nil, fmt.Errorf("duplicate YAML key %q", key)
 		}
 		value = strings.TrimSpace(value)
-		if value == "|" || value == ">" || value == "|-" || value == ">-" || value == "|+" || value == ">+" {
-			out[key] = []string{rubysecBlock(lines[start:i], value)}
+		if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+			style, _, _ := strings.Cut(value, " #")
+			style = strings.TrimSpace(style)
+			if !rubysecBlockHeader.MatchString(style) {
+				return nil, fmt.Errorf("invalid YAML block header %q", value)
+			}
+			block, err := rubysecBlock(lines[start:i], style)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = []string{block}
 			continue
 		}
 		isList := key == "patched_versions" || key == "unaffected_versions" || key == "related" || strings.HasPrefix(key, "cvss_")
@@ -172,12 +199,22 @@ func readRubysecYAML(data string) (map[string][]string, error) {
 				out[key] = append(out[key], s)
 			}
 		} else {
+			var b strings.Builder
+			if len(value) > rubysecScalarMaxBytes {
+				return nil, rubysecScalarTooLarge()
+			}
+			b.WriteString(value)
 			for _, continuation := range lines[start:i] {
 				s := strings.TrimSpace(continuation)
 				if s != "" && !strings.HasPrefix(s, "#") {
-					value += " " + s
+					if b.Len()+1+len(s) > rubysecScalarMaxBytes {
+						return nil, rubysecScalarTooLarge()
+					}
+					b.WriteByte(' ')
+					b.WriteString(s)
 				}
 			}
+			value = b.String()
 			s, err := rubysecScalar(value)
 			if err != nil {
 				return nil, err
@@ -189,6 +226,9 @@ func readRubysecYAML(data string) (map[string][]string, error) {
 }
 
 func rubysecScalar(s string) (string, error) {
+	if len(s) > rubysecScalarMaxBytes {
+		return "", rubysecScalarTooLarge()
+	}
 	s = strings.TrimSpace(s)
 	if s == "" || s == "null" || s == "~" {
 		return "", nil
@@ -214,7 +254,7 @@ func rubysecScalar(s string) (string, error) {
 			if quote == '\'' {
 				return strings.ReplaceAll(s[1:i], "''", "'"), nil
 			}
-			return strconv.Unquote(s[:i+1])
+			return rubysecUnquote(s[1:i])
 		}
 		return "", fmt.Errorf("invalid quoted YAML scalar")
 	}
@@ -227,7 +267,54 @@ func rubysecScalar(s string) (string, error) {
 	return s, nil
 }
 
-func rubysecBlock(lines []string, style string) string {
+func rubysecScalarTooLarge() error {
+	return fmt.Errorf("YAML scalar exceeds %d bytes", rubysecScalarMaxBytes)
+}
+
+// YAML escapes differ from Go escapes: notably \xNN denotes a code point.
+func rubysecUnquote(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		if i == len(s) {
+			return "", fmt.Errorf("incomplete YAML escape")
+		}
+		escapes := map[byte]rune{'0': 0, 'a': '\a', 'b': '\b', 't': '\t', 'n': '\n', 'v': '\v', 'f': '\f', 'r': '\r', 'e': 0x1b, ' ': ' ', '"': '"', '/': '/', '\\': '\\', 'N': 0x85, '_': 0xa0, 'L': 0x2028, 'P': 0x2029}
+		if r, ok := escapes[s[i]]; ok {
+			b.WriteRune(r)
+			continue
+		}
+		n := 0
+		switch s[i] {
+		case 'x':
+			n = 2
+		case 'u':
+			n = 4
+		case 'U':
+			n = 8
+		default:
+			return "", fmt.Errorf("unknown YAML escape \\%c", s[i])
+		}
+		if i+n >= len(s) {
+			return "", fmt.Errorf("incomplete YAML Unicode escape")
+		}
+		r, err := strconv.ParseUint(s[i+1:i+1+n], 16, 32)
+		if err != nil || !utf8.ValidRune(rune(r)) {
+			return "", fmt.Errorf("invalid YAML Unicode escape")
+		}
+		b.WriteRune(rune(r))
+		i += n
+	}
+	return b.String(), nil
+}
+
+var rubysecBlockHeader = regexp.MustCompile(`^[|>](?:[1-9][+-]?|[+-][1-9]?)?$`)
+
+func rubysecBlock(lines []string, style string) (string, error) {
 	indent := -1
 	for _, line := range lines {
 		if strings.TrimSpace(line) != "" {
@@ -237,12 +324,24 @@ func rubysecBlock(lines []string, style string) string {
 			}
 		}
 	}
+	for _, c := range style[1:] {
+		if c >= '1' && c <= '9' {
+			indent = int(c - '0')
+			break
+		}
+	}
 	var b strings.Builder
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			line = ""
-		} else if indent >= 0 && len(line) >= indent {
+		} else if indent >= 0 {
+			if len(line)-len(strings.TrimLeft(line, " ")) < indent {
+				return "", fmt.Errorf("invalid YAML block indentation")
+			}
 			line = line[indent:]
+		}
+		if b.Len()+len(line)+1 > rubysecScalarMaxBytes {
+			return "", rubysecScalarTooLarge()
 		}
 		b.WriteString(line)
 		separator := "\n"
@@ -258,14 +357,14 @@ func rubysecBlock(lines []string, style string) string {
 		b.WriteString(separator)
 	}
 	s := b.String()
-	if strings.HasSuffix(style, "+") {
-		return s
+	if strings.Contains(style, "+") {
+		return s, nil
 	}
 	s = strings.TrimRight(s, "\n")
-	if s != "" && !strings.HasSuffix(style, "-") {
+	if s != "" && !strings.Contains(style, "-") {
 		s += "\n"
 	}
-	return s
+	return s, nil
 }
 
 func rubysecRecord(gem, file string, fields map[string][]string) (*Record, error) {
@@ -304,13 +403,16 @@ func rubysecRecord(gem, file string, fields map[string][]string) (*Record, error
 			r.Published = t.Format(time.RFC3339)
 		}
 	}
-	for _, key := range []string{"cvss_v3", "cvss_v4"} {
+	for _, key := range []string{"cvss_v2", "cvss_v3", "cvss_v4"} {
 		for _, score := range fields[key] {
 			prefix := "CVSS:3."
 			if key == "cvss_v4" {
 				prefix = "CVSS:4."
 			}
-			if strings.HasPrefix(score, prefix) {
+			n, err := strconv.ParseFloat(score, 64)
+			numeric := err == nil && n >= 0 && n <= 10
+			vectorV2 := key == "cvss_v2" && (strings.HasPrefix(score, "AV:") || strings.HasPrefix(score, "CVSS:2.0/"))
+			if numeric || vectorV2 || key != "cvss_v2" && strings.HasPrefix(score, prefix) {
 				r.Severity = append(r.Severity, Severity{Type: strings.ToUpper(key), Score: score})
 			}
 		}
@@ -323,111 +425,209 @@ func rubysecRecord(gem, file string, fields map[string][]string) (*Record, error
 	a := Affected{Ecosystem: "RubyGems", Package: gem}
 	ranges, unmapped := rubysecRanges(fields["patched_versions"], fields["unaffected_versions"])
 	a.Ranges = ranges
-	if unmapped != "" {
+	if len(unmapped) > 0 {
 		a.Database = map[string]any{"rubysec_unmapped": unmapped}
 	}
 	r.Affected = []Affected{a}
 	return r, nil
 }
 
-var rubysecRequirement = regexp.MustCompile(`^(>=|~>|<)\s*([0-9]+(?:\.[0-9]+){0,3})$`)
+var rubysecRequirement = regexp.MustCompile(`^(>=|<=|~>|!=|=|>|<)?\s*([0-9]+(?:\.[0-9a-zA-Z]+)*(?:-[0-9a-zA-Z]+(?:\.[0-9a-zA-Z]+)*)?)$`)
+var rubysecVersionTokens = regexp.MustCompile(`[0-9]+|[a-zA-Z]+`)
 
-// Mapping is intentionally limited to numeric releases: unaffected < X raises
-// the lower bound; patched >= X closes the final range; patched ~> A.B.C
-// closes [A.B.0,A.B.C) and excludes [A.B.C,A.(B+1).0) from later ranges.
-// Branch ranges start at their own minor release (or the unaffected bound).
-// The final >= range starts after the last earlier patched branch. Duplicate
-// branch fixes use the earliest fix. Any unsupported requirement discards ALL
-// ranges, leaving a versions-less entry for the matcher's no-usable-range result.
-func rubysecRanges(patched, unaffected []string) ([]Range, string) {
-	lower, final := "0", ""
-	type branch struct{ start, fixed, end string }
-	branches := map[string]branch{}
+// Intervals are half open; an empty end means infinity. Each requirement
+// string is an intersection, list entries are a union, and vulnerable versions
+// are the complement of patched OR unaffected (bundler-audit's predicate).
+type rubysecInterval struct{ lo, hi string }
+
+func rubysecRanges(patched, unaffected []string) ([]Range, []string) {
+	var safe []rubysecInterval
 	var unmapped []string
-	for _, req := range unaffected {
-		m := rubysecRequirement.FindStringSubmatch(req)
-		if m == nil || m[1] != "<" {
-			unmapped = append(unmapped, req)
-			continue
-		}
-		if rubysecCompare(m[2], lower) > 0 {
-			lower = m[2]
+	for _, list := range [][]string{patched, unaffected} {
+		for _, req := range list {
+			intervals, ok := rubysecRequirementIntervals(req)
+			if !ok {
+				if req == "" {
+					req = "empty requirement"
+				}
+				unmapped = append(unmapped, req)
+				continue
+			}
+			safe = append(safe, intervals...)
 		}
 	}
-	for _, req := range patched {
-		m := rubysecRequirement.FindStringSubmatch(req)
-		if m == nil {
-			unmapped = append(unmapped, req)
-			continue
+	sort.Slice(safe, func(i, j int) bool { return rubysecCompare(safe[i].lo, safe[j].lo) < 0 })
+	var ranges []Range
+	start := "0"
+	add := func(lo, hi string) {
+		events := []Event{{Introduced: lo}}
+		if hi != "" {
+			events = append(events, Event{Fixed: hi})
 		}
+		ranges = append(ranges, Range{Type: "ECOSYSTEM", Events: events})
+	}
+	for _, interval := range safe {
+		if rubysecCompare(start, interval.lo) < 0 {
+			add(start, interval.lo)
+		}
+		if interval.hi == "" {
+			return ranges, unmapped
+		}
+		if rubysecCompare(start, interval.hi) < 0 {
+			start = interval.hi
+		}
+	}
+	add(start, "")
+	return ranges, unmapped
+}
+
+func rubysecRequirementIntervals(req string) ([]rubysecInterval, bool) {
+	intervals := []rubysecInterval{{"0", ""}}
+	for _, constraint := range strings.Split(req, ",") {
+		m := rubysecRequirement.FindStringSubmatch(strings.TrimSpace(constraint))
+		if m == nil {
+			return nil, false
+		}
+		v, core, exact, ok := rubysecVersionBoundary(m[2])
+		if !ok {
+			return nil, false
+		}
+		var operand []rubysecInterval
 		switch m[1] {
 		case ">=":
-			if final == "" || rubysecCompare(m[2], final) < 0 {
-				final = m[2]
+			operand = []rubysecInterval{{v, ""}}
+		case "<":
+			operand = []rubysecInterval{{"0", v}}
+		case "", "=":
+			if exact {
+				operand = []rubysecInterval{{v, rubysecAfter(v)}}
 			}
+		case "!=":
+			operand = []rubysecInterval{{"0", ""}}
+			if exact {
+				operand = []rubysecInterval{{"0", v}, {rubysecAfter(v), ""}}
+			}
+		case ">":
+			after := v
+			if exact {
+				after = rubysecAfter(v)
+			}
+			operand = []rubysecInterval{{after, ""}}
+		case "<=":
+			after := v
+			if exact {
+				after = rubysecAfter(v)
+			}
+			operand = []rubysecInterval{{"0", after}}
 		case "~>":
-			parts := strings.Split(m[2], ".")
-			if len(parts) != 3 {
-				unmapped = append(unmapped, req)
-				continue
+			// Gem::Version#bump removes the last numeric segment, then increments
+			// the preceding one. Its release comparison excludes upper prereleases.
+			if len(core) > 1 {
+				core = core[:len(core)-1]
 			}
-			minor, err := strconv.ParseUint(parts[1], 10, 32)
-			if err != nil {
-				unmapped = append(unmapped, req)
-				continue
+			core[len(core)-1] = rubysecIncrement(core[len(core)-1])
+			upper, _ := rubysecCoreBoundary(core, []string{"0"})
+			operand = []rubysecInterval{{v, upper}}
+		}
+		var intersection []rubysecInterval
+		for _, a := range intervals {
+			for _, b := range operand {
+				lo, hi := a.lo, a.hi
+				if rubysecCompare(b.lo, lo) > 0 {
+					lo = b.lo
+				}
+				if hi == "" || b.hi != "" && rubysecCompare(b.hi, hi) < 0 {
+					hi = b.hi
+				}
+				if hi == "" || rubysecCompare(lo, hi) < 0 {
+					intersection = append(intersection, rubysecInterval{lo, hi})
+				}
 			}
-			start := version.Normalize("RubyGems", parts[0]+"."+parts[1]+".0")
-			b := branch{start: start, fixed: m[2], end: parts[0] + "." + strconv.FormatUint(minor+1, 10) + ".0"}
-			if prev, ok := branches[start]; !ok || rubysecCompare(b.fixed, prev.fixed) < 0 {
-				branches[start] = b
+		}
+		intervals = intersection
+	}
+	return intervals, true
+}
+
+// Encode Ruby's dotted prereleases as explicit semver-like boundaries so the
+// shared RubyGems comparator can order rc1 before rc2 and before the release.
+func rubysecVersionBoundary(v string) (string, []string, bool, bool) {
+	tokens := rubysecVersionTokens.FindAllString(v, -1)
+	var core, pre []string
+	prerelease := false
+	for _, token := range tokens {
+		if token[0] >= 'A' && token[0] <= 'Z' || token[0] >= 'a' && token[0] <= 'z' {
+			prerelease = true
+		}
+		if prerelease {
+			pre = append(pre, token)
+		} else {
+			core = append(core, token)
+		}
+	}
+	if left, right, ok := strings.Cut(v, "-"); ok {
+		core = strings.Split(left, ".")
+		pre = rubysecVersionTokens.FindAllString(right, -1)
+	}
+	if len(core) == 0 {
+		return "", nil, false, false
+	}
+	boundary, exact := rubysecCoreBoundary(core, pre)
+	return boundary, core, exact, version.Valid("RubyGems", boundary)
+}
+
+// Project higher precision Ruby versions onto the shared comparator's domain.
+// No representable version lies between A.B.C.D and A.B.C.(D+1)-0. Thus a
+// nonzero fifth (or later) component falls at the latter cut; equality to that
+// unrepresentable version is empty. Keep original precision for ~>'s bump.
+// Installed versions outside this domain still require a RubyGems comparator
+// in internal/version; emitting unsupported range endpoints would lose even
+// matches for ordinary releases.
+func rubysecCoreBoundary(core, pre []string) (string, bool) {
+	exact := true
+	if len(core) > 4 {
+		for _, part := range core[4:] {
+			if strings.TrimLeft(part, "0") != "" {
+				exact = false
+				break
 			}
-		default:
-			unmapped = append(unmapped, req)
 		}
+		core = core[:4]
 	}
-	if len(unmapped) > 0 {
-		for i, req := range unmapped {
-			if req == "" {
-				unmapped[i] = "empty requirement"
-			}
-		}
-		return nil, strings.Join(unmapped, "; ")
+	if !exact {
+		return strings.Join(core[:3], ".") + "." + rubysecIncrement(core[3]) + "-0", false
 	}
-	if len(patched) == 0 {
-		return nil, "missing patched_versions"
+	boundary := strings.Join(core, ".")
+	if len(pre) > 0 {
+		boundary += "-" + strings.Join(pre, ".")
 	}
-	var ordered []branch
-	for _, b := range branches {
-		ordered = append(ordered, b)
+	return boundary, true
+}
+
+func rubysecIncrement(s string) string {
+	n, _ := new(big.Int).SetString(s, 10)
+	return n.Add(n, big.NewInt(1)).String()
+}
+
+// OSV has inclusive introduced boundaries. In the shared comparator's domain
+// (at most four numeric components), the next core's minimum prerelease is the
+// boundary immediately above a release; appending .0 is the next prerelease.
+func rubysecAfter(v string) string {
+	if strings.Contains(v, "-") {
+		return v + ".0"
 	}
-	sort.Slice(ordered, func(i, j int) bool { return rubysecCompare(ordered[i].start, ordered[j].start) < 0 })
-	var ranges []Range
-	add := func(start, fixed string) {
-		if rubysecCompare(start, lower) < 0 {
-			start = lower
-		}
-		if rubysecCompare(start, fixed) < 0 {
-			ranges = append(ranges, Range{Type: "ECOSYSTEM", Events: []Event{{Introduced: start}, {Fixed: fixed}}})
-		}
+	parts := strings.Split(v, ".")
+	for len(parts) < 4 {
+		parts = append(parts, "0")
 	}
-	start := lower
-	for _, b := range ordered {
-		fixed := b.fixed
-		if final != "" && rubysecCompare(final, fixed) < 0 {
-			fixed = final
-		}
-		add(b.start, fixed)
-		if (final == "" || rubysecCompare(b.fixed, final) < 0) && rubysecCompare(b.end, start) > 0 {
-			start = b.end
-		}
-	}
-	if final != "" {
-		add(start, final)
-	}
-	return ranges, ""
+	parts[3] = rubysecIncrement(parts[3])
+	return strings.Join(parts, ".") + "-0"
 }
 
 func rubysecCompare(a, b string) int {
-	n, _ := version.Compare("RubyGems", a, b) // only validated numeric releases
+	n, err := version.Compare("RubyGems", a, b)
+	if err != nil {
+		panic("invalid rubysec boundary: " + err.Error())
+	}
 	return n
 }
