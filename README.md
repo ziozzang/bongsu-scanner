@@ -96,7 +96,7 @@ db:
   alpine_releases: []      # empty reuses installed choices, or built-in defaults
   nvd_years: ""            # saved years, or current year and previous two
   max_feed_bytes: 1073741824
-  max_feed_uncompressed: 17179869184
+  max_feed_uncompressed: 34359738368
   keep_raw: true           # inverse of --no-keep-raw
   mirror: ""
 ```
@@ -565,7 +565,7 @@ approximately 920 MB; both fit the default **1 GiB per-feed download bound**.
 The default catalog downloads approximately 670 MB of OSV exports in total,
 plus its other sources. The bound is a maximum, not a download or memory
 allocation. Sizes grow over time. The total uncompressed bound remains
-16 GiB per OSV/GHSA archive.
+32 GiB per OSV/GHSA/VEX archive.
 
 `bscan db status` reports `data through: <date>` per source: the newest valid
 record `modified` timestamp, separately from the fetch time (`unknown` when
@@ -598,6 +598,8 @@ refreshed automatically for this new matching data.
 
 
 RubySec is a default source (it is only a few MB); when you pass `--source` explicitly, include `rubysec` to keep it. It downloads [rubysec/ruby-advisory-db](https://github.com/rubysec/ruby-advisory-db)'s master ZIP with ETag conditional requests and a hard 64 MiB cap (a smaller `--max-feed-bytes` is honored). Gem advisories become RubyGems records using a dependency-free YAML subset reader. Numeric `patched_versions` requirements `>= X` map to an ECOSYSTEM range ending at exclusive `fixed: X`, starting at `introduced: 0` or the unaffected boundary; `~> A.B.C` maps to `[A.B.0, A.B.C)`. `unaffected_versions: < X` raises the lower bound to X. With multiple patched branches, the final `>=` range starts after the last earlier patched minor branch, at `A.(B+1).0`, so fixed releases are not reintroduced as vulnerable; duplicate branch fixes use the earliest fix. Complex requirements (including compound constraints, prereleases, and other operators) or missing patch information produce a versions-less affected entry with no ranges and `database_specific.rubysec_unmapped`, allowing the matcher to report `no-usable-range`. CVSS V3/V4 vector strings are retained; numeric scores alone are omitted.
+
+`redhat-vex` is opt-in: `bscan db update --add-source redhat-vex` adds Red Hat’s per-CVE CSAF VEX data; `--source redhat-vex` selects it alone. A bounded 4 KiB `archive_latest.txt` lookup (30-second deadline) discovers the weekly tar.zst archive; the archive uses conditional GET, `--max-feed-bytes`, and `--max-feed-uncompressed`. The September 2026 archive expands to 19.6 GB, within the 32 GiB default expansion budget; conversion takes about two minutes and under 1 GB of memory. Streaming conversion skips and counts malformed or over-64-MiB documents. RHEL products include fixed binary RPMs, source-package no-fix states, not-affected markers, vendor ratings, and module metadata; extended lifecycle streams stay separate. When selected alongside OSV, VEX replaces only the OSV Red Hat feed without changing saved choices, so removing VEX restores that feed. Fixed entries use `[0, fixed)` because CSAF does not supply an introduced version; version-specific exclusions stated only in prose are not inferred.
 
 An update builds a complete replacement from the effective selection; plain
 updates retain saved choices, and `--add-*` extends them. If any feed fails, the

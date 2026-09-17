@@ -151,3 +151,25 @@ func TestInitTemplatePreservesExistingFileAndHasNoKeys(t *testing.T) {
 		t.Fatalf("unexpected identity files: %v", entries)
 	}
 }
+
+// Feed limits at their built-in default are rendered commented out so that
+// a raised default in a later release reaches installations initialized
+// with an older template; explicit values are kept.
+func TestRenderLeavesDefaultFeedLimitsUnpinned(t *testing.T) {
+	out := string(render(Defaults()))
+	for _, key := range []string{"max_feed_bytes", "max_feed_uncompressed"} {
+		if !strings.Contains(out, "  # "+key+": ") {
+			t.Fatalf("%s pinned in template: %s", key, out)
+		}
+	}
+	cfg := Defaults()
+	cfg.DB.MaxFeedUncompressed = 123
+	out = string(render(cfg))
+	if !strings.Contains(out, "  max_feed_uncompressed: 123\n") || !strings.Contains(out, "  # max_feed_bytes: ") {
+		t.Fatalf("explicit limit lost: %s", out)
+	}
+	loaded, _, err := parse("scaner.yaml", []byte(out))
+	if err != nil || loaded.DB.MaxFeedUncompressed != 123 || loaded.DB.MaxFeedBytes != Defaults().DB.MaxFeedBytes {
+		t.Fatalf("round trip: %+v %v", loaded.DB, err)
+	}
+}

@@ -397,8 +397,8 @@ func feedExpandedBytes(ctx context.Context, filename string) (uint64, error) {
 // retaining the legacy minimum because conversion adds provenance metadata.
 func feedCacheLimit(source string, opts Options) int64 {
 	limit := int64(1 << 30)
-	if source == SourceOSV || source == SourceGHSA {
-		limit = max(limit, int64(opts.maxFeedUncompressedBytes())) // #nosec G115 -- maxFeedUncompressedBytes returns a positive int64 option or the 16 GiB default.
+	if source == SourceOSV || source == SourceGHSA || source == SourceRedHatVEX {
+		limit = max(limit, int64(opts.maxFeedUncompressedBytes())) // #nosec G115 -- maxFeedUncompressedBytes returns a positive int64 option or the 32 GiB default.
 	}
 	// readRecordsBounded reserves one extra byte to detect an exceeded limit.
 	return min(limit, math.MaxInt64-1)

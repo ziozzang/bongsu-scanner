@@ -265,11 +265,11 @@ func TestAccuracyUpdateReprocessesDebianConversionV1(t *testing.T) {
 }
 
 func TestAccuracyFeedCacheBudget(t *testing.T) {
-	for _, source := range []string{SourceOSV, SourceGHSA} {
-		if got := feedCacheLimit(source, Options{}); got != 16<<30 {
+	for _, source := range []string{SourceOSV, SourceGHSA, SourceRedHatVEX} {
+		if got := feedCacheLimit(source, Options{}); got != DefaultMaxFeedUncompressedBytes {
 			t.Fatalf("%s default cache budget=%d", source, got)
 		}
-		if got := feedCacheLimit(source, Options{MaxFeedUncompressedBytes: 32 << 30}); got != 32<<30 {
+		if got := feedCacheLimit(source, Options{MaxFeedUncompressedBytes: 64 << 30}); got != 64<<30 {
 			t.Fatalf("%s configured cache budget=%d", source, got)
 		}
 		if got := feedCacheLimit(source, Options{MaxFeedUncompressedBytes: 1}); got != 1<<30 {

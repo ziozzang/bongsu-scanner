@@ -205,6 +205,15 @@ func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (f
 // Package/release urgency takes precedence over record-wide urgency. Preserve
 // non-ranked values (for example end-of-life) for presentation, not scoring.
 func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
+	if vulndb.BaseEcosystem(a.Ecosystem) == "Red Hat" {
+		for _, database := range []map[string]any{a.Database, rec.Database} {
+			if label, ok := database["severity"].(string); ok {
+				if level := normalizeSeverity(label); level != "UNKNOWN" {
+					return strings.ToLower(level)
+				}
+			}
+		}
+	}
 	if vulndb.BaseEcosystem(a.Ecosystem) == "Ubuntu" {
 		// Ubuntu publishes package priority in exports and record priority in
 		// API responses. Both are more specific than generic urgency metadata.

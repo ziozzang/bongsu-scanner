@@ -78,7 +78,7 @@ func TestDBConfigFlagPrecedence(t *testing.T) {
 		args := []string{}
 		want := map[string]string{"source": "osv,nvd", "ecosystem": "Go,PyPI", "alpine-release": "v3.20", "nvd-years": "2020-2022", "mirror": "https://mirror.example", "max-feed-bytes": "123", "max-feed-uncompressed": "456", "no-keep-raw": "true"}
 		if explicit {
-			want = map[string]string{"source": "", "ecosystem": "", "alpine-release": "", "nvd-years": "", "mirror": "", "max-feed-bytes": "1073741824", "max-feed-uncompressed": "17179869184", "no-keep-raw": "false"}
+			want = map[string]string{"source": "", "ecosystem": "", "alpine-release": "", "nvd-years": "", "mirror": "", "max-feed-bytes": "1073741824", "max-feed-uncompressed": "34359738368", "no-keep-raw": "false"}
 			for name, value := range want {
 				args = append(args, "--"+name+"="+value)
 			}

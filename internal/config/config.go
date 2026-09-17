@@ -69,7 +69,7 @@ type Config struct {
 }
 
 func Defaults() Config {
-	return Config{Scan: ScanConfig{Output: ".", Format: "both"}, Match: MatchConfig{SeveritySource: "distro", DBIsolation: "auto"}, DB: DBConfig{MaxFeedBytes: 1 << 30, MaxFeedUncompressed: 16 << 30, KeepRaw: true}, Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
+	return Config{Scan: ScanConfig{Output: ".", Format: "both"}, Match: MatchConfig{SeveritySource: "distro", DBIsolation: "auto"}, DB: DBConfig{MaxFeedBytes: 1 << 30, MaxFeedUncompressed: 32 << 30, KeepRaw: true}, Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
 }
 
 // CheckSignatureVersion applies the configured minimum before a caller verifies
@@ -400,6 +400,7 @@ func render(cfg Config) []byte {
 	for k, v := range cfg.TrustedKeys {
 		b.WriteString("  " + quote(k) + ": " + quote(v) + "\n")
 	}
+	defaults := Defaults()
 	for _, section := range []string{"scan", "match", "db"} {
 		b.WriteString("# Defaults for " + section + " command flags; explicit CLI flags take precedence.\n")
 		b.WriteString(section + ":\n")
@@ -414,6 +415,13 @@ func render(cfg Config) []byte {
 				value = strconv.Itoa(*p)
 			case *int64:
 				value = strconv.FormatInt(*p, 10)
+				// Feed limits at their built-in default stay commented out so a
+				// raised default in a later release reaches existing installs.
+				if section == "db" && (field.name == "max_feed_bytes" && *p == defaults.DB.MaxFeedBytes ||
+					field.name == "max_feed_uncompressed" && *p == defaults.DB.MaxFeedUncompressed) {
+					b.WriteString("  # " + field.name + ": " + value + "  (built-in default; uncomment to override)\n")
+					continue
+				}
 			case *[]string:
 				items := make([]string, len(*p))
 				for i, item := range *p {

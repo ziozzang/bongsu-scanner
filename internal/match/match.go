@@ -234,6 +234,9 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						continue
 					}
 					status := statuses[id]
+					if status == "" {
+						status = prepared.distroStatus
+					}
 					urgency := mergeDistroSeverity(prepared.distroSeverity, urgencies[id])
 					if status == "not-affected" && prepared.hit {
 						report.Skipped["distro-not-affected"]++
@@ -261,8 +264,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					}
 					f := Finding{ID: id, RelatedIDs: rec.related, Subject: s, Record: *rec.summary, Affected: a, MatchedBy: q.by, FixedIn: fixed, Severity: sev, Score: score, Vector: vector, Confidence: "high", DistroSeverity: urgency}
 					f.Record.DistroSeverity = urgency
-					if status == "undetermined" {
-						f.DistroStatus = status
+					f.DistroStatus = status
+					if uncertainDistroStatus(status) {
 						low = true
 					}
 					if low {
@@ -489,10 +492,10 @@ func mergeFinding(dst *Finding, src Finding) {
 	}
 	dst.DistroSeverity = mergeDistroSeverity(dst.DistroSeverity, src.DistroSeverity)
 	dst.Record.DistroSeverity = dst.DistroSeverity
-	if src.DistroStatus == "undetermined" {
+	if dst.DistroStatus == "" || uncertainDistroStatus(src.DistroStatus) {
 		dst.DistroStatus = src.DistroStatus
 	}
-	if dst.DistroStatus == "undetermined" {
+	if uncertainDistroStatus(dst.DistroStatus) {
 		dst.Confidence = "low"
 	} else if src.Confidence == "high" {
 		dst.Confidence = "high"
@@ -685,4 +688,12 @@ func (cache *versionCache) sortedEvents(eco string, in []vulndb.Event) ([]vulndb
 		return c < 0
 	})
 	return events, true
+}
+
+func uncertainDistroStatus(status string) bool {
+	switch status {
+	case "undetermined", "under-investigation", "fix-deferred", "will-not-fix", "out-of-support-scope":
+		return true
+	}
+	return false
 }

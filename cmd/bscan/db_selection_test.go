@@ -75,3 +75,11 @@ func TestDBAdditionValidation(t *testing.T) {
 		t.Fatal(list)
 	}
 }
+
+func TestSummarizeEcosystems(t *testing.T) {
+	got := summarizeEcosystems([]string{"Red Hat:enterprise_linux:9::baseos", "Red Hat:rhel_eus:9.4::appstream", "Red Hat:enterprise_linux:8", "npm", "Debian", "Debian:12", "Alpine:v3.20"})
+	want := "Red Hat (3 releases), npm, Debian (1 releases), Alpine (1 release)"
+	if got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}

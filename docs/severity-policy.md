@@ -29,3 +29,17 @@ unchanged. AlmaLinux `ALSA-`, `ALBA-`, and `ALEA-` records without a CVE alias
 promote related CVEs to aliases for grouping and CVSS enrichment, preserving
 `related`. This derivation runs on every catalog update, including conversion
 cache hits; other sources' related IDs are not promoted by this rule.
+
+For Red Hat affected ecosystems, `database_specific.severity` on the affected
+entry takes precedence over the record rating, regardless of the advisory ID.
+The opt-in `redhat-vex` source supplies per-product impact and aggregate Red Hat
+ratings; Critical/Important/Moderate/Low map to CRITICAL/HIGH/MEDIUM/LOW. CVSS
+vectors remain independent and prefer a RHEL-scoped score from the VEX document.
+
+Red Hat `redhat_status: not-affected` markers suppress positive matches for the
+same package, advisory and release, like Debian markers. Unfixed findings carry
+`distro_status` and no fixed version. `under-investigation`, `fix-deferred`,
+`will-not-fix`, and `out-of-support-scope` use low confidence; `affected` retains
+normal range confidence. These statuses describe vendor disposition, not a
+change to the CVSS score or proof of exploitability. Structured product status
+is used; exclusions in free-text statements are not interpreted as version ranges.

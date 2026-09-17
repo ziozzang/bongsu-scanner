@@ -478,11 +478,11 @@ bscan db update [flags]
 | `--ecosystem` | `""` | comma-separated OSV ecosystems |
 | `--force` | `false` | fetch feeds without conditional request headers |
 | `--max-feed-bytes` | `1073741824` | maximum bytes per downloaded feed |
-| `--max-feed-uncompressed` | `17179869184` | maximum total uncompressed bytes per OSV/GHSA archive |
+| `--max-feed-uncompressed` | `34359738368` | maximum total uncompressed bytes per OSV/GHSA/VEX archive |
 | `--mirror` | `""` | HTTPS OSV mirror base URL |
 | `--no-keep-raw` | `false` | omit original feeds from installed database |
 | `--nvd-years` | `""` | NVD years: range or comma-separated list (default: current year and previous two) |
-| `--source` | `""` | comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in) |
+| `--source` | `""` | comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in) |
 | `--timeout` | `30m0s` | overall update timeout |
 
 ### bscan db status

@@ -237,6 +237,9 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		release := vulndb.EcosystemRelease(a.Ecosystem)
 		urgency := distroSeverity(r, a)
 		status, _ := a.Database["debian_status"].(string)
+		if eco == "Red Hat" {
+			status, _ = a.Database["redhat_status"].(string)
+		}
 		status = strings.ToLower(strings.TrimSpace(status))
 		marker := len(a.Ranges) == 0 && len(a.Versions) == 0
 		// Older native not-affected markers used the empty [0,0) range.
@@ -456,6 +459,9 @@ func canonicalBytes(values map[string]string) int64 {
 }
 
 func moduleAffected(a vulndb.Affected) bool {
+	if module, _ := a.Database["modularity"].(string); strings.TrimSpace(module) != "" {
+		return true
+	}
 	for _, v := range a.Versions {
 		if strings.Contains(v, ".module+") {
 			return true

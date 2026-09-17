@@ -9,6 +9,10 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Added
 
+- Opt-in `redhat-vex` streaming CSAF source with per-CVE RHEL fixes, no-fix
+  states, not-affected suppression and vendor severity; supersedes the selected
+  OSV Red Hat feed without changing saved source choices.
+
 - SQLite vulnerability catalog with OSV, Alpine, Debian, opt-in GHSA and NVD
   ingestion; offline lookup, verification, conversion, export and import.
 - Local SBOM vulnerability matching, severity thresholds, optional LLM

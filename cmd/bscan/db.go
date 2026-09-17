@@ -251,11 +251,7 @@ func closeCommandCatalog(store vulndb.Store, resultErr *error) {
 }
 
 func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
-	ecosystems := make([]string, len(meta.Ecosystems))
-	for i, ecosystem := range meta.Ecosystems {
-		ecosystems[i] = httpx.Sanitize(ecosystem)
-	}
-	if _, err := fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", ")); err != nil {
+	if _, err := fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), summarizeEcosystems(meta.Ecosystems)); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "Selection: %s\n", httpx.Sanitize(meta.EffectiveSelection().String())); err != nil {
@@ -291,7 +287,7 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 var dbHTTPClient = httpx.New
 
 func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []string) error {
-	sources := fs.String("source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in)")
+	sources := fs.String("source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in)")
 	nvdYears := fs.String("nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)")
 	ecosystems := fs.String("ecosystem", "", "comma-separated OSV ecosystems")
 	releases := fs.String("alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)")
@@ -303,7 +299,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	force := fs.Bool("force", false, "fetch feeds without conditional request headers")
 	noRaw := fs.Bool("no-keep-raw", false, "omit original feeds from installed database")
 	maxBytes := fs.Int64("max-feed-bytes", vulndb.DefaultMaxFeedBytes, "maximum bytes per downloaded feed")
-	maxUncompressed := fs.Int64("max-feed-uncompressed", vulndb.DefaultMaxFeedUncompressedBytes, "maximum total uncompressed bytes per OSV/GHSA archive")
+	maxUncompressed := fs.Int64("max-feed-uncompressed", vulndb.DefaultMaxFeedUncompressedBytes, "maximum total uncompressed bytes per OSV/GHSA/VEX archive")
 	timeout := fs.Duration("timeout", 30*time.Minute, "overall update timeout")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
@@ -324,6 +320,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	if *maxUncompressed <= 0 {
 		return errors.New("--max-feed-uncompressed must be positive")
 	}
+	warnStaleFeedLimits(cfg.DB)
 	if offlineMode(cfg) {
 		return errors.New("database update disabled: offline mode (BONGSU_OFFLINE or 'offline: true' in config)")
 	}
@@ -441,4 +438,64 @@ func waitForCatalog(ctx context.Context, wait time.Duration, operation func() er
 		case <-timer.C:
 		}
 	}
+}
+
+// warnStaleFeedLimits points at feed limits pinned in scaner.yaml below the
+// current built-in defaults. Older `bscan init` templates wrote the numbers
+// out, so a raised default (the Ubuntu export, the Red Hat VEX archive) never
+// reached those installations and updates failed with a size error.
+func warnStaleFeedLimits(cfg config.DBConfig) {
+	for _, limit := range []struct {
+		key     string
+		value   int64
+		builtin int64
+	}{
+		{"max_feed_bytes", cfg.MaxFeedBytes, vulndb.DefaultMaxFeedBytes},
+		{"max_feed_uncompressed", cfg.MaxFeedUncompressed, vulndb.DefaultMaxFeedUncompressedBytes},
+	} {
+		if limit.value > 0 && limit.value < limit.builtin {
+			alertf("db", "WARNING: %s %d in scaner.yaml is below the built-in default %d; remove the line to follow future defaults\n", limit.key, limit.value, limit.builtin)
+		}
+	}
+}
+
+// summarizeEcosystems folds release-qualified ecosystem names into their base
+// name with a release count: the Red Hat VEX feed alone contributes about
+// 300 product/stream keys, which is noise on a status line. Bare names stay
+// as they are, in first-seen order.
+func summarizeEcosystems(names []string) string {
+	type entry struct {
+		name     string
+		releases int
+		bare     bool
+	}
+	var order []string
+	entries := map[string]*entry{}
+	for _, name := range names {
+		base := vulndb.BaseEcosystem(name)
+		e, ok := entries[base]
+		if !ok {
+			e = &entry{name: httpx.Sanitize(base)}
+			entries[base] = e
+			order = append(order, base)
+		}
+		if vulndb.EcosystemRelease(name) == "" {
+			e.bare = true
+		} else {
+			e.releases++
+		}
+	}
+	parts := make([]string, 0, len(order))
+	for _, base := range order {
+		e := entries[base]
+		switch {
+		case e.releases == 0:
+			parts = append(parts, e.name)
+		case e.releases == 1 && !e.bare:
+			parts = append(parts, e.name+" (1 release)")
+		default:
+			parts = append(parts, fmt.Sprintf("%s (%d releases)", e.name, e.releases))
+		}
+	}
+	return strings.Join(parts, ", ")
 }

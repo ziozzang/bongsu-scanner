@@ -54,7 +54,7 @@ func TestReviewDBStatusSanitizesEcosystemsAndSources(t *testing.T) {
 	if strings.ContainsAny(string(out), "\x1b\r") || strings.Contains(string(out), "\nFAKE") || strings.Contains(string(out), "\nSOURCE") {
 		t.Fatalf("unsafe output: %q", out)
 	}
-	if !strings.Contains(string(out), httpx.Sanitize(eco)+", Debian:13") || !strings.Contains(string(out), httpx.Sanitize(source)+":") {
+	if !strings.Contains(string(out), httpx.Sanitize(eco)+", Debian (1 release)") || !strings.Contains(string(out), httpx.Sanitize(source)+":") {
 		t.Fatalf("missing sanitized metadata: %q", out)
 	}
 	if meta.Ecosystems[0] != eco {

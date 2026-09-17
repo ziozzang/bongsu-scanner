@@ -90,7 +90,7 @@ func commandRegistry() []commandSpec {
 		{"add-source", "", "append sources (comma-separated; repeatable; default expands built-ins)", "string", false},
 		{"add-ecosystem", "", "append OSV ecosystems and enable osv (comma-separated; repeatable; default expands built-ins)", "string", false},
 		{"add-alpine-release", "", "append Alpine releases and enable alpine (comma-separated; repeatable; default expands built-ins)", "string", false},
-		{"source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in)", "string", false},
+		{"source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in)", "string", false},
 		{"nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)", "string", false},
 		{"ecosystem", "", "comma-separated OSV ecosystems", "string", false},
 		{"alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)", "string", false},
@@ -98,7 +98,7 @@ func commandRegistry() []commandSpec {
 		{"force", "false", "fetch feeds without conditional request headers", "bool", false},
 		{"no-keep-raw", "false", "omit original feeds from installed database", "bool", false},
 		{"max-feed-bytes", "1073741824", "maximum bytes per downloaded feed", "int64", false},
-		{"max-feed-uncompressed", "17179869184", "maximum total uncompressed bytes per OSV/GHSA archive", "int64", false},
+		{"max-feed-uncompressed", "34359738368", "maximum total uncompressed bytes per OSV/GHSA/VEX archive", "int64", false},
 		{"timeout", "30m0s", "overall update timeout", "duration", false},
 	}
 	scrambleFlags := []commandFlag{

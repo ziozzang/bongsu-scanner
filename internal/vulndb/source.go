@@ -100,15 +100,16 @@ type Source interface {
 type SourceFactory func() Source
 
 var registry = map[string]SourceFactory{
-	SourceOSV:    func() Source { return &osvSource{} },
-	"alpine":     func() Source { return &alpineSource{} },
-	SourceAlpine: func() Source { return &alpineSource{} },
-	"debian":     func() Source { return &debianSource{} },
-	SourceDebian: func() Source { return &debianSource{} },
-	SourceGHSA:   func() Source { return &ghsaSource{} },
-	"github":     func() Source { return &ghsaSource{} },
-	SourceNVD:    func() Source { return &nvdSource{} },
-	"rubysec":    func() Source { return &rubysecSource{} },
+	SourceRedHatVEX: func() Source { return &redHatVEXSource{} },
+	SourceOSV:       func() Source { return &selectedOSVSource{} },
+	"alpine":        func() Source { return &alpineSource{} },
+	SourceAlpine:    func() Source { return &alpineSource{} },
+	"debian":        func() Source { return &debianSource{} },
+	SourceDebian:    func() Source { return &debianSource{} },
+	SourceGHSA:      func() Source { return &ghsaSource{} },
+	"github":        func() Source { return &ghsaSource{} },
+	SourceNVD:       func() Source { return &nvdSource{} },
+	"rubysec":       func() Source { return &rubysecSource{} },
 }
 
 // RegisterSource adds or replaces a source plugin under name.
@@ -125,7 +126,7 @@ func LookupSource(name string) (Source, bool) {
 
 // SourceNames lists the canonical source names.
 func SourceNames() []string {
-	return []string{SourceOSV, SourceAlpine, SourceDebian, SourceGHSA, SourceNVD}
+	return []string{SourceOSV, SourceAlpine, SourceDebian, SourceGHSA, SourceNVD, SourceRedHatVEX}
 }
 
 // CanonicalSource maps an alias to the canonical source name.

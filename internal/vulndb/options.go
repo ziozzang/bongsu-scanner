@@ -7,8 +7,9 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/httpx"
 )
 
-// DefaultMaxFeedUncompressedBytes bounds the total expanded size of an OSV/GHSA archive.
-const DefaultMaxFeedUncompressedBytes int64 = 16 << 30
+// DefaultMaxFeedUncompressedBytes bounds the total expanded size of an OSV,
+// GHSA or Red Hat VEX archive (the VEX archive expands to ~20 GB in 2026).
+const DefaultMaxFeedUncompressedBytes int64 = 32 << 30
 
 // Options selects upstream feeds and allows deployments to use mirrors.
 // Empty source, ecosystem, release and URL fields use the defaults in source.go.

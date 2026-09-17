@@ -4,7 +4,7 @@
 
 | 배포판 / ecosystem | advisory 공급원 | 기본 / 선택 | 릴리스 매핑 | 심각도 출처 | 제한·주의와 코드 근거 |
 |---|---|---|---|---|---|
-| RHEL / UBI / Red Hat | OSV의 Red Hat RHSA export | 기본 | `rhel-9.4` → `9`; `enterprise_linux:9::baseos/appstream` → `9` | 이 실측 RHSA export에는 CVSS만 있음. CVSS 계산 등급이 distro 필드의 fallback으로도 사용됨 | EUS/AUS/E4S/TUS 및 ELS 등은 별도 키로 보존하고 일반 host 매칭에서 제외. RPM MODULARITYLABEL과 `.module+` 유무가 다른 affected entry는 `module-mismatch`로 제외; feed에 모듈 이름/stream이 없어 개별 모듈 간 구분은 불가. RPM 소유 언어 패키지는 SBOM에 owner를 보존하고 `distro-owned`로 언어 매칭 생략. `internal/vulndb/redhat.go:5`, `internal/match/cache.go:221`, `internal/match/severity.go:227`. Red Hat의 CVE별 제품 위험도와 같지 않음 |
+| RHEL / UBI / Red Hat | OSV Red Hat; 선택형 CSAF VEX (`--add-source redhat-vex`) | OSV 기본, VEX opt-in; 동시 선택 시 OSV Red Hat feed 생략, 저장 선택 보존 | RHEL ≤9는 major, ≥10은 CPE major.minor 보존 | VEX 제품별 impact → aggregate Red Hat 등급; CVSS 독립 보존 | VEX는 CVE별 fixed 바이너리·미수정 소스 패키지·not-affected marker를 제공. EUS/AUS/E4S/TUS/ELS는 별도 릴리스. `.module+` 또는 VEX `modularity`가 있으면 모듈 라벨 subject에만 적용하며 개별 stream 일치는 검증하지 않음. 미수정 상태는 `distro_status` 표시. fixed 범위는 `[0,fixed)`이므로 설명문에만 있는 도입/비영향 버전은 추론하지 않음. `internal/vulndb/redhat_vex.go`, `internal/match/cache.go`, `internal/match/severity.go` |
 | Rocky Linux | OSV RLSA | 기본 | `rocky-9.3` → `9` | erratum의 텍스트 등급 우선, 없으면 CVSS | `internal/match/sbom.go:367`, `internal/match/severity.go:227`. 하나의 advisory에 여러 CVE가 연결될 수 있음 |
 | AlmaLinux | OSV ALSA | 기본 | `almalinux-9.8` → `9` | structured 등급/CVSS가 있으면 사용; 이번 8 findings는 모두 UNKNOWN | 원문 Moderate/Important는 summary에만 있어 미반영, CVE related 연결도 출력에서 유실. `internal/match/cache.go:288`, `internal/match/severity.go:227`. Rocky와 같은 major 규칙; PURL namespace `alma`, `almalinux`: `internal/vulndb/model.go:215` |
 | CentOS Stream | 일반 RHEL feed로 대체하지 않음 | 미지원 | CentOS major ≥8 → `centos-stream:N` | 해당 OS 매칭 없음 | 정확한 skip reason: `centos-stream-unsupported`. `internal/match/sbom.go:361`, `internal/match/match.go:325`. 이 판별은 이름의 Stream 여부 대신 CentOS major를 사용하므로 CentOS Linux 8도 같은 이유로 제외됨 |
@@ -38,4 +38,4 @@ Ubuntu를 포함해 기본 정책은 `distro`이며 vendor 등급이 없으면 C
 | Rocky Linux | 4,860,973 | 4.6 | 2026-09-17 06:33:39 |
 | AlmaLinux | 6,244,262 | 6.0 | 2026-09-16 14:07:32 |
 
-기본 개별 feed 다운로드 제한은 1 GiB, 압축 해제 누적 제한은 16 GiB다 (`internal/vulndb/source.go:43`, `internal/vulndb/options.go:11`). 전체 Ubuntu와 Chainguard도 기본 제한 안에 들어온다. 릴리스별 export 이름은 항상 base export로 대체되며, 각 feed의 최신 레코드 시각이 `db status`에 `data through`로 표시되고 60일을 넘으면 경고한다. URL·헤더 측정값은 상세 JSON `feed_sizes`에 보존했다. export URL 생성 규칙은 `internal/vulndb/osv.go:348`이다. 크기 및 upstream 갱신 여부는 시간이 지나면 달라진다.
+기본 개별 feed 다운로드 제한은 1 GiB, 압축 해제 누적 제한은 32 GiB다 (`internal/vulndb/source.go:43`, `internal/vulndb/options.go:11`). 전체 Ubuntu와 Chainguard도 기본 제한 안에 들어온다. 릴리스별 export 이름은 항상 base export로 대체되며, 각 feed의 최신 레코드 시각이 `db status`에 `data through`로 표시되고 60일을 넘으면 경고한다. URL·헤더 측정값은 상세 JSON `feed_sizes`에 보존했다. export URL 생성 규칙은 `internal/vulndb/osv.go:348`이다. 크기 및 upstream 갱신 여부는 시간이 지나면 달라진다.
