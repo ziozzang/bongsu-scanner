@@ -11,6 +11,7 @@ import (
 )
 
 type Options struct {
+	CPE                bool // Opt-in: NVD CPE applicability is less precise than ecosystem advisories.
 	Details            bool
 	IncludeUnimportant bool // Deprecated: unimportant advisories are included by default; ignored.
 	ExcludeUnimportant bool
@@ -248,6 +249,11 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					}
 				}
 			}
+		}
+	}
+	if opts.CPE {
+		if err := matchCPE(ctx, store, subjects, opts, ignored, versions, &report); err != nil {
+			return report, err
 		}
 	}
 	for key, count := range missing {

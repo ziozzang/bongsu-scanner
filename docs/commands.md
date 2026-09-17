@@ -100,6 +100,34 @@ Unknown and duplicate keys produce warnings; the last duplicate wins.
 | update_require_signature | false | Require trusted release checksum signatures |
 | signature_min_version | 1 | Oldest accepted signature format: 1 or 2 |
 
+### Command defaults
+
+The scan, match, and db blocks supply command flag defaults. Explicit CLI flags
+(including false, zero and empty strings) override file values; omitted file keys
+retain built-in defaults. Repeated --exclude flags replace scan.excludes.
+Lists accept flow sequences or indented dash items. Invalid booleans and integers
+are errors; unknown nested keys warn. Duplicate blocks replace earlier blocks.
+
+Run bscan config show to print the merged configuration as YAML without creating
+files. Run bscan config init to create a commented default template without
+signing keys; it refuses to overwrite an existing file. bscan init still initializes
+the signing identity. Neither command prints private key contents.
+
+| Block | Keys | Applies to |
+| --- | --- | --- |
+| scan | excludes, one_file_system, workers, redact_ip, no_host_metadata, skip_binaries, include_declared, containers, fail_on_partial, output, format | scan and batch |
+| match | severity_source, exclude_unimportant, min_severity, fail_on, only_fixed, db_isolation | match and scan/batch --match |
+| match | report_formats | --report for scan/batch --match only; never enables matching |
+| db | sources, ecosystems, alpine_releases, nvd_years, max_feed_bytes, max_feed_uncompressed, keep_raw, mirror | db update; keep_raw also applies to db convert |
+
+Keys use underscores, while their corresponding CLI flags use hyphens. Exceptions:
+scan.excludes maps to --exclude; db.sources to --source; db.ecosystems to
+--ecosystem; db.alpine_releases to --alpine-release; db.keep_raw is the inverse of
+--no-keep-raw. Defaults match the flag tables below (keep_raw is true; lists are
+empty and defer to existing updater defaults). Relative scan.output paths resolve
+from the working directory. Top-level formats remains a stored preference;
+scan.format supplies the command default.
+
 ## Commands and flags
 
 An empty default is shown as `""`; environment-dependent defaults use variable
@@ -135,6 +163,36 @@ bscan init [flags]
 | --- | --- | --- |
 | `--signer` | `""` | signer label |
 
+### bscan config
+
+Inspect or initialize command defaults.
+
+```text
+bscan config show|init
+```
+
+No command-specific flags.
+
+### bscan config show
+
+Print effective configuration (file values merged with built-in defaults).
+
+```text
+bscan config show
+```
+
+No command-specific flags.
+
+### bscan config init
+
+Create a commented configuration template without replacing an existing file.
+
+```text
+bscan config init
+```
+
+No command-specific flags.
+
 ### bscan key
 
 Manage signing and trusted keys.
@@ -150,7 +208,7 @@ No command-specific flags.
 Show local key and fingerprint.
 
 ```text
-bscan key show 
+bscan key show
 ```
 
 No command-specific flags.
@@ -160,7 +218,7 @@ No command-specific flags.
 Ensure a local signing key exists.
 
 ```text
-bscan key generate 
+bscan key generate
 ```
 
 No command-specific flags.
@@ -188,6 +246,7 @@ bscan scan [flags] TARGET
 | `-V` | `false` | show verbose scan progress |
 | `--allow-digest-mismatch` | `false` | record mismatching layer digests instead of failing |
 | `--containers` | `false` | after a host scan, also scan every running Docker container into its own SBOM |
+| `--cpe` | `false` | enable conservative NVD CPE matching (CPE data can be noisy) |
 | `--cpuprofile` | `""` | write CPU profile (hidden) |
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
@@ -199,6 +258,7 @@ bscan scan [flags] TARGET
 | `--format` | `both` | spdx, cyclonedx, or both |
 | `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
 | `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |
+| `--insecure-registry` | `false` | allow HTTP registries on localhost/127.0.0.1 only |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
 | `--max-files` | `0` | stop the directory walk after N regular files (0 = unlimited) |
 | `--memprofile` | `""` | write heap profile (hidden) |
@@ -233,6 +293,7 @@ bscan batch [flags] TARGET...
 | `-V` | `false` | show verbose scan progress |
 | `--allow-digest-mismatch` | `false` | record mismatching layer digests instead of failing |
 | `--containers` | `false` | after a host scan, also scan every running Docker container into its own SBOM |
+| `--cpe` | `false` | enable conservative NVD CPE matching (CPE data can be noisy) |
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
@@ -243,6 +304,7 @@ bscan batch [flags] TARGET...
 | `--format` | `both` | spdx, cyclonedx, or both |
 | `--include-declared` | `false` | keep dependencies declared by lockfiles bundled inside installed packages (not installed software) |
 | `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |
+| `--insecure-registry` | `false` | allow HTTP registries on localhost/127.0.0.1 only |
 | `--jobs` | `0` | parallel scans |
 | `--match` | `false` | match written SBOMs against the local vulnerability database |
 | `--max-files` | `0` | stop the directory walk after N regular files (0 = unlimited) |
@@ -521,6 +583,7 @@ bscan match [flags] SBOM...
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--cpe` | `false` | enable conservative NVD CPE matching (CPE data can be noisy) |
 | `--cpuprofile` | `""` | write CPU profile (hidden) |
 | `--db` | `$BONGSU_HOME/db` | local vulnerability database directory |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
@@ -598,7 +661,7 @@ bscan self-update [flags]
 Show version, commit, build date, Go version, platform, and module.
 
 ```text
-bscan version 
+bscan version
 ```
 
 No command-specific flags.
@@ -608,7 +671,7 @@ No command-specific flags.
 Show build information, author, license, and notices.
 
 ```text
-bscan about 
+bscan about
 ```
 
 No command-specific flags.
@@ -638,7 +701,7 @@ No command-specific flags.
 Generate Bash completion.
 
 ```text
-bscan completion bash 
+bscan completion bash
 ```
 
 No command-specific flags.
@@ -648,7 +711,7 @@ No command-specific flags.
 Generate Zsh completion.
 
 ```text
-bscan completion zsh 
+bscan completion zsh
 ```
 
 No command-specific flags.
@@ -658,7 +721,7 @@ No command-specific flags.
 Generate Fish completion.
 
 ```text
-bscan completion fish 
+bscan completion fish
 ```
 
 No command-specific flags.

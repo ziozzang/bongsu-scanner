@@ -59,6 +59,7 @@ func commandRegistry() []commandSpec {
 		{"exclude-unimportant", "false", "exclude Debian unimportant advisories", "bool", false},
 		{"severity-source", "distro", "severity policy: cvss, distro, or max", "string", false},
 		{"details", "false", "include full advisory details text in findings", "bool", false},
+		{"cpe", "false", "enable conservative NVD CPE matching (CPE data can be noisy)", "bool", false},
 		{"only-fixed", "false", "include only findings with a known fix", "bool", false},
 		{"pubkey", "", "require database signature from trusted name, PEM file, or hex key", "string", false},
 		{"llm", "false", "add LLM environment applicability review; retain original findings", "bool", false},
@@ -115,6 +116,9 @@ func commandRegistry() []commandSpec {
 	commands := []commandSpec{
 		{"", "[global flags] COMMAND [command flags] [arguments]", "Embedded host/container SBOM scanner and artifact signer", root},
 		{"init", "[flags]", "Initialize configuration and signing identity", []commandFlag{{"signer", "", "signer label", "string", false}}},
+		{"config", "show|init", "Inspect or initialize command defaults", nil},
+		{"config show", "", "Print effective configuration (file values merged with built-in defaults)", nil},
+		{"config init", "", "Create a commented configuration template without replacing an existing file", nil},
 		{"key", "show|generate|trust", "Manage signing and trusted keys", nil},
 		{"key show", "", "Show local key and fingerprint", nil},
 		{"key generate", "", "Ensure a local signing key exists", nil},

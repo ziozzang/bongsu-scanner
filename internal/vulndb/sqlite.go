@@ -26,11 +26,11 @@ const SQLiteFileName = "advisories.sqlite"
 
 // SQLiteSchemaVersion tracks the SQLite layout independently of the outer
 // catalog envelope (SchemaVersion), which also governs feed caches and updates.
-const SQLiteSchemaVersion = 5
+const SQLiteSchemaVersion = 6
 const sqliteRecordEncoding = "zlib-json-v1"
 
 const sqliteSchema = `
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 CREATE TABLE records (
  id TEXT PRIMARY KEY NOT NULL,
  summary TEXT NOT NULL,
@@ -50,6 +50,12 @@ CREATE TABLE package_affected (
  release TEXT NOT NULL,
  record_id TEXT NOT NULL REFERENCES records(id),
  PRIMARY KEY(base_ecosystem, name, release, record_id)
+) WITHOUT ROWID;
+CREATE TABLE cpe_matches (
+ vendor TEXT NOT NULL,
+ product TEXT NOT NULL,
+ record_id TEXT NOT NULL REFERENCES records(id),
+ PRIMARY KEY(vendor, product, record_id)
 ) WITHOUT ROWID;
 CREATE TABLE aliases (
  alias TEXT NOT NULL,
@@ -239,6 +245,7 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 		return err
 	}
 	queries := map[string]string{
+		"cpe":       "INSERT OR IGNORE INTO cpe_matches(vendor,product,record_id) VALUES(?,?,?)",
 		"record":    "INSERT INTO records(id,summary,details,source,published_at,modified_at,withdrawn_at,added_at,last_seen_at,details_truncated,json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
 		"package":   "INSERT OR IGNORE INTO package_affected(base_ecosystem,name,release,record_id) VALUES(?,?,?,?)",
 		"alias":     "INSERT OR IGNORE INTO aliases(alias,record_id) VALUES(?,?)",
@@ -317,6 +324,15 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 			}
 		}
 		for ordinal, a := range r.Affected {
+			if a.Ecosystem == "CPE" {
+				raw, _ := a.Database["cpe"].(string)
+				attrs, ok := CPEAttributes(raw)
+				if ok && attrs[1] != "-" && attrs[2] != "-" && !strings.ContainsAny(attrs[1]+attrs[2], "*?") && a.Package == attrs[1]+":"+attrs[2] {
+					if _, err = insert("cpe", attrs[1], attrs[2], id); err != nil {
+						return err
+					}
+				}
+			}
 			eco := BaseEcosystem(a.Ecosystem)
 			name, indexable := affectedIndexName(a)
 			if eco != "" && indexable {

@@ -332,6 +332,7 @@ func validateSQLiteSchema(conn *sql.Conn) error {
 
 func validateSQLiteSchemaContext(ctx context.Context, conn *sql.Conn) error {
 	required := map[string][]string{
+		"cpe_matches":         {"vendor", "product", "record_id"},
 		"records":             {"id", "summary", "details", "source", "published_at", "modified_at", "withdrawn_at", "added_at", "last_seen_at", "details_truncated", "json"},
 		"package_affected":    {"base_ecosystem", "name", "release", "record_id"},
 		"aliases":             {"alias", "record_id"},
@@ -473,4 +474,43 @@ func (d *sqliteReadDecoder) decode(data []byte, record *Record) error {
 		return errors.New("SQLite advisory exceeds expanded size limit")
 	}
 	return json.Unmarshal(d.output.Bytes(), record)
+}
+
+// LookupCPE uses the vendor/product primary key and returns independently owned records.
+func (s *sqliteStore) LookupCPE(vendor, product string) ([]Record, error) {
+	return s.LookupCPEContext(context.Background(), vendor, product)
+}
+func (s *sqliteStore) LookupCPEContext(ctx context.Context, vendor, product string) (out []Record, err error) {
+	defer func() {
+		if changed := s.checkUnmodified(); changed != nil {
+			out = nil
+			err = errors.Join(err, changed)
+		}
+	}()
+	rows, err := s.conn.QueryContext(ctx, `SELECT json FROM records WHERE id IN
+ (SELECT record_id FROM cpe_matches WHERE vendor=? AND product=?) ORDER BY id`, vendor, product)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	decoder := takeSQLiteReadDecoder()
+	defer releaseSQLiteReadDecoder(decoder)
+	for rows.Next() {
+		var b []byte
+		if err = rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		if len(b) >= 64<<20 {
+			return nil, errors.New("SQLite advisory exceeds 64 MiB")
+		}
+		var r Record
+		if err = decoder.decode(b, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err = errors.Join(rows.Err(), ctx.Err()); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

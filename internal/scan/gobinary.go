@@ -35,7 +35,7 @@ func goBinaryPackages(r io.ReaderAt, size int64, source, layer string) (pkgs []P
 		if name == "" || version == "" || version == "(devel)" || isLocalModulePath(name) {
 			return
 		}
-		pkgs = append(pkgs, Package{Name: name, Version: version, Type: "golang", Source: source, Layer: layer, Indirect: indirect})
+		pkgs = append(pkgs, Package{Name: name, Version: version, Type: "golang", Source: source, Layer: layer, Indirect: indirect, Evidence: "binary"})
 	}
 	if v := goVersionNumber(info.GoVersion); v != "" {
 		add("stdlib", v, false)

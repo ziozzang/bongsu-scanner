@@ -25,6 +25,12 @@ type Options struct {
 	// Platform selects the image manifest from multi-architecture OCI
 	// indexes, formatted "os/arch[/variant]". Empty means linux/<GOARCH>.
 	Platform string
+	// InsecureRegistry permits plain HTTP only for localhost/127.0.0.1.
+	InsecureRegistry bool
+	// MaxRegistryBytes and MaxRegistryBlobBytes bound registry downloads.
+	// Zero defaults to 8 GiB each; metadata is additionally capped at 16 MiB.
+	MaxRegistryBytes     int64
+	MaxRegistryBlobBytes int64
 	// AllowDigestMismatch records layers whose content hash differs from the
 	// declared digest with Verified=false instead of aborting the scan.
 	AllowDigestMismatch bool
@@ -99,6 +105,8 @@ func Target(ctx context.Context, target string, opts Options) (Result, error) {
 		opts.Now = time.Now()
 	}
 	switch {
+	case strings.HasPrefix(target, "registry://"), strings.HasPrefix(target, "oci://"):
+		return registryImage(ctx, target, opts)
 	case target == "host" || target == "host://":
 		root := opts.HostRoot
 		if root == "" {

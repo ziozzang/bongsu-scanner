@@ -764,3 +764,13 @@ func ReadSignatureContext(ctx context.Context, path string) (sign.Record, error)
 	err = json.Unmarshal(b, &record)
 	return record, err
 }
+
+// CPEStore extends advisory lookups with the optional CPE index.
+type CPEStore interface {
+	Store
+	LookupCPE(vendor, product string) ([]Record, error)
+}
+
+func (s *diskStore) LookupCPE(vendor, product string) ([]Record, error) {
+	return s.Lookup("CPE", vendor+":"+product)
+}

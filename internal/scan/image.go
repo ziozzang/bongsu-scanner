@@ -889,12 +889,13 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 // unpacker merges layer tars into one filesystem view following the OCI
 // layer specification (whiteouts, opaque directories, hard links).
 type unpacker struct {
-	ctx      context.Context
-	opts     Options
-	fs       store
-	symlinks map[string]symlinkRec
-	binaries map[string][]Package // Go build-info packages keyed by binary path
-	kinds    map[string]byte
+	ctx          context.Context
+	opts         Options
+	fs           store
+	symlinks     map[string]symlinkRec
+	binaries     map[string][]Package // Go build-info packages keyed by binary path
+	binaryBudget binaryProbeBudget
+	kinds        map[string]byte
 	// children indexes kinds by parent directory ("" for the root) so
 	// whiteouts remove a subtree in time proportional to its size rather
 	// than to the whole merged filesystem.
@@ -1165,7 +1166,7 @@ func goBinaryCandidate(name string, mode int64, size int64) bool {
 	if size < 4 || size > maxGoBinary {
 		return false
 	}
-	return mode&0o111 != 0 || path.Ext(path.Base(name)) == ""
+	return mode&0o111 != 0 || path.Ext(path.Base(name)) == "" || runtimeLibraryCandidate(name)
 }
 
 // readEntry hashes one regular file. Metadata files selected by interesting
@@ -1195,7 +1196,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 			return File{}, err
 		}
 		sum.Write(data)
-		if probe && isELF(data) {
+		if probe && isNativeBinary(data) {
 			u.recordBinary(name, layer, data)
 		}
 	case probe:
@@ -1205,7 +1206,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 			return File{}, err
 		}
 		sum.Write(head[:n])
-		if isELF(head) {
+		if isNativeBinary(head) {
 			buf := make([]byte, size)
 			copy(buf, head)
 			if _, err := io.ReadFull(r, buf[4:]); err != nil {
@@ -1228,12 +1229,16 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 }
 
 func (u *unpacker) recordBinary(name, layer string, data []byte) {
+	if !u.binaryBudget.take() {
+		return
+	}
 	pkgs := extractGoBinary(bytes.NewReader(data), int64(len(data)), name, layer)
+	pkgs = append(pkgs, binaryPackages(bytes.NewReader(data), int64(len(data)), name, layer)...)
 	if len(pkgs) == 0 {
 		return
 	}
 	u.binaries[name] = pkgs
-	report(u.opts, "binary", fmt.Sprintf("%s: %d packages from Go build info", name, len(pkgs)), true)
+	report(u.opts, "binary", fmt.Sprintf("%s: %d packages from binary", name, len(pkgs)), true)
 }
 
 // finish resolves symlinked metadata files (etc/os-release ->

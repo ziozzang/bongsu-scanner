@@ -454,6 +454,34 @@ Unknown and duplicate keys produce warnings; the last duplicate wins.
 | update_require_signature | false | Require trusted release checksum signatures |
 | signature_min_version | 1 | Oldest accepted signature format: 1 or 2 |
 
+### Command defaults
+
+The scan, match, and db blocks supply command flag defaults. Explicit CLI flags
+(including false, zero and empty strings) override file values; omitted file keys
+retain built-in defaults. Repeated --exclude flags replace scan.excludes.
+Lists accept flow sequences or indented dash items. Invalid booleans and integers
+are errors; unknown nested keys warn. Duplicate blocks replace earlier blocks.
+
+Run bscan config show to print the merged configuration as YAML without creating
+files. Run bscan config init to create a commented default template without
+signing keys; it refuses to overwrite an existing file. bscan init still initializes
+the signing identity. Neither command prints private key contents.
+
+| Block | Keys | Applies to |
+| --- | --- | --- |
+| scan | excludes, one_file_system, workers, redact_ip, no_host_metadata, skip_binaries, include_declared, containers, fail_on_partial, output, format | scan and batch |
+| match | severity_source, exclude_unimportant, min_severity, fail_on, only_fixed, db_isolation | match and scan/batch --match |
+| match | report_formats | --report for scan/batch --match only; never enables matching |
+| db | sources, ecosystems, alpine_releases, nvd_years, max_feed_bytes, max_feed_uncompressed, keep_raw, mirror | db update; keep_raw also applies to db convert |
+
+Keys use underscores, while their corresponding CLI flags use hyphens. Exceptions:
+scan.excludes maps to --exclude; db.sources to --source; db.ecosystems to
+--ecosystem; db.alpine_releases to --alpine-release; db.keep_raw is the inverse of
+--no-keep-raw. Defaults match the flag tables below (keep_raw is true; lists are
+empty and defer to existing updater defaults). Relative scan.output paths resolve
+from the working directory. Top-level formats remains a stored preference;
+scan.format supplies the command default.
+
 ## Commands and flags
 
 An empty default is shown as ` + "`\"\"`" + `; environment-dependent defaults use variable
@@ -465,7 +493,7 @@ names rather than the generating machine's paths or credentials.
 		if command.Path != "" {
 			name += " " + command.Path
 		}
-		fmt.Fprintf(&b, "### %s\n\n%s.\n\n```text\n%s %s\n```\n\n", name, command.Description, name, command.Arguments)
+		fmt.Fprintf(&b, "### %s\n\n%s.\n\n```text\n%s\n```\n\n", name, command.Description, strings.TrimSpace(name+" "+command.Arguments))
 		if len(command.Flags) == 0 {
 			b.WriteString("No command-specific flags.\n\n")
 			continue
@@ -571,6 +599,14 @@ func TestHiddenProfilingFlagsStillAccepted(t *testing.T) {
 		_, stderr, code := polishCLI(t, t.TempDir(), command, "--cpuprofile", "unused.cpu", "--memprofile", "unused.mem", "--help")
 		if code != 0 || strings.Contains(stderr, "not defined") {
 			t.Errorf("%s hidden flags: exit=%d stderr=%s", command, code, stderr)
+		}
+	}
+}
+
+func TestCommandReferenceNoTrailingWhitespace(t *testing.T) {
+	for n, line := range strings.Split(commandReference(), "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d has trailing whitespace", n+1)
 		}
 	}
 }

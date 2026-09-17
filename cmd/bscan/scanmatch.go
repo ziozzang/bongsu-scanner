@@ -11,12 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ziozzang/bongsu-scanner/internal/config"
 	matcher "github.com/ziozzang/bongsu-scanner/internal/match"
 	"github.com/ziozzang/bongsu-scanner/internal/report"
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
 
 type scanMatchFlags struct {
+	cpe                           bool
 	match                         bool
 	reports, db, isolation        string
 	minimum, fail                 string
@@ -25,6 +27,7 @@ type scanMatchFlags struct {
 }
 
 func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
+	fs.BoolVar(&f.cpe, "cpe", false, "enable conservative NVD CPE matching (CPE data can be noisy)")
 	fs.BoolVar(&f.match, "match", false, "match written SBOMs against the local vulnerability database")
 	fs.StringVar(&f.reports, "report", "", "comma-separated html, markdown, csv, or sarif reports (requires --match)")
 	fs.StringVar(&f.db, "db", "", "local vulnerability database directory (default configured db directory)")
@@ -35,6 +38,19 @@ func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.BoolVar(&f.onlyFixed, "only-fixed", false, "include only findings with a known fix")
 	addDeprecatedIncludeUnimportant(fs)
 	fs.BoolVar(&f.excludeUnimportant, "exclude-unimportant", false, "exclude Debian unimportant advisories")
+}
+
+func applyMatchDefaults(fs *flag.FlagSet, cfg config.MatchConfig) error {
+	defaults := map[string]any{
+		"severity-source": cfg.SeveritySource, "exclude-unimportant": cfg.ExcludeUnimportant,
+		"min-severity": cfg.MinSeverity, "fail-on": cfg.FailOn, "only-fixed": cfg.OnlyFixed,
+		"db-isolation": cfg.DBIsolation,
+	}
+	// Report defaults are meaningful only for the optional scan matching stage.
+	if f := fs.Lookup("match"); f != nil && f.Value.String() == "true" {
+		defaults["report"] = strings.Join(cfg.ReportFormats, ",")
+	}
+	return applyFlagDefaults(fs, defaults)
 }
 
 type scanMatcher struct {
@@ -77,7 +93,7 @@ func prepareScanMatch(ctx context.Context, f scanMatchFlags) (*scanMatcher, erro
 	if err != nil {
 		return nil, err
 	}
-	m.options = matcher.Options{SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, ExcludeUnimportant: f.excludeUnimportant}
+	m.options = matcher.Options{CPE: f.cpe, SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, ExcludeUnimportant: f.excludeUnimportant}
 	if f.db == "" {
 		f.db, err = databaseDir()
 		if err != nil {

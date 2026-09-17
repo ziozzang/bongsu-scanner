@@ -11,7 +11,44 @@ import (
 	"unicode/utf8"
 )
 
+// ScanConfig, MatchConfig and DBConfig provide defaults for command flags.
+type ScanConfig struct {
+	Excludes        []string
+	OneFileSystem   bool
+	Workers         int
+	RedactIP        bool
+	NoHostMetadata  bool
+	SkipBinaries    bool
+	IncludeDeclared bool
+	Containers      bool
+	FailOnPartial   bool
+	Output          string
+	Format          string
+}
+type MatchConfig struct {
+	SeveritySource     string
+	ExcludeUnimportant bool
+	MinSeverity        string
+	FailOn             string
+	OnlyFixed          bool
+	DBIsolation        string
+	ReportFormats      []string
+}
+type DBConfig struct {
+	Sources             []string
+	Ecosystems          []string
+	AlpineReleases      []string
+	NVDYears            string
+	MaxFeedBytes        int64
+	MaxFeedUncompressed int64
+	KeepRaw             bool
+	Mirror              string
+}
+
 type Config struct {
+	Scan        ScanConfig
+	Match       MatchConfig
+	DB          DBConfig
 	Signer      string
 	PrivateKey  string
 	PublicKey   string
@@ -31,7 +68,7 @@ type Config struct {
 }
 
 func Defaults() Config {
-	return Config{Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
+	return Config{Scan: ScanConfig{Output: ".", Format: "both"}, Match: MatchConfig{SeveritySource: "distro", DBIsolation: "auto"}, DB: DBConfig{MaxFeedBytes: 512 << 20, MaxFeedUncompressed: 16 << 30, KeepRaw: true}, Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
 }
 
 // CheckSignatureVersion applies the configured minimum before a caller verifies
@@ -134,6 +171,8 @@ func parse(path string, b []byte) (Config, []string, error) {
 	var warnings []string
 	section := ""
 	mapIndent := 0
+	listKey := ""
+	ignoredIndent := 0
 	seen := make(map[string]bool)
 	for n, raw := range strings.Split(strings.TrimPrefix(string(b), "\ufeff"), "\n") {
 		line := strings.TrimSuffix(raw, "\r")
@@ -145,6 +184,60 @@ func parse(path string, b []byte) (Config, []string, error) {
 			continue
 		}
 		indented := line[0] == ' ' || line[0] == '\t'
+		if indented && optionBlock(section) {
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if ignoredIndent != 0 && indent > ignoredIndent {
+				continue
+			}
+			ignoredIndent = 0
+			if listKey != "" && indent > mapIndent {
+				if !strings.HasPrefix(t, "- ") && t != "-" {
+					return cfg, warnings, fmt.Errorf("%s:%d: %s.%s: expected list item", path, n+1, section, listKey)
+				}
+				rawItem := strings.TrimSpace(stripComment(strings.TrimSpace(strings.TrimPrefix(t, "-"))))
+				value, err := scalar(rawItem)
+				if err != nil || rawItem == "" {
+					return cfg, warnings, fmt.Errorf("%s:%d: %s.%s: expected scalar list item", path, n+1, section, listKey)
+				}
+				dest := optionValue(&cfg, section, listKey).(*[]string)
+				*dest = append(*dest, value)
+				continue
+			}
+			listKey = ""
+			if mapIndent != 0 && indent != mapIndent {
+				return cfg, warnings, fmt.Errorf("%s:%d: %s must be a flat map with scalar or list values", path, n+1, section)
+			}
+			mapIndent = indent
+			i := keySeparator(t)
+			if i < 1 {
+				return cfg, warnings, fmt.Errorf("%s:%d: expected key: value", path, n+1)
+			}
+			k, err := unquote(strings.TrimSpace(t[:i]))
+			if err != nil || !printableKey(k) {
+				return cfg, warnings, fmt.Errorf("%s:%d: invalid configuration key", path, n+1)
+			}
+			name := section + "." + k
+			dest := optionValue(&cfg, section, k)
+			if dest == nil {
+				warnings = append(warnings, fmt.Sprintf("%s:%d: unknown configuration key %q; key and any nested block ignored", path, n+1, name))
+				ignoredIndent = indent
+				continue
+			}
+			if seen[name] {
+				warnings = append(warnings, fmt.Sprintf("%s:%d: duplicate configuration key %q; last value wins", path, n+1, name))
+			}
+			seen[name] = true
+			rawValue := strings.TrimSpace(stripComment(strings.TrimSpace(t[i+1:])))
+			if list, ok := dest.(*[]string); ok && rawValue == "" {
+				*list = nil
+				listKey = k
+				continue
+			}
+			if err := parseOption(dest, rawValue); err != nil {
+				return cfg, warnings, fmt.Errorf("%s:%d: %s: %w", path, n+1, name, err)
+			}
+			continue
+		}
 		if indented && section != "trusted_keys" {
 			if section == "" {
 				return cfg, warnings, fmt.Errorf("%s:%d: unexpected indentation", path, n+1)
@@ -178,6 +271,8 @@ func parse(path string, b []byte) (Config, []string, error) {
 			continue
 		}
 		section = ""
+		listKey = ""
+		ignoredIndent = 0
 		mapIndent = 0
 		if seen[k] {
 			warnings = append(warnings, fmt.Sprintf("%s:%d: duplicate configuration key %q; last value wins", path, n+1, k))
@@ -185,7 +280,7 @@ func parse(path string, b []byte) (Config, []string, error) {
 		seen[k] = true
 		// Unknown keys keep their warning-only behavior, including unknown blocks.
 		switch k {
-		case "signer", "private_key", "key_path", "public_key", "hash", "formats", "concurrency", "offline", "db_require_signature", "update_require_signature", "signature_min_version", "trusted_keys":
+		case "signer", "private_key", "key_path", "public_key", "hash", "formats", "concurrency", "offline", "db_require_signature", "update_require_signature", "signature_min_version", "trusted_keys", "scan", "match", "db":
 		default:
 			section = k
 			warnings = append(warnings, fmt.Sprintf("%s:%d: unknown configuration key %q; key and any nested block ignored", path, n+1, k))
@@ -233,6 +328,25 @@ func parse(path string, b []byte) (Config, []string, error) {
 				return cfg, warnings, fmt.Errorf("%s:%d: signature_min_version must be 1 or 2", path, n+1)
 			}
 			cfg.SignatureMinVersion = minimum
+		case "scan", "match", "db":
+			if rawValue != "" {
+				return cfg, warnings, fmt.Errorf("%s:%d: %s must be a block map", path, n+1, k)
+			}
+			defaults := Defaults()
+			switch k {
+			case "scan":
+				cfg.Scan = defaults.Scan
+			case "match":
+				cfg.Match = defaults.Match
+			case "db":
+				cfg.DB = defaults.DB
+			}
+			for name := range seen {
+				if strings.HasPrefix(name, k+".") {
+					delete(seen, name)
+				}
+			}
+			section = k
 		case "trusted_keys":
 			if rawValue != "" {
 				return cfg, warnings, fmt.Errorf("%s:%d: trusted_keys must be a block map; inline maps/flow sequences are unsupported", path, n+1)
@@ -285,7 +399,167 @@ func render(cfg Config) []byte {
 	for k, v := range cfg.TrustedKeys {
 		b.WriteString("  " + quote(k) + ": " + quote(v) + "\n")
 	}
+	for _, section := range []string{"scan", "match", "db"} {
+		b.WriteString("# Defaults for " + section + " command flags; explicit CLI flags take precedence.\n")
+		b.WriteString(section + ":\n")
+		for _, field := range optionFields(&cfg, section) {
+			var value string
+			switch p := field.value.(type) {
+			case *string:
+				value = quote(*p)
+			case *bool:
+				value = strconv.FormatBool(*p)
+			case *int:
+				value = strconv.Itoa(*p)
+			case *int64:
+				value = strconv.FormatInt(*p, 10)
+			case *[]string:
+				items := make([]string, len(*p))
+				for i, item := range *p {
+					items[i] = quote(item)
+				}
+				value = "[" + strings.Join(items, ", ") + "]"
+			}
+			b.WriteString("  " + field.name + ": " + value + "\n")
+		}
+	}
 	return []byte(b.String())
+}
+
+// Marshal returns the effective configuration in the supported YAML subset.
+func Marshal(cfg Config) []byte { return render(cfg) }
+
+// InitTemplate creates a commented default configuration without replacing an
+// existing file or generating a signing identity.
+func InitTemplate() (string, error) {
+	path, err := Path()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return path, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return path, err
+	}
+	_, writeErr := f.Write(render(Defaults()))
+	closeErr := f.Close()
+	if writeErr != nil {
+		return path, writeErr
+	}
+	return path, closeErr
+}
+
+type optionField struct {
+	name  string
+	value any
+}
+
+func optionBlock(s string) bool { return s == "scan" || s == "match" || s == "db" }
+func optionFields(c *Config, section string) []optionField {
+	switch section {
+	case "scan":
+		return []optionField{
+			{"excludes", &c.Scan.Excludes}, {"one_file_system", &c.Scan.OneFileSystem}, {"workers", &c.Scan.Workers},
+			{"redact_ip", &c.Scan.RedactIP}, {"no_host_metadata", &c.Scan.NoHostMetadata}, {"skip_binaries", &c.Scan.SkipBinaries},
+			{"include_declared", &c.Scan.IncludeDeclared}, {"containers", &c.Scan.Containers}, {"fail_on_partial", &c.Scan.FailOnPartial},
+			{"output", &c.Scan.Output}, {"format", &c.Scan.Format},
+		}
+	case "match":
+		return []optionField{
+			{"severity_source", &c.Match.SeveritySource}, {"exclude_unimportant", &c.Match.ExcludeUnimportant},
+			{"min_severity", &c.Match.MinSeverity}, {"fail_on", &c.Match.FailOn}, {"only_fixed", &c.Match.OnlyFixed},
+			{"db_isolation", &c.Match.DBIsolation}, {"report_formats", &c.Match.ReportFormats},
+		}
+	case "db":
+		return []optionField{
+			{"sources", &c.DB.Sources}, {"ecosystems", &c.DB.Ecosystems}, {"alpine_releases", &c.DB.AlpineReleases},
+			{"nvd_years", &c.DB.NVDYears}, {"max_feed_bytes", &c.DB.MaxFeedBytes}, {"max_feed_uncompressed", &c.DB.MaxFeedUncompressed},
+			{"keep_raw", &c.DB.KeepRaw}, {"mirror", &c.DB.Mirror},
+		}
+	}
+	return nil
+}
+func optionValue(c *Config, section, key string) any {
+	for _, field := range optionFields(c, section) {
+		if field.name == key {
+			return field.value
+		}
+	}
+	return nil
+}
+func parseOption(dest any, raw string) error {
+	if p, ok := dest.(*[]string); ok {
+		value, err := parseOptionList(raw)
+		if err == nil {
+			*p = value
+		}
+		return err
+	}
+	value, err := scalar(raw)
+	if err != nil {
+		return err
+	}
+	switch p := dest.(type) {
+	case *string:
+		*p = value
+	case *bool:
+		*p, err = parseBool(value)
+	case *int:
+		*p, err = strconv.Atoi(value)
+	case *int64:
+		*p, err = strconv.ParseInt(value, 10, 64)
+	}
+	return err
+}
+
+// Unlike legacy formats, command lists require YAML sequence syntax. Split only
+// on commas outside quotes so paths containing punctuation round-trip intact.
+func parseOptionList(raw string) ([]string, error) {
+	if !strings.HasPrefix(raw, "[") || !strings.HasSuffix(raw, "]") {
+		return nil, fmt.Errorf("expected list [value, ...] or indented list items")
+	}
+	body := strings.TrimSpace(raw[1 : len(raw)-1])
+	if body == "" {
+		return nil, nil
+	}
+	var result []string
+	var quoted byte
+	start := 0
+	for i := 0; i <= len(body); i++ {
+		if i == len(body) || (body[i] == ',' && quoted == 0) {
+			part := strings.TrimSpace(body[start:i])
+			if part == "" {
+				return nil, fmt.Errorf("empty list item")
+			}
+			value, err := scalar(part)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+			start = i + 1
+			continue
+		}
+		c := body[i]
+		if quoted != 0 {
+			if quoted == '"' && c == '\\' {
+				i++
+			} else if c == quoted {
+				if quoted == '\'' && i+1 < len(body) && body[i+1] == '\'' {
+					i++
+				} else {
+					quoted = 0
+				}
+			}
+		} else if (c == '"' || c == '\'') && strings.TrimSpace(body[start:i]) == "" {
+			quoted = c
+		}
+	}
+	if quoted != 0 {
+		return nil, fmt.Errorf("unterminated quoted list item")
+	}
+	return result, nil
 }
 
 // listItem keeps ordinary format names bare ("[spdx, cyclonedx]") and quotes

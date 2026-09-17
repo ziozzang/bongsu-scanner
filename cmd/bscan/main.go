@@ -110,6 +110,8 @@ func run(ctx context.Context, args []string) (err error) {
 	switch args[0] {
 	case "init":
 		return cmdInit(args[1:])
+	case "config":
+		return cmdConfig(args[1:])
 	case "key":
 		return cmdKey(args[1:])
 	case "scan":
@@ -166,6 +168,7 @@ Global flags (before COMMAND):
 
 Commands:
   bscan init [--signer NAME]
+  bscan config show|init
   bscan key show|generate|trust NAME PUBLIC_KEY
   bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign|--no-sign] [--verbose]
              [--exclude PATH]... [--no-default-excludes] [--one-file-system] [--max-files N]
@@ -186,7 +189,7 @@ Commands:
   bscan completion bash|zsh|fish
   bscan help [COMMAND [SUBCOMMAND]]
 
-Targets: host, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
+Targets: host, registry://IMAGE (also oci://), docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
 
 Local examples:
   bscan scan .
@@ -194,6 +197,67 @@ Local examples:
   bscan scan --containers --redact-ip --timeout 30m --output ./host-scan host
   bscan scan --verbose --output ./scan-results /path/to/rootfs
 `)
+}
+
+// cmdConfig manages defaults without creating or changing signing keys.
+func cmdConfig(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: bscan config show|init")
+	}
+	switch args[0] {
+	case "show":
+		cfg, _, err := config.LoadForCLI()
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(config.Marshal(cfg))
+		return err
+	case "init":
+		path, err := config.InitTemplate()
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
+	default:
+		return fmt.Errorf("unknown config command %q", args[0])
+	}
+}
+
+// applyFlagDefaults must run after Parse. Value.Set deliberately leaves Visit
+// unchanged: configuration defaults are not explicitly supplied CLI flags.
+func applyFlagDefaults(fs *flag.FlagSet, defaults map[string]any) error {
+	explicit := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	for name, value := range defaults {
+		f := fs.Lookup(name)
+		if f == nil || explicit[name] {
+			continue
+		}
+		if items, ok := value.([]string); ok {
+			for _, item := range items {
+				if err := f.Value.Set(item); err != nil {
+					return err
+				}
+			}
+		} else if err := f.Value.Set(fmt.Sprint(value)); err != nil {
+			return fmt.Errorf("configured --%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func applyScanDefaults(fs *flag.FlagSet, cfg config.Config) error {
+	s := cfg.Scan
+	if err := applyFlagDefaults(fs, map[string]any{
+		"exclude": s.Excludes, "one-file-system": s.OneFileSystem, "workers": s.Workers,
+		"redact-ip": s.RedactIP, "no-host-metadata": s.NoHostMetadata, "skip-binaries": s.SkipBinaries,
+		"include-declared": s.IncludeDeclared, "containers": s.Containers, "fail-on-partial": s.FailOnPartial,
+		"output": s.Output, "format": s.Format,
+	}); err != nil {
+		return err
+	}
+	return applyMatchDefaults(fs, cfg.Match)
 }
 
 func cmdInit(args []string) error {
@@ -287,6 +351,7 @@ type scanFlags struct {
 	workers             int
 	includeDeclared     bool
 	platform            string
+	insecureRegistry    bool
 	allowDigestMismatch bool
 	failOnPartial       bool
 }
@@ -317,6 +382,7 @@ func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	fs.IntVar(&f.workers, "workers", 0, "directories walked concurrently for host/directory scans (0 = min(8, CPUs), 1 = sequential)")
 	fs.BoolVar(&f.includeDeclared, "include-declared", false, "keep dependencies declared by lockfiles bundled inside installed packages (not installed software)")
 	fs.StringVar(&f.platform, "platform", "", "image platform to select from multi-arch archives, os/arch[/variant]")
+	fs.BoolVar(&f.insecureRegistry, "insecure-registry", false, "allow HTTP registries on localhost/127.0.0.1 only")
 	fs.BoolVar(&f.allowDigestMismatch, "allow-digest-mismatch", false, "record mismatching layer digests instead of failing")
 	fs.BoolVar(&f.failOnPartial, "fail-on-partial", false, "exit with an error when a walk was partial (permission denied, I/O errors, limits)")
 	return f
@@ -328,6 +394,7 @@ func (f scanFlags) options() scan.Options {
 		Now:                 time.Now(),
 		Verbose:             f.verbose,
 		Platform:            f.platform,
+		InsecureRegistry:    f.insecureRegistry,
 		AllowDigestMismatch: f.allowDigestMismatch,
 		Exclude:             f.exclude,
 		NoDefaultExcludes:   f.noDefaultExcludes,
@@ -403,6 +470,13 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 	}
 	if fs.NArg() != 1 {
 		return errors.New("scan requires exactly one target")
+	}
+	cfg, _, err := config.LoadForCLI()
+	if err != nil {
+		return err
+	}
+	if err := applyScanDefaults(fs, cfg); err != nil {
+		return err
 	}
 	if *cpuProfile != "" {
 		out, createErr := os.Create(*cpuProfile)
@@ -981,6 +1055,9 @@ func cmdBatch(ctx context.Context, args []string) error {
 	}
 	cfg, _, err := config.LoadForCLI()
 	if err != nil {
+		return err
+	}
+	if err := applyScanDefaults(fs, cfg); err != nil {
 		return err
 	}
 	if *jobs <= 0 {

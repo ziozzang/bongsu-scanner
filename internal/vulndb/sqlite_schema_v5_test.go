@@ -53,8 +53,8 @@ func TestSQLiteSchemaV5CompactStorageAndLookup(t *testing.T) {
 	}
 	defer db.Close()
 	var version, tables int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 5 || SQLiteSchemaVersion != 5 {
-		t.Errorf("schema=%d constant=%d err=%v; want 5", version, SQLiteSchemaVersion, err)
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SQLiteSchemaVersion {
+		t.Errorf("schema=%d constant=%d err=%v; want current schema", version, SQLiteSchemaVersion, err)
 	}
 	if err := db.QueryRow("SELECT count(*) FROM sqlite_schema WHERE name='affected_versions'").Scan(&tables); err != nil || tables != 0 {
 		t.Errorf("per-version table remains: count=%d err=%v", tables, err)

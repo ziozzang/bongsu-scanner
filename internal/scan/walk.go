@@ -288,13 +288,14 @@ type walkState struct {
 	parallel *parallelWalk
 	spool    *walkSpool
 
-	ctx        context.Context
-	opts       Options
-	root       string
-	hostPolicy bool
-	hashFiles  bool // record every regular file's SHA-256
-	probe      bool // extract Go build info from ELF executables
-	maxBytes   int64
+	ctx          context.Context
+	opts         Options
+	root         string
+	hostPolicy   bool
+	hashFiles    bool // record every regular file's SHA-256
+	probe        bool // extract Go build info and runtime versions
+	binaryBudget *binaryProbeBudget
+	maxBytes     int64
 
 	fs          store
 	catalog     cataloger
@@ -324,15 +325,16 @@ type walkState struct {
 
 func newWalkState(ctx context.Context, root string, opts Options, hostPolicy bool) *walkState {
 	w := &walkState{
-		ctx:        ctx,
-		opts:       opts,
-		root:       root,
-		hostPolicy: hostPolicy,
-		hashFiles:  opts.IncludeFileHashes && !hostPolicy,
-		probe:      !opts.SkipBinaries,
-		maxBytes:   opts.MaxTotalBytes,
-		fs:         store{},
-		rules:      compileExcludes(root, opts, hostPolicy),
+		ctx:          ctx,
+		opts:         opts,
+		root:         root,
+		hostPolicy:   hostPolicy,
+		hashFiles:    opts.IncludeFileHashes && !hostPolicy,
+		probe:        !opts.SkipBinaries,
+		binaryBudget: &binaryProbeBudget{},
+		maxBytes:     opts.MaxTotalBytes,
+		fs:           store{},
+		rules:        compileExcludes(root, opts, hostPolicy),
 	}
 	// Nested declaration selection also recognizes an empty node_modules.
 	// Open beneath the scan root so a symlink cannot escape the target.
@@ -374,6 +376,9 @@ func newWalkState(ctx context.Context, root string, opts Options, hostPolicy boo
 // metadata finalizes the ScanMetadata for the result.
 func (w *walkState) metadata() ScanMetadata {
 	m := w.meta
+	if w.binaryBudget != nil && w.binaryBudget.count.Load() > maxClassifiedBinaries {
+		m.LimitReached = joinLimit(m.LimitReached, "max-binaries")
+	}
 	m.Partial = m.PermissionDenied > 0 || m.SkippedErrors > 0 || m.MetadataSkipped > 0 || m.LimitReached != ""
 	return m
 }
@@ -470,6 +475,8 @@ func walkTree(ctx context.Context, root string, opts Options, w *walkState) erro
 			// prefix. Drain first, discard speculative results, then replay.
 			w.safeRoot.Close()
 			fresh := newWalkState(ctx, root, opts, w.hostPolicy)
+			// Speculative probes also spend this scan's binary budget.
+			fresh.binaryBudget = w.binaryBudget
 			fresh.workers = 1
 			fresh.meta.InContainer = w.meta.InContainer
 			*w = *fresh
@@ -716,7 +723,8 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 	if !mode.IsRegular() {
 		return nil
 	}
-	probe := w.probe && mode&0o111 != 0 && size >= 4 && size <= maxGoBinary
+	probe := w.probe && size >= 4 && size <= maxGoBinary &&
+		(mode&0o111 != 0 || runtimeLibraryCandidate(rel) || path.Base(rel) == "release" && size <= maxJavaReleaseBytes)
 	fileLimit := metadataFileLimit(rel)
 	// Reserve before reading. If the shared budget cannot cover this file,
 	// cancel and replay sequentially rather than change which paths fit.
@@ -909,15 +917,27 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 	return w.checkCtx()
 }
 
-// probeBinary extracts Go build info from an ELF executable. The file is
+// probeBinary extracts Go build info and runtime versions. The file is
 // read through io.ReaderAt, so it does not matter that hashing consumed it.
 func (w *walkState) probeBinary(f *os.File, rel string, size int64) {
 	r := walkContextReaderAt{w.ctx, f}
-	head := make([]byte, 4)
-	if _, err := r.ReadAt(head, 0); err != nil || !isELF(head) {
-		return
+	if w.binaryBudget == nil {
+		w.binaryBudget = &binaryProbeBudget{}
 	}
-	pkgs := goBinaryPackages(r, size, rel, "")
+	var pkgs []Package
+	if path.Base(rel) == "release" && size <= maxJavaReleaseBytes {
+		if !w.binaryBudget.take() {
+			return
+		}
+		pkgs = binaryJavaRelease(r, size, rel)
+	} else {
+		head := make([]byte, 4)
+		if _, err := r.ReadAt(head, 0); err != nil || !isNativeBinary(head) || !w.binaryBudget.take() {
+			return
+		}
+		pkgs = goBinaryPackages(r, size, rel, "")
+		pkgs = append(pkgs, binaryPackages(r, size, rel, "")...)
+	}
 	if len(pkgs) == 0 {
 		return
 	}
@@ -926,7 +946,7 @@ func (w *walkState) probeBinary(f *os.File, rel string, size int64) {
 	} else {
 		w.binaries.addPackages(pkgs)
 	}
-	report(w.opts, "binary", fmt.Sprintf("%s: %d packages from Go build info", rel, len(pkgs)), true)
+	report(w.opts, "binary", fmt.Sprintf("%s: %d packages from binary", rel, len(pkgs)), true)
 }
 
 // Go build-info probing uses ReaderAt instead of the metadata reader.
@@ -1200,7 +1220,8 @@ func (w *walkState) walkParallel(root string) error {
 		local := &walkState{
 			ctx: ctx, opts: opts, root: w.root, hostPolicy: w.hostPolicy,
 			hashFiles: w.hashFiles, probe: w.probe, maxBytes: w.maxBytes,
-			fs: store{}, rootDev: w.rootDev, rules: w.rules, mounts: w.mounts,
+			binaryBudget: w.binaryBudget,
+			fs:           store{}, rootDev: w.rootDev, rules: w.rules, mounts: w.mounts,
 			safeRoot: w.safeRoot, preloaded: w.preloaded, parallel: p,
 		}
 		states[i] = local

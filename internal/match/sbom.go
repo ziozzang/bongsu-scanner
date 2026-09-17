@@ -15,6 +15,7 @@ import (
 )
 
 type Subject struct {
+	CPE             string `json:",omitempty"`
 	Ref             string
 	Name            string
 	Version         string
@@ -179,7 +180,7 @@ func loadDocument(d Document) (Document, error) {
 	d.Subjects = make([]Subject, 0, len(components))
 	refs := make(map[string]int, len(components))
 	for _, m := range components {
-		s := Subject{Name: str(m, "name"), Version: str(m, "version"), Ref: str(m, "bom-ref"), Type: str(m, "type"), Properties: props(m["properties"])}
+		s := Subject{CPE: str(m, "cpe"), Name: str(m, "name"), Version: str(m, "version"), Ref: str(m, "bom-ref"), Type: str(m, "type"), Properties: props(m["properties"])}
 		ps := str(m, "purl")
 		if d.Format == "spdx" {
 			s.Version = str(m, "versionInfo")
@@ -191,7 +192,7 @@ func loadDocument(d Document) (Document, error) {
 				}
 			}
 		}
-		if s.Type == "operating-system" || str(m, "primaryPackagePurpose") == "OPERATING-SYSTEM" {
+		if s.CPE == "" && (s.Type == "operating-system" || str(m, "primaryPackagePurpose") == "OPERATING-SYSTEM") {
 			continue
 		}
 		if s.Ref == "" {
@@ -394,8 +395,8 @@ type streamPackageInfo struct {
 // Keep the parse stage compact: parsed PURLs and derived matching fields are
 // populated only after the final OS context is known.
 type streamSubject struct {
-	Ref, Name, Version, Type string
-	Properties               map[string]string
+	Ref, Name, Version, Type, CPE string
+	Properties                    map[string]string
 }
 
 // Decoder.Token in older supported Go releases does not enforce Unmarshal's
@@ -583,6 +584,8 @@ func (inv *streamInventory) componentToken(dec *sbomDecoder, spdx bool, token js
 				if !spdx {
 					dst = &c.subject.Version
 				}
+			case "cpe":
+				dst = &c.subject.CPE
 			case "purl":
 				dst = &c.purl
 			case "SPDXID":
@@ -850,8 +853,8 @@ func loadStream(reader io.Reader) (Document, error) {
 	d.Subjects = make([]Subject, 0, inv.count)
 	for i := 0; i < inv.count; i++ {
 		c := inv.at(i)
-		s := Subject{Ref: c.subject.Ref, Name: c.subject.Name, Version: c.subject.Version, Type: c.subject.Type, Properties: c.subject.Properties}
-		if s.Type == "operating-system" || c.purpose == "OPERATING-SYSTEM" {
+		s := Subject{CPE: c.subject.CPE, Ref: c.subject.Ref, Name: c.subject.Name, Version: c.subject.Version, Type: c.subject.Type, Properties: c.subject.Properties}
+		if s.CPE == "" && (s.Type == "operating-system" || c.purpose == "OPERATING-SYSTEM") {
 			continue
 		}
 		if s.Ref == "" {

@@ -48,6 +48,61 @@ to CLI consumers; duplicate keys use the last value and produce a warning.
 Malformed security settings cause a configuration error, never a fallback to
 defaults.
 
+Command defaults can be stored in the `scan`, `match`, and `db` blocks below.
+Precedence is **explicit CLI flag > configuration file > built-in default**.
+Explicit `--flag=false`, `--workers=0`, and empty string values override the
+file as well. Repeated `--exclude` flags replace the configured excludes; lists
+are not appended. Lists accept `[a, b]` or indented `- value` items. Invalid
+boolean/integer values are errors; unknown keys inside these blocks warn.
+
+```sh
+bscan config init  # create a commented template; refuse to overwrite a file
+bscan config show  # print file values merged with built-in defaults as YAML
+```
+
+`config init` creates no signing keys. The existing `bscan init` continues to
+initialize the signing identity. `config show` does not create files or print
+key contents (identity settings contain paths, not private key material).
+
+```yaml
+scan:
+  excludes: []             # e.g. ["/var/cache", "node_modules"]
+  one_file_system: false
+  workers: 0               # automatic worker count
+  redact_ip: false
+  no_host_metadata: false
+  skip_binaries: false
+  include_declared: false
+  containers: false
+  fail_on_partial: false
+  output: "."
+  format: both
+match:
+  severity_source: distro
+  exclude_unimportant: false
+  min_severity: ""
+  fail_on: ""
+  only_fixed: false
+  db_isolation: auto
+  report_formats: []       # e.g. [html, sarif]; scan/batch --match only
+db:
+  sources: []              # empty uses the database updater's default sources
+  ecosystems: []           # empty uses the updater's default ecosystems
+  alpine_releases: []      # empty uses the updater's default releases
+  nvd_years: ""            # default: current year and previous two
+  max_feed_bytes: 536870912
+  max_feed_uncompressed: 17179869184
+  keep_raw: true           # inverse of --no-keep-raw
+  mirror: ""
+```
+
+Scan settings also apply to `batch`. Match settings apply to `match` and
+`scan/batch --match`; `report_formats` supplies `--report` only when matching is
+explicitly enabled. DB settings apply to `db update`, with `keep_raw` also
+applying to `db convert`. Relative scan output paths are relative to the working
+directory, just like `--output`. Existing top-level `formats` remains a stored
+preference; use `scan.format` to set the scan command's format default.
+
 Security settings (defaults shown):
 
 ```yaml
@@ -254,6 +309,20 @@ selects an image from a multi-platform archive. Declared layer digest mismatches
 fail by default; `--allow-digest-mismatch` retains the mismatch in metadata.
 Metadata links follow the merged filesystem, including targets with arbitrary
 file names; hardlinks preserve the original target contents.
+
+Scan directly without Docker with `bscan scan registry://docker.io/library/alpine:3.20`
+(alias `oci://`); digest references such as `registry://ghcr.io/org/img@sha256:...`
+are also supported. `--platform os/arch[/variant]` selects the image (default
+`linux/<GOARCH>`). Registry authentication uses anonymous Bearer tokens or
+`BSCAN_REGISTRY_USER`/`BSCAN_REGISTRY_PASSWORD`, falling back to base64 `auths`
+entries in `~/.docker/config.json`. Downloads require HTTPS; `--insecure-registry`
+permits HTTP only for `localhost` and `127.0.0.1`. Every downloaded blob is checked
+against its SHA-256 and descriptor size, including when `--allow-digest-mismatch`
+is set. Downloads have 8 GiB total and per-blob defaults (injectable through Go
+scan options), a five-minute timeout per request, and three retries with backoff
+for HTTP 429/5xx. Temporary OCI data uses `TMPDIR` and is removed on completion,
+error, or cancellation; choose a disk with space for the layout and its tar copy.
+
 Outer archives support gzip, bzip2, and zstd compression; bzip2 layers remain
 unsupported. Zstd decoding uses `klauspost/compress` with a maximum 256 MiB
 window and the same decompression budgets and layer size limits as gzip.
@@ -424,6 +493,21 @@ Large OSV Ubuntu and Chainguard feeds are opt-in; select their ecosystem names
 explicitly and increase the byte limit when needed. The configured byte limit
 also applies to GHSA downloads.
 NVD is opt-in via `--source nvd`; include it alongside package feeds with `bscan db update --source osv,alpine,debian,nvd --nvd-years 2024-2026`. `--nvd-years` accepts a range or comma-separated list and defaults to the current year and previous two years. Updates fetch yearly and modified NVD feeds. During ingestion, missing CVSS severity may be supplied by another advisory for the same CVE, preferring CVSS V4 over V3 over V2 while preserving existing severity. Provenance is recorded in `database_specific.severity_source` as `alias:<record ID>` or `nvd`.
+
+CPE matching is separately opt-in: `bscan match --cpe inventory.cdx.json` or
+`bscan scan --match --cpe TARGET`. It is off by default because NVD CPE data can
+be noisy. CycloneDX component `cpe` fields (including operating systems) and a
+small alias table for `pkg:generic` runtimes/libraries supply exact vendor/product
+identities. Wildcard products, AND prerequisites, negated nodes, and unverified
+platform attributes are excluded. Version ranges use semver when both versions
+parse, otherwise generic ordering. Range findings have low confidence; only exact
+criteria versions have high confidence. Existing ecosystem findings for the same
+CVE and subject take precedence. Ingestion reports the number of CPE entries
+requiring AND; matching reports relevant exclusions as `cpe-requires-and`.
+SQLite catalog schema v6 adds the CPE lookup index; run `bscan db update --source
+nvd --nvd-years 2025-2026` to populate it. Existing NVD conversion caches are
+refreshed automatically for this new matching data.
+
 
 RubySec is a default source (it is only a few MB); when you pass `--source` explicitly, include `rubysec` to keep it. It downloads [rubysec/ruby-advisory-db](https://github.com/rubysec/ruby-advisory-db)'s master ZIP with ETag conditional requests and a hard 64 MiB cap (a smaller `--max-feed-bytes` is honored). Gem advisories become RubyGems records using a dependency-free YAML subset reader. Numeric `patched_versions` requirements `>= X` map to an ECOSYSTEM range ending at exclusive `fixed: X`, starting at `introduced: 0` or the unaffected boundary; `~> A.B.C` maps to `[A.B.0, A.B.C)`. `unaffected_versions: < X` raises the lower bound to X. With multiple patched branches, the final `>=` range starts after the last earlier patched minor branch, at `A.(B+1).0`, so fixed releases are not reintroduced as vulnerable; duplicate branch fixes use the earliest fix. Complex requirements (including compound constraints, prereleases, and other operators) or missing patch information produce a versions-less affected entry with no ranges and `database_specific.rubysec_unmapped`, allowing the matcher to report `no-usable-range`. CVSS V3/V4 vector strings are retained; numeric scores alone are omitted.
 

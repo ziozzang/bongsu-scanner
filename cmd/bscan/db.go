@@ -63,8 +63,11 @@ func cmdDB(ctx context.Context, args []string) error {
 		if fs.NArg() != 1 {
 			return errors.New("db convert requires a destination directory; --db selects the source")
 		}
-		cfg, _, err := config.Load()
+		cfg, _, err := config.LoadForCLI()
 		if err != nil {
+			return err
+		}
+		if err := applyDBDefaults(fs, cfg.DB); err != nil {
 			return err
 		}
 		opts := vulndb.Options{PublicKey: key, NoKeepRaw: noRaw}
@@ -266,15 +269,18 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	if fs.NArg() != 0 {
 		return errors.New("db update takes no positional arguments")
 	}
+	cfg, _, err := config.LoadForCLI()
+	if err != nil {
+		return err
+	}
+	if err := applyDBDefaults(fs, cfg.DB); err != nil {
+		return err
+	}
 	if *maxBytes <= 0 || *timeout <= 0 {
 		return errors.New("--max-feed-bytes and --timeout must be positive")
 	}
 	if *maxUncompressed <= 0 {
 		return errors.New("--max-feed-uncompressed must be positive")
-	}
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
 	}
 	if offlineMode(cfg) {
 		return errors.New("database update disabled: offline mode (BONGSU_OFFLINE or 'offline: true' in config)")
@@ -301,6 +307,15 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	}
 	fmt.Println(filepath.Clean(*db))
 	return printDBMetaTo(logWriter{stage: "db"}, meta)
+}
+
+func applyDBDefaults(fs *flag.FlagSet, cfg config.DBConfig) error {
+	return applyFlagDefaults(fs, map[string]any{
+		"source": strings.Join(cfg.Sources, ","), "ecosystem": strings.Join(cfg.Ecosystems, ","),
+		"alpine-release": strings.Join(cfg.AlpineReleases, ","), "nvd-years": cfg.NVDYears,
+		"max-feed-bytes": cfg.MaxFeedBytes, "max-feed-uncompressed": cfg.MaxFeedUncompressed,
+		"no-keep-raw": !cfg.KeepRaw, "mirror": cfg.Mirror,
+	})
 }
 
 func setDBSigning(cfg config.Config, opts *vulndb.Options) error {

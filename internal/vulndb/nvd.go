@@ -89,9 +89,11 @@ func (s nvdSource) Feeds(opts *Options) ([]Feed, error) {
 	feeds := make([]Feed, 0, len(keys))
 	for _, key := range keys {
 		file := "nvdcve-2.0-" + key + ".json.gz"
-		feeds = append(feeds, Feed{Source: SourceNVD, Key: key, File: file, URL: base + "/" + file, MaxBytes: maxBytes,
-			Parse: func(ctx context.Context, path string, _ int64, emit Emit, _ func(string)) error {
-				return parseNVDFeed(ctx, path, emit, nvdMaxExpandedBytes)
+		// A separate cache key invalidates the earlier severity-only conversion
+		// without changing conversion semantics for other feeds.
+		feeds = append(feeds, Feed{Source: SourceNVD, Key: key + "-cpe-v1", File: file, URL: base + "/" + file, MaxBytes: maxBytes,
+			Parse: func(ctx context.Context, path string, _ int64, emit Emit, progress func(string)) error {
+				return parseNVDFeed(ctx, path, emit, nvdMaxExpandedBytes, progress)
 			},
 		})
 	}
@@ -104,11 +106,27 @@ type nvdMetric struct {
 		Vector string `json:"vectorString"`
 	} `json:"cvssData"`
 }
+type nvdCPEMatch struct {
+	Vulnerable     bool   `json:"vulnerable"`
+	Criteria       string `json:"criteria"`
+	StartIncluding string `json:"versionStartIncluding"`
+	StartExcluding string `json:"versionStartExcluding"`
+	EndIncluding   string `json:"versionEndIncluding"`
+	EndExcluding   string `json:"versionEndExcluding"`
+}
+type nvdNode struct {
+	Operator string        `json:"operator"`
+	Negate   bool          `json:"negate"`
+	Matches  []nvdCPEMatch `json:"cpeMatch"`
+	Nodes    []nvdNode     `json:"nodes"`
+	Children []nvdNode     `json:"children"`
+}
 type nvdCVE struct {
-	ID           string `json:"id"`
-	Published    string `json:"published"`
-	Modified     string `json:"lastModified"`
-	Descriptions []struct {
+	Configurations []nvdNode `json:"configurations"`
+	ID             string    `json:"id"`
+	Published      string    `json:"published"`
+	Modified       string    `json:"lastModified"`
+	Descriptions   []struct {
 		Lang  string `json:"lang"`
 		Value string `json:"value"`
 	} `json:"descriptions"`
@@ -162,6 +180,9 @@ func convertNVD(v nvdCVE) *Record {
 			r.References = append(r.References, Reference{Type: "WEB", URL: ref.URL})
 		}
 	}
+	for _, config := range v.Configurations {
+		appendNVDCPE(r, config, false, false, true)
+	}
 	return r
 }
 
@@ -176,7 +197,7 @@ func nvdTimestamp(value string) string {
 	return value
 }
 
-func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64) error {
+func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64, progress ...func(string)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -206,6 +227,7 @@ func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64
 		return err
 	}
 	found := false
+	requiresAND := 0
 	for dec.More() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -244,7 +266,13 @@ func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64
 			if !strings.HasPrefix(item.CVE.ID, "CVE-") || !validID(item.CVE.ID) {
 				return errors.New("NVD: invalid CVE ID")
 			}
-			if err := emit(convertNVD(item.CVE)); err != nil {
+			record := convertNVD(item.CVE)
+			for _, a := range record.Affected {
+				if a.Database["requires_and"] == true {
+					requiresAND++
+				}
+			}
+			if err := emit(record); err != nil {
 				return err
 			}
 		}
@@ -269,5 +297,101 @@ func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64
 		}
 		return err
 	}
+	if len(progress) > 0 && progress[0] != nil {
+		progress[0](fmt.Sprintf("[db:nvd] CPE entries requiring AND (not matched): %d", requiresAND))
+	}
 	return ctx.Err()
+}
+
+// CPEAttributes splits a formatted CPE without treating escaped colons as separators.
+// Short inventory CPEs may omit trailing ANY attributes; NVD supplies all eleven.
+func CPEAttributes(raw string) ([]string, bool) {
+	if !strings.HasPrefix(raw, "cpe:2.3:") {
+		return nil, false
+	}
+	var parts []string
+	start := 8
+	for i := start; i < len(raw); i++ {
+		if raw[i] == '\\' {
+			i++
+			if i >= len(raw) {
+				return nil, false
+			}
+			continue
+		}
+		if raw[i] == ':' {
+			parts = append(parts, raw[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, raw[start:])
+	if len(parts) < 4 || len(parts) > 11 {
+		return nil, false
+	}
+	for _, p := range parts {
+		if p == "" || strings.ContainsAny(p, " \t\r\n") {
+			return nil, false
+		}
+	}
+	for len(parts) < 11 {
+		parts = append(parts, "*")
+	}
+	if parts[0] != "a" && parts[0] != "o" && parts[0] != "h" {
+		return nil, false
+	}
+	return parts, true
+}
+
+func appendNVDCPE(r *Record, node nvdNode, requiresAND, negated, configuration bool) {
+	requiresAND = requiresAND || node.Operator == "AND"
+	negated = negated || node.Negate
+	// Missing configuration operators wrap an OR node list in the NVD 2.0 feed.
+	unsupported := node.Operator != "OR" && !(configuration && node.Operator == "")
+	for _, m := range node.Matches {
+		if !m.Vulnerable {
+			continue
+		}
+		attrs, ok := CPEAttributes(m.Criteria)
+		if !ok {
+			continue
+		}
+		a := Affected{Ecosystem: "CPE", Package: attrs[1] + ":" + attrs[2], Database: map[string]any{
+			"cpe": m.Criteria, "operator": node.Operator, "negate": negated, "node_children": len(node.Children) > 0 || len(node.Nodes) > 0,
+		}}
+		if requiresAND || unsupported {
+			a.Database["requires_and"] = true
+		}
+		if m.StartExcluding != "" {
+			a.Database["versionStartExcluding"] = m.StartExcluding
+		}
+		bounded := m.StartIncluding != "" || m.StartExcluding != "" || m.EndIncluding != "" || m.EndExcluding != ""
+		if bounded {
+			start := m.StartIncluding
+			if start == "" {
+				start = m.StartExcluding
+			}
+			if start == "" {
+				start = "0"
+			}
+			events := []Event{{Introduced: start}}
+			if m.EndExcluding != "" {
+				events = append(events, Event{Fixed: m.EndExcluding})
+			}
+			if m.EndIncluding != "" {
+				events = append(events, Event{LastAffected: m.EndIncluding})
+			}
+			a.Ranges = []Range{{Type: "ECOSYSTEM", Events: events}}
+		} else if attrs[3] != "-" && !strings.ContainsAny(attrs[3], "*?") {
+			a.Versions = []string{attrs[3]}
+		} else if attrs[3] == "*" {
+			a.Ranges = []Range{{Type: "ECOSYSTEM", Events: []Event{{Introduced: "0"}}}}
+		}
+		r.Affected = append(r.Affected, a)
+	}
+	for _, child := range node.Nodes {
+		appendNVDCPE(r, child, requiresAND || unsupported, negated, false)
+	}
+	for _, child := range node.Children {
+		appendNVDCPE(r, child, requiresAND || unsupported, negated, false)
+	}
 }

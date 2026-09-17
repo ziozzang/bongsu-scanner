@@ -124,6 +124,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	addDeprecatedIncludeUnimportant(fs)
 	excludeUnimportant := fs.Bool("exclude-unimportant", false, "exclude Debian unimportant advisories")
 	details := fs.Bool("details", false, "include full advisory details text in findings")
+	cpe := fs.Bool("cpe", false, "enable conservative NVD CPE matching (CPE data can be noisy)")
 	fixed := fs.Bool("only-fixed", false, "include only findings with a known fix")
 	pub := fs.String("pubkey", "", "require database signature from trusted name, PEM file, or hex key")
 	llm := fs.Bool("llm", false, "add LLM environment applicability review; retain original findings")
@@ -150,6 +151,13 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	}
 	if fs.NArg() == 0 {
 		return errors.New("match requires at least one SBOM file")
+	}
+	cfg, _, err := config.LoadForCLI()
+	if err != nil {
+		return err
+	}
+	if err := applyMatchDefaults(fs, cfg.Match); err != nil {
+		return err
 	}
 	if *format == "md" {
 		*format = "markdown"
@@ -244,7 +252,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 			return fmt.Errorf("%s: %w", input, err)
 		}
 		matchReport, err := matcher.Run(ctx, store, doc.Subjects, matcher.Options{
-			SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
+			CPE: *cpe, SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", input, err)
@@ -276,7 +284,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		}
 		if reportFormat {
 			in := report.Input{Report: matchReport, Target: filepath.Base(input), SBOMPath: input, GeneratedAt: time.Now().UTC(), ToolVersion: version,
-				Options: matcher.Options{SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
+				Options: matcher.Options{CPE: *cpe, SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed}}
 			if target, scanMeta, osMeta, image, host, err := report.ContextFromSBOM(input); err == nil {
 				in.Scan, in.OS, in.Image, in.Host = scanMeta, osMeta, image, host
 				if target != "" {
