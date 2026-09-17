@@ -248,9 +248,9 @@ func loadDocument(d Document) (Document, error) {
 			s.Ecosystem = vulndb.PURLTypeToEcosystem(p.Type, p.Namespace)
 			if s.Version == "" {
 				s.Version = p.Version
-				if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
-					s.Version = p.Qualifiers["epoch"] + ":" + s.Version
-				}
+			}
+			if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
+				s.Version = p.Qualifiers["epoch"] + ":" + s.Version
 			}
 			s.Name = p.FullName()
 			s.Release = subjectRelease(s, d.Context.OS)
@@ -299,7 +299,7 @@ func subjectRelease(s Subject, osInfo *OSInfo) string {
 		distro = s.Properties["bscan:distro"]
 	}
 	if distro != "" {
-		if s.Ecosystem == "Red Hat" && s.PURL.Namespace == "centos" && isDigits(strings.Split(distro, ".")[0]) {
+		if s.Ecosystem == "Red Hat" && strings.EqualFold(s.PURL.Namespace, "centos") && isDigits(strings.Split(distro, ".")[0]) {
 			distro = "centos-" + distro
 		}
 		return release(s.Ecosystem, distro)
@@ -326,13 +326,23 @@ func release(eco, v string) string {
 	}
 	// OSV distribution suffixes are not uniform. Rocky/Alma use major
 	// versions; openSUSE uses product names, and SUSE uses service packs.
-	// Red Hat mainline advisories also use the major version; lifecycle
+	// Red Hat mainline advisories use major.minor starting with RHEL 10; lifecycle
 	// streams remain separate, and CentOS Stream cannot use RHEL errata.
 	switch eco {
 	case "Rocky Linux", "AlmaLinux", "openSUSE", "SUSE", "Red Hat":
 		v = strings.TrimSpace(v)
 		if suffix, ok := strings.CutPrefix(v, eco+":"); ok {
 			return vulndb.EcosystemRelease(eco + ":" + suffix)
+		}
+		if eco == "Red Hat" {
+			for _, prefix := range []string{"centos-stream-", "centos-stream:"} {
+				if version, ok := strings.CutPrefix(v, prefix); ok {
+					if isDigits(version) {
+						return "centos-stream:" + version
+					}
+					return ""
+				}
+			}
 		}
 		prefixes := map[string][]string{
 			"Rocky Linux": {"rocky-linux-", "rockylinux-", "rocky-"},
@@ -362,6 +372,13 @@ func release(eco, v string) string {
 			if centos && (len(parts[0]) > 1 || parts[0] > "7") {
 				// Stream builds run ahead of RHEL and have different release strings.
 				return "centos-stream:" + parts[0]
+			}
+			if len(parts[0]) > 1 {
+				// RHEL 10+ errata are minor-specific; a bare major is unknown.
+				if len(parts) < 2 {
+					return ""
+				}
+				return parts[0] + "." + parts[1]
 			}
 			return parts[0]
 		case "Rocky Linux", "AlmaLinux":
@@ -931,9 +948,9 @@ func loadStream(reader io.Reader) (Document, error) {
 			s.Ecosystem = vulndb.PURLTypeToEcosystem(p.Type, p.Namespace)
 			if s.Version == "" {
 				s.Version = p.Version
-				if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
-					s.Version = p.Qualifiers["epoch"] + ":" + s.Version
-				}
+			}
+			if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
+				s.Version = p.Qualifiers["epoch"] + ":" + s.Version
 			}
 			s.Name = p.FullName()
 			s.Release = subjectRelease(s, d.Context.OS)

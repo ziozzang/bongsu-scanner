@@ -82,7 +82,7 @@ func cmdReport(ctx context.Context, args []string) error {
 	})
 }
 func writeReportFile(path string, render func(io.Writer) error) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".bscan-report-*")
+	f, err := createOutputTemp(path, ".bscan-report-")
 	if err != nil {
 		return err
 	}
@@ -97,9 +97,6 @@ func writeReportFile(path string, render func(io.Writer) error) error {
 	}
 	if closeErr != nil {
 		return closeErr
-	}
-	if err := os.Chmod(f.Name(), 0o644); err != nil { // #nosec G302 -- Deliverable report; readable on purpose.
-		return err
 	}
 	return os.Rename(f.Name(), path)
 }

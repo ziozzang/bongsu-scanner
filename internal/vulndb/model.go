@@ -133,7 +133,8 @@ func BaseEcosystem(e string) string {
 
 // EcosystemRelease returns the release used for indexing and matching:
 // "Alpine:v3.20" -> "v3.20", "Ubuntu:Pro:24.04:LTS" -> "24.04".
-// Mainline Red Hat Enterprise Linux uses its major version across repositories.
+// Mainline Red Hat Enterprise Linux preserves major.minor when the feed supplies
+// a minor (RHEL 10+); older mainline feeds use the major across repositories.
 // Affected.Ecosystem retains the original OSV spelling for display.
 func EcosystemRelease(e string) string {
 	if i := strings.IndexByte(e, ':'); i > 0 {

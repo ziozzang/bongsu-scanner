@@ -16,10 +16,13 @@ func redHatRelease(suffix string) string {
 				return suffix
 			}
 		}
+		if len(parts) >= 2 {
+			return parts[0] + "." + parts[1]
+		}
 		return parts[0]
 	case "rhel_eus", "rhel_e4s", "rhel_aus", "rhel_tus", "rhel_els", "rhel_eus_long_life", "enterprise_linux_eus":
 		// Lifecycle streams remain available to catalog lookups but never share
-		// a plain host's major-version key. Their fixed builds (e.g. *.el9_4)
+		// a plain host's release key. Their fixed builds (e.g. *.el9_4)
 		// are not comparable with mainline builds and would cause false positives.
 		return product + ":" + version
 	default:

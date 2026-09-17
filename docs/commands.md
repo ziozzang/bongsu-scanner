@@ -470,8 +470,8 @@ bscan db update [flags]
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--add-alpine-release` | `""` | append Alpine releases (comma-separated; repeatable; default expands built-ins) |
-| `--add-ecosystem` | `""` | append OSV ecosystems (comma-separated; repeatable; default expands built-ins) |
+| `--add-alpine-release` | `""` | append Alpine releases and enable alpine (comma-separated; repeatable; default expands built-ins) |
+| `--add-ecosystem` | `""` | append OSV ecosystems and enable osv (comma-separated; repeatable; default expands built-ins) |
 | `--add-source` | `""` | append sources (comma-separated; repeatable; default expands built-ins) |
 | `--alpine-release` | `""` | comma-separated Alpine releases (e.g. v3.20) |
 | `--db` | `$BONGSU_HOME/db` | database directory |

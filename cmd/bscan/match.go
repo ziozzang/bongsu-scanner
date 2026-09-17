@@ -333,7 +333,7 @@ func writeCommandOutput(path string, data []byte) error {
 		// rename; write through them directly.
 		return os.WriteFile(path, data, 0o644) // #nosec G306 -- This branch writes an existing non-regular sink; its permissions are unchanged.
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".bscan-output-*")
+	f, err := createOutputTemp(path, ".bscan-output-")
 	if err != nil {
 		return err
 	}
@@ -347,10 +347,6 @@ func writeCommandOutput(path string, data []byte) error {
 		return err
 	}
 	if err = f.Close(); err != nil {
-		return err
-	}
-	// Findings and reports are deliverables: conventional 0644 (umask applies).
-	if err = os.Chmod(f.Name(), 0o644); err != nil { // #nosec G302 -- Deliverable output; readable on purpose.
 		return err
 	}
 	return os.Rename(f.Name(), path)

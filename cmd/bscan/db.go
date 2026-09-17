@@ -289,9 +289,9 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	ecosystems := fs.String("ecosystem", "", "comma-separated OSV ecosystems")
 	releases := fs.String("alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)")
 	var additions dbSelectionAdditions
-	fs.Var(&additions.ecosystems, "add-ecosystem", "append OSV ecosystems (comma-separated; repeatable; default expands built-ins)")
+	fs.Var(&additions.ecosystems, "add-ecosystem", "append OSV ecosystems and enable osv (comma-separated; repeatable; default expands built-ins)")
 	fs.Var(&additions.sources, "add-source", "append sources (comma-separated; repeatable; default expands built-ins)")
-	fs.Var(&additions.releases, "add-alpine-release", "append Alpine releases (comma-separated; repeatable; default expands built-ins)")
+	fs.Var(&additions.releases, "add-alpine-release", "append Alpine releases and enable alpine (comma-separated; repeatable; default expands built-ins)")
 	mirror := fs.String("mirror", "", "HTTPS OSV mirror base URL")
 	force := fs.Bool("force", false, "fetch feeds without conditional request headers")
 	noRaw := fs.Bool("no-keep-raw", false, "omit original feeds from installed database")

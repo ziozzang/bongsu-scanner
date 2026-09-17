@@ -16,7 +16,7 @@ func TestRPMOSVRelease(t *testing.T) {
 		{"SUSE", "sles-15.6", "Linux Enterprise Server 15 SP6"},
 		{"Red Hat", "rhel-9.4", "9"},
 		{"Red Hat", "redhat-9.4", "9"}, {"Red Hat", "rhel-9", "9"},
-		{"Red Hat", "9.4", "9"}, {"Red Hat", "10.2", "10"},
+		{"Red Hat", "9.4", "9"}, {"Red Hat", "10.2", "10.2"},
 		{"Red Hat", "centos-7.9", "7"}, {"Red Hat", "centos-6", "6"},
 		{"Red Hat", "centos-8", "centos-stream:8"}, {"Red Hat", "centos-9", "centos-stream:9"}, {"Red Hat", "centos-10", "centos-stream:10"},
 		{"Red Hat", "rhel-unknown", ""},

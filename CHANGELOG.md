@@ -100,6 +100,9 @@ Historical entries are grouped by commit date rather than inferred release versi
   return success for help. Correct release-sign ordering and license bundling.
 - Preserve severity-threshold exit status when LLM enrichment also fails,
   and preserve existing outputs/databases during interrupted operations.
+- Rebuild older conversion caches for Ubuntu CVE aliases, enable implied
+  sources for database additions, and respect umask for new findings/reports
+  while preserving existing output permissions.
 
 ### Security
 

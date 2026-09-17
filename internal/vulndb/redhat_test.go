@@ -20,7 +20,7 @@ func TestRedHatEcosystemRelease(t *testing.T) {
 		{"Red Hat:enterprise_linux:9::appstream", "9"},
 		{"Red Hat:enterprise_linux:8::baseos", "8"},
 		{"Red Hat:enterprise_linux:7::server", "7"},
-		{"Red Hat:enterprise_linux:10.0", "10"}, {"Red Hat:enterprise_linux:10.2", "10"},
+		{"Red Hat:enterprise_linux:10.0", "10.0"}, {"Red Hat:enterprise_linux:10.2", "10.2"},
 		{"Red Hat:openshift:4.9", "openshift:4.9"},
 		{"Red Hat:enterprise_linux:unknown::baseos", "enterprise_linux:unknown::baseos"},
 	} {

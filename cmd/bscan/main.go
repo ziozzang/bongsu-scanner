@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,38 @@ const (
 	author     = "ziozzang@gmail.com"
 	projectURL = "https://github.com/ziozzang/bongsu-scanner"
 )
+
+// createOutputTemp creates a sibling for atomic output replacement. New files
+// use 0644 filtered by the umask; replacements preserve the target's permissions.
+func createOutputTemp(path, prefix string) (*os.File, error) {
+	mode := os.FileMode(0o644)
+	info, err := os.Stat(path)
+	if err == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for range 100 {
+		name := filepath.Join(filepath.Dir(path), prefix+rand.Text())
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, mode) // #nosec G304 -- Sibling of a caller-chosen output path; O_EXCL with a random suffix.
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			// Only existing targets override the umask, retaining their mode.
+			if err := f.Chmod(mode); err != nil {
+				_ = f.Close()
+				_ = os.Remove(name)
+				return nil, err
+			}
+		}
+		return f, nil
+	}
+	return nil, fmt.Errorf("create output temporary file for %q: %w", path, os.ErrExist)
+}
 
 func main() {
 	// SIGINT/SIGTERM cancel the context so docker child processes are killed

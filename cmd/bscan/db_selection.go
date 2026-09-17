@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ziozzang/bongsu-scanner/internal/config"
@@ -74,6 +75,27 @@ func resolveDBSelection(fs *flag.FlagSet, cfg config.DBConfig, old vulndb.Meta, 
 	}
 	s.AlpineReleases = append(s.AlpineReleases, additions.releases...)
 	s, err := s.Normalize()
+	if err != nil {
+		return s, "", err
+	}
+	for _, implied := range []struct {
+		flag, source string
+		values       dbAdditionList
+	}{
+		{"--add-ecosystem", "osv", additions.ecosystems},
+		{"--add-alpine-release", "alpine", additions.releases},
+	} {
+		source := vulndb.CanonicalSource(implied.source)
+		if len(implied.values) == 0 || slices.Contains(s.Sources, source) {
+			continue
+		}
+		s.Sources = append(s.Sources, source)
+		note := ""
+		if explicit["source"] {
+			note = " (not included in explicit --source)"
+		}
+		logf("db", "selection: adding source %s for %s%s\n", implied.source, implied.flag, note)
+	}
 	var provenance []string
 	for _, origin := range []string{"flags", "config", "installed catalog", "defaults"} {
 		if origins[origin] {

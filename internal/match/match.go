@@ -332,7 +332,7 @@ func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
 	if !present {
 		return "ecosystem-not-in-database"
 	}
-	if s.Release == "" && (!releases[""] || s.Ecosystem == "Debian" || s.Ecosystem == "Ubuntu" || s.Ecosystem == "Alpine") {
+	if s.Release == "" && (!releases[""] || s.Ecosystem == "Debian" || s.Ecosystem == "Ubuntu" || s.Ecosystem == "Alpine" || s.Ecosystem == "Red Hat") {
 		return "release-unknown"
 	}
 	if !releases[""] && !releases[s.Release] {

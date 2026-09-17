@@ -351,9 +351,11 @@ or artifact-version filenames; nesting is limited to three levels, with a
 512 MiB archive cap and a cumulative 512 MiB decompression budget per archive.
 
 RPM databases (rpmdb.sqlite, BerkeleyDB Packages, ndb Packages.db) are inventoried for Rocky, AlmaLinux, RHEL/CentOS, Fedora, Amazon Linux and SUSE-based hosts and images; purls use pkg:rpm/<distro>/... with arch, distro, epoch and upstream (source RPM) qualifiers.
-RHEL and UBI match Red Hat mainline errata by major version (including RHEL 10
-minor-version feeds), as do CentOS Linux 7 and earlier. CentOS 8 and later are
-excluded with `centos-stream-unsupported`: Stream builds run ahead of RHEL and
+RHEL and UBI match Red Hat mainline errata by major version through RHEL 9
+(for example, 9.4 maps to 9), and by major.minor for RHEL 10 and later (10.0
+and 10.1 stay separate). RHEL 10+ hosts without a minor version are skipped
+with `release-unknown`. CentOS Linux 7 and earlier match by major version.
+CentOS 8 and later are excluded with `centos-stream-unsupported`: Stream builds run ahead of RHEL and
 use different release strings. Red Hat extended-lifecycle streams (EUS, E4S,
 AUS, TUS, ELS, EUS long life, and enterprise_linux_eus) remain in the catalog
 under separate product/minor-version keys. They do not match ordinary hosts;
@@ -523,7 +525,10 @@ falling back to defaults when absent; other selection fields use defaults.
 
 Use `--add-ecosystem`, `--add-source`, or `--add-alpine-release` to extend the
 effective selection. These accept comma-separated values and may repeat;
-duplicates are removed in first-seen order. Additions reject empty items and
+duplicates are removed in first-seen order. `--add-ecosystem` also enables the
+`osv` source, and `--add-alpine-release` enables `alpine`, even when an explicit
+`--source` omits it; an added source is announced in the selection log.
+Additions reject empty items and
 `/`, `\`, `?`, or `#`. In selection lists, `default` or `defaults` expands to
 the corresponding built-in list at that position. For example:
 

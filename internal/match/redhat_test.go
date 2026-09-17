@@ -19,7 +19,7 @@ func TestRedHatHostAndImageMatching(t *testing.T) {
 		{"rhel", "rhel", "9.4", "rhel-9.4", "Red Hat:enterprise_linux:9::appstream", "1:1.2-4.el9", "9", "", 1},
 		{"redhat", "rhel", "9.4", "", "Red Hat:enterprise_linux:9::baseos", "1:1.2-4.el9", "9", "", 1},
 		{"rhel", "rhel", "9", "", "Red Hat:enterprise_linux:9::baseos", "1:1.2-4.el9", "9", "", 1},
-		{"rhel", "rhel", "10.2", "rhel-10.2", "Red Hat:enterprise_linux:10.0", "1:1.2-4.el9", "10", "", 1},
+		{"rhel", "rhel", "10.2", "rhel-10.2", "Red Hat:enterprise_linux:10.0", "1:1.2-4.el9", "10.2", "release-not-in-database", 0},
 		{"rhel", "rhel", "9.4", "rhel-9.4", "Red Hat:enterprise_linux:9::baseos", "1:1.2-3.el9", "9", "", 0},
 		{"rhel", "rhel", "9.4", "rhel-9.4", "Red Hat:enterprise_linux:8::baseos", "1:1.2-4.el9", "9", "release-not-in-database", 0},
 		{"centos", "centos", "7", "", "Red Hat:enterprise_linux:7::server", "1:1.2-4.el9", "7", "", 1},
