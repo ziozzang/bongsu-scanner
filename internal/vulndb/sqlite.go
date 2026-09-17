@@ -190,26 +190,6 @@ func affectedIndexName(a Affected) (string, bool) {
 	return name, name != ""
 }
 
-func buildSQLite(ctx context.Context, dir string, records map[string]*Record, meta *Meta) error {
-	return buildSQLiteStream(ctx, dir, func(emit Emit) error {
-		ids := make([]string, 0, len(records))
-		for id := range records {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			r := records[id]
-			if r == nil || r.ID != id {
-				return fmt.Errorf("invalid catalog record %q", id)
-			}
-			if err := emit(r); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, meta)
-}
-
 // buildSQLiteStream retains only the current record and bounded insert buffers.
 // The producer must emit each ID once in a deterministic order.
 func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, meta *Meta) error {
