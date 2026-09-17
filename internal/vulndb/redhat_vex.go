@@ -63,7 +63,7 @@ func (s redHatVEXSource) Feeds(opts *Options) ([]Feed, error) {
 	expanded := opts.maxFeedUncompressedBytes()
 	return []Feed{{Source: SourceRedHatVEX, Key: "vex", URL: base + name, File: "vex.tar.zst", Ecosystems: []string{"Red Hat"}, MaxBytes: maxBytes,
 		Parse: func(ctx context.Context, path string, _ int64, emit Emit, progress func(string)) error {
-			return parseRedHatVEX(ctx, path, expanded, osvEntryMaxBytes, emit, progress)
+			return parseRedHatVEX(ctx, path, expanded, vexMaxDocument, emit, progress)
 		}}}, nil
 }
 
@@ -156,14 +156,20 @@ type vexDocument struct {
 }
 
 func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDocument int64, emit Emit, progress func(string)) error {
+	_, err := parseRedHatVEXExpanded(ctx, path, maxExpanded, maxDocument, emit, progress)
+	return err
+}
+
+func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64, maxDocument int64, emit Emit, progress func(string)) (uint64, error) {
+	maxDocument = min(maxDocument, vexMaxDocument)
 	f, err := os.Open(path) // #nosec G304 -- The update engine supplies its bounded downloaded feed path; archive paths are never extracted.
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = f.Close() }()
 	z, err := zstd.NewReader(contextReader{ctx: ctx, r: f}, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(128<<20))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer z.Close()
 	// Count headers, skipped members and trailers too. Restrict the uint64 bound
@@ -171,20 +177,26 @@ func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDoc
 	limit := int64(min(maxExpanded, uint64(1<<63-2)))
 	expanded := &archiveExpansionReader{limited: io.LimitedReader{R: contextReader{ctx: ctx, r: z}, N: limit + 1}, max: limit}
 	tr := tar.NewReader(expanded)
+	// Reuse one bounded disk spool; never retain a full JSON document in RAM.
+	document, err := os.CreateTemp("", "bongsu-vex-*.json")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = document.Close(); _ = os.Remove(document.Name()) }()
 	records, affected, malformed, oversized, filtered := 0, 0, 0, 0, 0
 	for entries := 0; ; entries++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return 0, err
 		}
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("redhat-vex tar: %w", err)
+			return 0, fmt.Errorf("redhat-vex tar (--max-feed-uncompressed): %w", err)
 		}
 		if entries >= osvMaxEntries {
-			return errors.New("redhat-vex: too many archive entries")
+			return 0, errors.New("redhat-vex: too many archive entries")
 		}
 		if h.Typeflag != tar.TypeReg || !strings.HasSuffix(strings.ToLower(h.Name), ".json") {
 			continue
@@ -193,19 +205,27 @@ func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDoc
 			oversized++
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: tr}, maxDocument+1))
-		if err != nil {
-			return err
+		if err := document.Truncate(0); err != nil {
+			return 0, err
 		}
-		var doc vexDocument
-		if err := json.Unmarshal(data, &doc); err != nil {
+		if _, err := document.Seek(0, io.SeekStart); err != nil {
+			return 0, err
+		}
+		if _, err := io.Copy(document, contextReader{ctx: ctx, r: tr}); err != nil {
+			return 0, fmt.Errorf("redhat-vex (--max-feed-uncompressed): %w", err)
+		}
+		doc, err := decodeRedHatVEX(ctx, document)
+		if err != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			malformed++
 			continue
 		}
-		rec, err := convertRedHatVEX(ctx, &doc)
+		rec, err := convertRedHatVEX(ctx, doc)
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return 0, ctx.Err()
 			}
 			malformed++
 			continue
@@ -215,7 +235,7 @@ func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDoc
 			continue
 		}
 		if err := emit(rec); err != nil {
-			return err
+			return 0, err
 		}
 		records++
 		affected += len(rec.Affected)
@@ -226,12 +246,14 @@ func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDoc
 	// Consume through zstd EOF to verify the final frame/checksum and bound
 	// trailing data that tar.Reader deliberately stops before.
 	if _, err := io.Copy(io.Discard, expanded); err != nil {
-		return err
+		return 0, fmt.Errorf("redhat-vex (--max-feed-uncompressed): %w", err)
 	}
 	if progress != nil {
 		progress(fmt.Sprintf("redhat-vex: records=%d affected=%d skipped_malformed=%d skipped_oversized=%d skipped_non_rhel=%d", records, affected, malformed, oversized, filtered))
 	}
-	return nil
+	// Include entry sizes, skipped members, headers, padding and trailers so a
+	// cached feed is held to exactly the same expansion budget as a fresh one.
+	return uint64(limit + 1 - expanded.limited.N), nil // #nosec G115 -- LimitedReader starts at limit+1, only decrements on reads, and successful EOF implies the count is in [0, limit].
 }
 
 type vexScope struct{ ecosystem, module string }
@@ -314,6 +336,9 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 	}
 	relations := map[string]vexRelationship{}
 	for _, rel := range doc.Tree.Relationships {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if rel.Category != "default_component_of" {
 			continue
 		}
@@ -340,6 +365,9 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 			fallback = []Severity{sev}
 		}
 		for _, id := range score.Products {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if _, ok := scopes[id]; ok {
 				r.Severity = []Severity{sev}
 				break
@@ -353,18 +381,38 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 		r.Severity = fallback
 	}
 	statuses, advisories, ratings := map[string]string{}, map[string]string{}, map[string]string{}
+	priorities := map[string]int{}
+	// Remediation precedence is vendor_fix > workaround-only > no_fix_planned
+	// > none_available. Equal-priority details/advisories use lexical order so
+	// reversing the input cannot change a record. A vendor fix clears terminal
+	// no-fix details; only product_status.fixed can assert a fixed EVR.
 	for _, rem := range v.Remediations {
 		status := vexStatus(rem.Details)
+		priority := 0
+		switch rem.Category {
+		case "vendor_fix":
+			priority, status = 4, ""
+		case "workaround":
+			priority, status = 3, "workaround-only"
+		case "no_fix_planned":
+			priority = 2
+		case "none_available":
+			priority = 1
+		}
 		for _, id := range rem.Products {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if _, ok := relations[id]; !ok {
 				continue
 			}
+			if priority > priorities[id] || priority == priorities[id] && status < statuses[id] {
+				priorities[id], statuses[id] = priority, status
+			}
 			if rem.Category == "vendor_fix" && len(rem.URL) <= 2048 {
-				if _, tail, ok := strings.Cut(rem.URL, "/errata/"); ok && strings.HasPrefix(tail, "RHSA-") {
+				if _, tail, ok := strings.Cut(rem.URL, "/errata/"); ok && strings.HasPrefix(tail, "RHSA-") && (advisories[id] == "" || tail < advisories[id]) {
 					advisories[id] = tail
 				}
-			} else if (rem.Category == "no_fix_planned" || rem.Category == "none_available" || rem.Category == "workaround") && status != "" {
-				statuses[id] = status
 			}
 		}
 	}
@@ -373,6 +421,9 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 			continue
 		}
 		for _, id := range threat.Products {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if _, ok := relations[id]; ok {
 				ratings[id] = threat.Details
 			}
@@ -449,21 +500,39 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 		r.Affected = append(r.Affected, a)
 		return nil
 	}
-	explicit := map[string]bool{}
+	// Product status precedence: fixed > known_not_affected > known_affected
+	// > under_investigation. Emit a product once and count contradictory claims.
+	explicit := map[string]string{}
+	conflicts := map[string]bool{}
 	for _, group := range []struct {
 		ids    []string
 		status string
-	}{{v.Status.Fixed, "fixed"}, {v.Status.Affected, "affected"}, {v.Status.Investigating, "under-investigation"}, {v.Status.NotAffected, "not-affected"}} {
+	}{{v.Status.Fixed, "fixed"}, {v.Status.NotAffected, "not-affected"}, {v.Status.Affected, "affected"}, {v.Status.Investigating, "under-investigation"}} {
 		for _, id := range group.ids {
-			explicit[id] = true
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if _, ok := relations[id]; !ok {
+				continue
+			}
+			if old, exists := explicit[id]; exists {
+				if old != group.status {
+					conflicts[id] = true
+				}
+				continue
+			}
+			explicit[id] = group.status
 			if err := add(id, group.status); err != nil {
 				return nil, err
 			}
 		}
 	}
+	if len(conflicts) > 0 {
+		r.Database["redhat_status_conflicts"] = len(conflicts)
+	}
 	var unstated []string
 	for id := range statuses {
-		if !explicit[id] {
+		if explicit[id] == "" && statuses[id] != "" {
 			unstated = append(unstated, id)
 		}
 	}
@@ -478,4 +547,359 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 	}
 	sortAffected(r.Affected)
 	return r, nil
+}
+
+// These are decoding limits, checked before retaining the next element.
+// Documents are spooled to disk and decoded token by token, so memory follows
+// the retained RHEL entries rather than the document size; the ceiling bounds
+// parse time only. Red Hat's broadest CVEs are large: on 2026-09-17
+// CVE-2023-39325 (HTTP/2 rapid reset) measured 75,392,762 bytes and
+// CVE-2026-33186 106,439,389 bytes with 43,266 branches and 43,137
+// relationships, and both must be ingested. Larger documents are counted in
+// skipped_oversized rather than failing the update.
+const (
+	vexMaxDocument      = 256 << 20
+	vexMaxBranches      = 100_000
+	vexMaxRelationships = 100_000
+	vexMaxProductIDs    = 200_000
+	vexMaxStatements    = 100_000
+)
+
+// vexTokens visits one token at a time, including ignored fields. It never
+// decodes an array into a temporary slice. Branch paths are normalized while
+// their actual depth and total count remain bounded, including empty branches.
+type vexTokens struct {
+	ctx      context.Context
+	dec      *json.Decoder
+	branches int
+	counts   map[string]int
+	visit    func(string, json.Token)
+}
+
+func (s *vexTokens) value(path string, depth, branchDepth int, element bool) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	if depth > 144 || branchDepth > 64 {
+		return errors.New("redhat-vex: JSON too deep")
+	}
+	tok, err := s.dec.Token()
+	if err != nil {
+		return err
+	}
+	shape := vexJSONShape(path, element)
+	if tok != nil || path == "" {
+		if shape == '"' {
+			if _, ok := tok.(string); !ok {
+				return fmt.Errorf("redhat-vex: expected string at %s", path)
+			}
+		} else if shape != 0 && tok != json.Delim(shape) {
+			return fmt.Errorf("redhat-vex: invalid structure at %s", path)
+		}
+	}
+	s.visit(path, tok)
+	switch tok {
+	case json.Delim('{'):
+		for s.dec.More() {
+			if err := s.ctx.Err(); err != nil {
+				return err
+			}
+			key, err := s.dec.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("redhat-vex: expected field name")
+			}
+			child := name
+			if path != "" {
+				child = path + "." + name
+			}
+			nextBranchDepth := branchDepth
+			if child == "product_tree.branches.branches" {
+				child = "product_tree.branches"
+				nextBranchDepth++
+			}
+			// Unknown keys cannot impersonate a dotted schema path, and their
+			// names need not be retained while descending through ignored data.
+			if path == "#" || strings.Contains(name, ".") || vexJSONShape(child, false) == 0 {
+				child = "#"
+			}
+			if err := s.value(child, depth+1, nextBranchDepth, false); err != nil {
+				return err
+			}
+		}
+	case json.Delim('['):
+		limit := vexMaxProductIDs
+		switch path {
+		case "product_tree.branches":
+			limit = vexMaxBranches
+		case "product_tree.relationships":
+			limit = vexMaxRelationships
+		case "vulnerabilities":
+			limit = 1
+		case "vulnerabilities.remediations", "vulnerabilities.threats", "vulnerabilities.scores":
+			limit = vexMaxStatements
+		}
+		for n := 0; s.dec.More(); n++ {
+			if n >= limit {
+				return fmt.Errorf("redhat-vex: too many entries in %s", path)
+			}
+			if path == "product_tree.branches" {
+				s.branches++
+				if s.branches > vexMaxBranches {
+					return errors.New("redhat-vex: too many branches")
+				}
+			}
+			switch path {
+			case "product_tree.relationships", "vulnerabilities", "vulnerabilities.remediations", "vulnerabilities.threats", "vulnerabilities.scores":
+				if s.counts == nil {
+					s.counts = map[string]int{}
+				}
+				s.counts[path]++
+				if s.counts[path] > limit {
+					return fmt.Errorf("redhat-vex: too many entries in %s", path)
+				}
+			}
+			if err := s.value(path, depth+1, branchDepth, true); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	end, err := s.dec.Token()
+	if err != nil {
+		return err
+	}
+	s.visit(path, end)
+	return nil
+}
+
+// Three streaming passes make field order irrelevant: retain only RHEL scope
+// products, then their relationships, then metadata referring to those IDs.
+// The seekable document is spooled on disk; non-RHEL arrays never occupy RAM.
+func decodeRedHatVEX(ctx context.Context, input io.ReadSeeker) (*vexDocument, error) {
+	doc := new(vexDocument)
+	retained := map[string]bool{}
+	for pass := 0; pass < 3; pass++ {
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		var product vexProduct
+		var relation vexRelationship
+		var statement vexStatement
+		var score vexScore
+		var reference Reference
+		var ids map[string]bool
+		visit := func(path string, tok json.Token) {
+			text, isText := tok.(string)
+			if pass == 0 {
+				switch path {
+				case "product_tree.branches.product":
+					if tok == json.Delim('{') {
+						product = vexProduct{}
+					}
+					if tok == json.Delim('}') && len(product.ID) <= 1024 && len(product.Helper.CPE) <= 1024 && vexCPE.MatchString(product.Helper.CPE) {
+						doc.Tree.Branches = append(doc.Tree.Branches, vexBranch{Product: product})
+						retained[product.ID] = true
+					}
+				case "product_tree.branches.product.product_id":
+					product.ID = text
+				case "product_tree.branches.product.product_identification_helper.cpe":
+					product.Helper.CPE = text
+				}
+				return
+			}
+			if pass == 1 {
+				switch path {
+				case "product_tree.relationships":
+					if tok == json.Delim('{') {
+						relation = vexRelationship{}
+					}
+					if tok == json.Delim('}') && relation.Category == "default_component_of" && retained[relation.Parent] && len(relation.Product.ID) <= 2048 && len(relation.Component) <= 1024 {
+						doc.Tree.Relationships = append(doc.Tree.Relationships, relation)
+						retained[relation.Product.ID] = true
+					}
+				case "product_tree.relationships.category":
+					relation.Category = text
+				case "product_tree.relationships.full_product_name.product_id":
+					relation.Product.ID = text
+				case "product_tree.relationships.product_reference":
+					relation.Component = text
+				case "product_tree.relationships.relates_to_product_reference":
+					relation.Parent = text
+				}
+				return
+			}
+			// Scalar metadata is bounded as it is retained, not after conversion.
+			switch path {
+			case "document.title":
+				doc.Document.Title = truncateText(text, osvMaxSummary)
+			case "document.aggregate_severity.text":
+				doc.Document.Severity.Text = truncateText(text, 64)
+			case "document.tracking.id":
+				doc.Document.Tracking.ID = truncateText(text, 128)
+			case "document.tracking.initial_release_date":
+				doc.Document.Tracking.Published = truncateText(text, 128)
+			case "document.tracking.current_release_date":
+				doc.Document.Tracking.Modified = truncateText(text, 128)
+			case "vulnerabilities":
+				if tok == json.Delim('{') {
+					doc.Vulnerabilities = append(doc.Vulnerabilities, vexVulnerability{})
+				}
+			}
+			if len(doc.Vulnerabilities) != 1 {
+				return
+			}
+			v := &doc.Vulnerabilities[0]
+			switch path {
+			case "vulnerabilities.cve":
+				v.CVE = truncateText(text, 128)
+			case "vulnerabilities.product_status.fixed", "vulnerabilities.product_status.known_affected", "vulnerabilities.product_status.known_not_affected", "vulnerabilities.product_status.under_investigation",
+				"vulnerabilities.remediations.product_ids", "vulnerabilities.threats.product_ids", "vulnerabilities.scores.products":
+				if tok == json.Delim('[') {
+					ids = map[string]bool{}
+				}
+				if !isText || !retained[text] || ids[text] {
+					return
+				}
+				if ids == nil {
+					return
+				}
+				ids[text] = true
+				switch path {
+				case "vulnerabilities.product_status.fixed":
+					v.Status.Fixed = append(v.Status.Fixed, text)
+				case "vulnerabilities.product_status.known_affected":
+					v.Status.Affected = append(v.Status.Affected, text)
+				case "vulnerabilities.product_status.known_not_affected":
+					v.Status.NotAffected = append(v.Status.NotAffected, text)
+				case "vulnerabilities.product_status.under_investigation":
+					v.Status.Investigating = append(v.Status.Investigating, text)
+				case "vulnerabilities.scores.products":
+					score.Products = append(score.Products, text)
+				default:
+					statement.Products = append(statement.Products, text)
+				}
+			case "vulnerabilities.remediations", "vulnerabilities.threats":
+				if tok == json.Delim('{') {
+					statement = vexStatement{}
+				}
+				if tok == json.Delim('}') && len(statement.Products) > 0 {
+					if path == "vulnerabilities.remediations" {
+						v.Remediations = append(v.Remediations, statement)
+					} else {
+						v.Threats = append(v.Threats, statement)
+					}
+				}
+			case "vulnerabilities.remediations.category", "vulnerabilities.threats.category":
+				statement.Category = truncateText(text, 64)
+			case "vulnerabilities.remediations.details", "vulnerabilities.threats.details":
+				statement.Details = truncateText(text, 65)
+			case "vulnerabilities.remediations.url", "vulnerabilities.threats.url":
+				statement.URL = truncateText(text, 2049)
+			case "vulnerabilities.scores":
+				if tok == json.Delim('{') {
+					score = vexScore{}
+				}
+				if tok == json.Delim('}') && len(score.CVSS.Vector) <= 1024 && strings.HasPrefix(score.CVSS.Vector, "CVSS:3.") && (len(score.Products) > 0 || len(v.Scores) == 0) {
+					v.Scores = append(v.Scores, score)
+				}
+			case "vulnerabilities.scores.cvss_v3.vectorString":
+				score.CVSS.Vector = truncateText(text, 1025)
+			case "vulnerabilities.references":
+				if tok == json.Delim('{') {
+					reference = Reference{}
+				}
+				if tok == json.Delim('}') && len(v.References) < osvMaxReferences && len(reference.URL) <= 2048 && len(reference.Type) <= 128 {
+					v.References = append(v.References, reference)
+				}
+			case "vulnerabilities.references.url":
+				reference.URL = truncateText(text, 2049)
+			case "vulnerabilities.references.type":
+				reference.Type = truncateText(text, 129)
+			}
+		}
+		dec := json.NewDecoder(&vexScalarReader{r: contextReader{ctx: ctx, r: input}})
+		dec.UseNumber()
+		stream := vexTokens{ctx: ctx, dec: dec, visit: visit}
+		if err := stream.value("", 0, 0, false); err != nil {
+			return nil, err
+		}
+		if _, err := dec.Token(); err != io.EOF {
+			return nil, errors.New("redhat-vex: trailing JSON")
+		}
+	}
+	return doc, nil
+}
+
+// Decoder.Token buffers a complete scalar. Bound even ignored strings/numbers
+// before they reach it, keeping temporary decoding memory independent of the
+// document size. 64 KiB allows vendor prose but IDs are retained much tighter.
+type vexScalarReader struct {
+	r               io.Reader
+	quoted, escaped bool
+	length          int
+}
+
+func (r *vexScalarReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	for i, b := range p[:n] {
+		if r.quoted {
+			r.length++
+			if r.escaped {
+				r.escaped = false
+			} else if b == '\\' {
+				r.escaped = true
+			} else if b == '"' {
+				r.quoted = false
+				r.length = 0
+			}
+		} else {
+			switch b {
+			case '"':
+				r.quoted = true
+				r.length = 0
+			case '{', '}', '[', ']', ',', ':', ' ', '\t', '\r', '\n':
+				r.length = 0
+			default:
+				r.length++
+			}
+		}
+		if r.length > 64<<10 {
+			return i, errors.New("redhat-vex: JSON scalar exceeds 64 KiB")
+		}
+	}
+	return n, err
+}
+
+// Arrays and their elements have separate shapes even though the visitor uses
+// the same path for both. Unknown CSAF extensions are traversed but not retained.
+func vexJSONShape(path string, element bool) byte {
+	switch path {
+	case "", "document", "document.aggregate_severity", "document.tracking", "product_tree",
+		"product_tree.branches.product", "product_tree.branches.product.product_identification_helper",
+		"product_tree.relationships.full_product_name", "vulnerabilities.product_status", "vulnerabilities.scores.cvss_v3":
+		return '{'
+	case "product_tree.branches", "product_tree.relationships", "vulnerabilities", "vulnerabilities.remediations", "vulnerabilities.threats", "vulnerabilities.scores", "vulnerabilities.references":
+		if element {
+			return '{'
+		}
+		return '['
+	case "vulnerabilities.product_status.fixed", "vulnerabilities.product_status.known_affected", "vulnerabilities.product_status.known_not_affected", "vulnerabilities.product_status.under_investigation",
+		"vulnerabilities.remediations.product_ids", "vulnerabilities.threats.product_ids", "vulnerabilities.scores.products":
+		if element {
+			return '"'
+		}
+		return '['
+	case "document.title", "document.aggregate_severity.text", "document.tracking.id", "document.tracking.initial_release_date", "document.tracking.current_release_date",
+		"product_tree.branches.product.product_id", "product_tree.branches.product.product_identification_helper.cpe",
+		"product_tree.relationships.category", "product_tree.relationships.full_product_name.product_id", "product_tree.relationships.product_reference", "product_tree.relationships.relates_to_product_reference",
+		"vulnerabilities.cve", "vulnerabilities.remediations.category", "vulnerabilities.remediations.details", "vulnerabilities.remediations.url",
+		"vulnerabilities.threats.category", "vulnerabilities.threats.details", "vulnerabilities.threats.url", "vulnerabilities.scores.cvss_v3.vectorString", "vulnerabilities.references.url", "vulnerabilities.references.type":
+		return '"'
+	}
+	return 0
 }

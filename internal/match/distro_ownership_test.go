@@ -97,8 +97,10 @@ func TestDistroPropertyRoundTrip(t *testing.T) {
 				if fields["owner"] != "rpm:python3-idna@2.5-8.el8_10" || fields["modularity"] != "python38:3.8:123:abcd" {
 					t.Fatalf("%s stream=%t: %s", format, stream, wire)
 				}
+				// The owner is named but absent from this document, so the
+				// language package is matched normally and the gap is counted.
 				r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{advisory("PyPI", "idna", "3.7")}}, []Subject{s}, Options{})
-				if err != nil || len(r.Findings) != 0 || r.Skipped["distro-owned"] != 1 {
+				if err != nil || len(r.Findings) != 1 || r.Skipped["distro-owned"] != 0 || r.Skipped["owner-unmatched"] != 1 {
 					t.Fatalf("%s stream=%t: %+v %v", format, stream, r, err)
 				}
 			}

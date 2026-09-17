@@ -370,12 +370,13 @@ func Save(cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, render(cfg), 0o600)
+	return os.WriteFile(path, renderConfig(cfg, false), 0o600)
 }
 
-// render produces the configuration text Save writes; parse reads it back
-// to an equal Config.
-func render(cfg Config) []byte {
+// render produces the init template, leaving built-in feed limits unpinned.
+func render(cfg Config) []byte { return renderConfig(cfg, true) }
+
+func renderConfig(cfg Config, template bool) []byte {
 	var b strings.Builder
 	b.WriteString("# bongsu scanner configuration\n")
 	b.WriteString("signer: " + quote(cfg.Signer) + "\n")
@@ -417,7 +418,7 @@ func render(cfg Config) []byte {
 				value = strconv.FormatInt(*p, 10)
 				// Feed limits at their built-in default stay commented out so a
 				// raised default in a later release reaches existing installs.
-				if section == "db" && (field.name == "max_feed_bytes" && *p == defaults.DB.MaxFeedBytes ||
+				if template && section == "db" && (field.name == "max_feed_bytes" && *p == defaults.DB.MaxFeedBytes ||
 					field.name == "max_feed_uncompressed" && *p == defaults.DB.MaxFeedUncompressed) {
 					b.WriteString("  # " + field.name + ": " + value + "  (built-in default; uncomment to override)\n")
 					continue
@@ -436,14 +437,14 @@ func render(cfg Config) []byte {
 }
 
 // Marshal returns the effective configuration in the supported YAML subset.
-func Marshal(cfg Config) []byte { return render(cfg) }
+func Marshal(cfg Config) []byte { return renderConfig(cfg, false) }
 
 // MarshalDisplay masks mirror credentials in a copy, leaving persistence exact.
 func MarshalDisplay(cfg Config) []byte {
 	if cfg.DB.Mirror != "" {
 		cfg.DB.Mirror = displayMirror(cfg.DB.Mirror)
 	}
-	return render(cfg)
+	return renderConfig(cfg, false)
 }
 
 func displayMirror(raw string) string {

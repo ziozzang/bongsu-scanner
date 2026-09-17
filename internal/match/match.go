@@ -40,6 +40,8 @@ type Finding struct {
 	DistroSeverity string             `json:"distro_severity,omitempty"`
 	DistroStatus   string             `json:"distro_status,omitempty"`
 	Assessment     *assessment.Result `json:"assessment,omitempty"`
+
+	distroSeverityScope uint8
 }
 
 // FindingsSchema identifies the versioned findings interchange document.
@@ -104,9 +106,15 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	cache := newLookupCache[[]preparedRecord](32 << 20)
 	versions := newVersionCache()
 	canonicalCache := newLookupCache[map[string]string](8 << 20)
+	owners := map[string]bool{}
+	for _, s := range subjects {
+		if isOSSubject(s) && subjectSkip(s, coverage) == "" {
+			owners[s.Type+":"+s.Name+"@"+s.Version] = true
+		}
+	}
 	plans := map[string]*lookupPlan{}
 	for i, s := range subjects {
-		if subjectSkip(s, coverage) != "" {
+		if !isOSSubject(s) && owners[s.Owner] || subjectSkip(s, coverage) != "" {
 			continue
 		}
 		for _, q := range subjectQueries(s) {
@@ -126,6 +134,14 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	for si, s := range subjects {
 		if err := ctx.Err(); err != nil {
 			return report, err
+		}
+		if s.Owner != "" && !isOSSubject(s) {
+			if owners[s.Owner] {
+				report.Skipped["distro-owned"]++
+				continue
+			}
+			// The ownership shortcut was skipped; the language subject still runs.
+			report.Skipped["owner-unmatched"]++
 		}
 		if reason := subjectSkip(s, coverage); reason != "" {
 			report.Skipped[reason]++
@@ -189,13 +205,13 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 			// Query records already share the base ecosystem and normalized package.
 			// Keep markers scoped to the same advisory and exact distro release.
 			statuses := map[string]string{}
-			urgencies := map[string]string{}
+			urgencies := map[string]distroRating{}
 			for _, rec := range queryRecords[qi] {
 				if rec.Withdrawn != "" {
 					continue
 				}
 				for _, a := range rec.affected {
-					if a.version != q.ver || a.release != s.Release || s.Type == "rpm" && a.modular != (s.Modularity != "") {
+					if a.version != q.ver || a.release != s.Release || !a.matchesModule(s) {
 						continue
 					}
 					id := canonical[rec.ID]
@@ -204,7 +220,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					}
 					// Unimportant markers alone cannot override a positive entry.
 					if a.distroSeverity != "" && (a.hit || a.distroSeverity != "unimportant") {
-						urgencies[id] = mergeDistroSeverity(urgencies[id], a.distroSeverity)
+						urgencies[id] = mergeDistroRating(urgencies[id], a.rating(q.by))
 					}
 				}
 			}
@@ -229,7 +245,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if rel := prepared.release; rel != "" && rel != s.Release {
 						continue
 					}
-					if s.Type == "rpm" && prepared.modular != (s.Modularity != "") {
+					if !prepared.matchesModule(s) {
 						report.Skipped["module-mismatch"]++
 						continue
 					}
@@ -237,7 +253,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if status == "" {
 						status = prepared.distroStatus
 					}
-					urgency := mergeDistroSeverity(prepared.distroSeverity, urgencies[id])
+					rating := mergeDistroRating(prepared.rating(q.by), urgencies[id])
+					urgency := rating.label
 					if status == "not-affected" && prepared.hit {
 						report.Skipped["distro-not-affected"]++
 						continue
@@ -263,6 +280,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						continue
 					}
 					f := Finding{ID: id, RelatedIDs: rec.related, Subject: s, Record: *rec.summary, Affected: a, MatchedBy: q.by, FixedIn: fixed, Severity: sev, Score: score, Vector: vector, Confidence: "high", DistroSeverity: urgency}
+					f.distroSeverityScope = rating.scope
 					f.Record.DistroSeverity = urgency
 					f.DistroStatus = status
 					if uncertainDistroStatus(status) {
@@ -326,9 +344,6 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 }
 
 func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
-	if s.Owner != "" && s.Type != "rpm" && s.Type != "deb" && s.Type != "apk" {
-		return "distro-owned"
-	}
 	if s.Ecosystem == "Red Hat" && strings.HasPrefix(s.Release, "centos-stream:") {
 		return "centos-stream-unsupported"
 	}
@@ -352,15 +367,16 @@ func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
 	return ""
 }
 
+func isOSSubject(s Subject) bool {
+	return s.Type == "rpm" || s.Type == "deb" || s.Type == "apk"
+}
+
 type query struct{ name, by, ver string }
 
 func subjectQueries(s Subject) []query {
 	queries := []query{{s.Name, "purl-name", s.Version}}
 	if s.Type == "deb" || s.Type == "apk" || s.Type == "rpm" {
 		queries[0].by = "binary-name"
-		if s.UpstreamVersion != "" {
-			queries[0].ver = s.UpstreamVersion
-		}
 		if s.Upstream != "" {
 			v := s.Version
 			if s.UpstreamVersion != "" {
@@ -490,7 +506,8 @@ func mergeFinding(dst *Finding, src Finding) {
 	if SeverityRank(src.Severity) > SeverityRank(dst.Severity) || (SeverityRank(src.Severity) == SeverityRank(dst.Severity) && src.Score > dst.Score) {
 		dst.Severity, dst.Score, dst.Vector = src.Severity, src.Score, src.Vector
 	}
-	dst.DistroSeverity = mergeDistroSeverity(dst.DistroSeverity, src.DistroSeverity)
+	rating := mergeDistroRating(distroRating{dst.DistroSeverity, dst.distroSeverityScope}, distroRating{src.DistroSeverity, src.distroSeverityScope})
+	dst.DistroSeverity, dst.distroSeverityScope = rating.label, rating.scope
 	dst.Record.DistroSeverity = dst.DistroSeverity
 	if dst.DistroStatus == "" || uncertainDistroStatus(src.DistroStatus) {
 		dst.DistroStatus = src.DistroStatus

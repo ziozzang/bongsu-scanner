@@ -53,6 +53,8 @@ type preparedRecord struct {
 // mismatches can be counted before deciding applicability for each subject.
 type evaluatedAffected struct {
 	modular                      bool
+	moduleStream                 string
+	distroSeverityScope          uint8
 	version, release             string
 	unimportant                  bool
 	distroStatus, distroSeverity string
@@ -233,9 +235,17 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 			continue
 		}
 		modular := moduleAffected(a)
+		moduleStream, _ := a.Database["modularity"].(string)
+		moduleStream = strings.TrimSpace(moduleStream)
 		prepared := cache.prepareAffected(eco, a)
 		release := vulndb.EcosystemRelease(a.Ecosystem)
 		urgency := distroSeverity(r, a)
+		var severityScope uint8
+		if eco == "Red Hat" {
+			if label, _ := a.Database["severity"].(string); normalizeSeverity(label) != "UNKNOWN" {
+				severityScope = 1 // Explicit affected-entry impact, rather than record fallback.
+			}
+		}
 		status, _ := a.Database["debian_status"].(string)
 		if eco == "Red Hat" {
 			status, _ = a.Database["redhat_status"].(string)
@@ -263,7 +273,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
 			}
-			result := evaluatedAffected{modular: modular, version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			result := evaluatedAffected{modular: modular, moduleStream: moduleStream, distroSeverityScope: severityScope, version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
 			// A range-free unimportant/negligible marker can be counted as
 			// excluded, but cannot lower a positive alias entry's rating.
 			if !hit && result.unimportant {
@@ -433,7 +443,7 @@ func preparedBytes(records []preparedRecord) int64 {
 		n += int64(len(r.ID)+len(r.Withdrawn)) + stringBytes(r.Aliases) + stringBytes(r.related)
 		n += int64(cap(r.affected)) * int64(unsafe.Sizeof(evaluatedAffected{}))
 		for _, a := range r.affected {
-			n += int64(len(a.version)+len(a.release)+len(a.reason)+len(a.distroStatus)+len(a.distroSeverity)) + stringBytes(a.fixed)
+			n += int64(len(a.version)+len(a.release)+len(a.reason)+len(a.distroStatus)+len(a.distroSeverity)+len(a.moduleStream)) + stringBytes(a.fixed)
 			if a.detail != nil {
 				n += affectedBytes(a.detail.affected) + 40 + int64(len(a.detail.severity)+len(a.detail.vector))
 			}
@@ -475,6 +485,22 @@ func moduleAffected(a vulndb.Affected) bool {
 		}
 	}
 	return false
+}
+
+func (a evaluatedAffected) matchesModule(s Subject) bool {
+	if s.Type != "rpm" {
+		return true
+	}
+	if a.moduleStream != "" {
+		name, rest, ok := strings.Cut(s.Modularity, ":")
+		if !ok {
+			return false
+		}
+		stream, _, _ := strings.Cut(rest, ":")
+		return a.moduleStream == name+":"+stream
+	}
+	// Legacy module builds without stream metadata apply to any labelled RPM.
+	return a.modular == (s.Modularity != "")
 }
 
 func rpmEcosystem(eco string) bool {

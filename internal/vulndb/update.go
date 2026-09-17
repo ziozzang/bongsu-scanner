@@ -21,7 +21,7 @@ import (
 
 // conversionCacheVersion must change whenever feed conversion semantics change.
 // Stored per feed in SourceMeta so a 304 cannot reuse stale converted records.
-const conversionCacheVersion = 4
+const conversionCacheVersion = 5
 
 // Update builds a complete replacement beside dir. Any failed feed leaves the
 // current database intact; the returned metadata still describes every attempt.
@@ -258,7 +258,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	staleConversion := prev != nil && prev.ConversionVersion != conversionCacheVersion
 	// Converted JSON size cannot stand in for the original archive's expansion:
 	// descriptions and ignored members can disappear during conversion.
-	expansionLimited := feed.Source == SourceOSV || feed.Source == SourceGHSA
+	expansionLimited := feed.Source == SourceOSV || feed.Source == SourceGHSA || feed.Source == SourceRedHatVEX
 	cacheMetaRel := cacheRel + ".meta.json"
 	if prev != nil && expansionLimited {
 		var cached feedExpansionMeta
@@ -325,14 +325,26 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		if opts.Progress != nil {
 			progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
 		}
+		var vexExpanded uint64
 		parse := feed.Parse
+		if feed.Source == SourceRedHatVEX {
+			parse = func(ctx context.Context, path string, _ int64, emit Emit, progress func(string)) error {
+				var err error
+				vexExpanded, err = parseRedHatVEXExpanded(ctx, path, opts.maxFeedUncompressedBytes(), vexMaxDocument, emit, progress)
+				return err
+			}
+		}
 		feed.Parse = func(ctx context.Context, path string, size int64, emit Emit, progress func(string)) error {
 			return parse(ctx, path, size, func(r *Record) error { trackModified(r); return emit(r) }, progress)
 		}
 		parsedCount, err = streamFeedCacheSpool(ctx, feed, filepath.Join(stage, rawRel), filepath.Join(stage, cacheRel), fetched.Meta.Bytes, progress, cacheLimit, 64<<20, spool.append)
 		if err == nil && expansionLimited {
 			var expanded uint64
-			expanded, err = feedExpandedBytes(ctx, filepath.Join(stage, rawRel))
+			if feed.Source == SourceRedHatVEX {
+				expanded = vexExpanded
+			} else {
+				expanded, err = feedExpandedBytes(ctx, filepath.Join(stage, rawRel))
+			}
 			if err == nil {
 				err = writeJSON(filepath.Join(stage, cacheMetaRel), feedExpansionMeta{Version: 1, SHA256: fetched.Meta.SHA256, ExpandedBytes: expanded})
 			}
@@ -362,7 +374,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	return m, err
 }
 
-// Stored beside each converted OSV/GHSA cache and included in the database
+// Stored beside each converted OSV/GHSA/VEX cache and included in the database
 // manifest. Missing/obsolete metadata requires parsing the original feed again.
 type feedExpansionMeta struct {
 	Version       int    `json:"version"`

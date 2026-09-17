@@ -103,6 +103,20 @@ func (c *cataloger) collectOwnership(f File) {
 	flush()
 }
 func (c *cataloger) resolveOwnership() {
+	if len(c.ownedPaths) == 0 {
+		c.ownedPaths = nil
+		c.ownedBytes = 0
+		return
+	}
+	// Index once: a package name may have thousands of installed versions.
+	type locationKey struct{ name, version string }
+	locations := make(map[locationKey][]string)
+	for name, installed := range c.installed {
+		for _, loc := range installed {
+			key := locationKey{name, loc.version}
+			locations[key] = append(locations[key], loc.source)
+		}
+	}
 	deb := map[string]string{}
 	put := func(key, owner string) {
 		if prev, exists := deb[key]; exists && prev != owner {
@@ -129,10 +143,8 @@ func (c *cataloger) resolveOwnership() {
 		sources := strings.Split(p.Source, ";")
 		// Include locations beyond the inventory display cap. An unowned
 		// installation must continue to receive upstream matching.
-		for _, loc := range c.installed[packageNameKey(p)] {
-			if loc.version == p.Version {
-				sources = append(sources, strings.Split(loc.source, ";")...)
-			}
+		for _, source := range locations[locationKey{packageNameKey(p), p.Version}] {
+			sources = append(sources, strings.Split(source, ";")...)
 		}
 		for _, src := range sources {
 			o := c.ownedPaths[ownershipPath(src)]

@@ -266,6 +266,31 @@ func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
 	return ""
 }
 
+// Scope ranks record fallbacks below affected-entry ratings, and direct binary
+// ratings above source-package ratings. Equal scopes retain maximum severity.
+type distroRating struct {
+	label string
+	scope uint8
+}
+
+func (a evaluatedAffected) rating(by string) distroRating {
+	scope := a.distroSeverityScope
+	if scope > 0 && by == "binary-name" {
+		scope++
+	}
+	return distroRating{a.distroSeverity, scope}
+}
+
+func mergeDistroRating(a, b distroRating) distroRating {
+	if a.label == "" || b.label != "" && b.scope > a.scope {
+		return b
+	}
+	if b.label != "" && b.scope == a.scope {
+		a.label = mergeDistroSeverity(a.label, b.label)
+	}
+	return a
+}
+
 // NormalizeSeveritySource validates the policy for both CLI entry points and Run.
 func NormalizeSeveritySource(source string) (string, error) {
 	switch source {

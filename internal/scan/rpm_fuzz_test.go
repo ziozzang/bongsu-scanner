@@ -58,7 +58,36 @@ func rpmHeaderWithTags(entries []struct {
 	return append(append(b, index...), data...)
 }
 
+// Array tags exercise ownership paths together with module identity. Each
+// malformed variant changes one property of an otherwise valid header.
+func rpmArrayFuzzSeeds() [][]byte {
+	entries := []struct {
+		tag, typ, count uint32
+		value           []byte
+	}{
+		{1000, 6, 1, []byte("python3\x00")}, {1001, 6, 1, []byte("3.9\x00")}, {1002, 6, 1, []byte("1.el9\x00")},
+		{5096, 6, 1, []byte("python39:3.9:1234:abcd\x00")},
+		{1116, 4, 2, []byte{0, 0, 0, 0, 0, 0, 0, 1}},
+		{1117, 8, 2, []byte("METADATA\x00package.json\x00")},
+		{1118, 8, 2, []byte("/usr/lib/python3/site-packages/example.dist-info/\x00/usr/lib/node_modules/example/\x00")},
+	}
+	valid := rpmHeaderWithTags(entries)
+	seeds := [][]byte{valid, append([]byte(nil), valid[:len(valid)-1]...)}
+	entries[4].count = 1
+	seeds = append(seeds, rpmHeaderWithTags(entries))
+	entries[4].count = 2
+	entries[4].value = []byte{0, 0, 0, 0, 0, 0, 0, 2} // directory index outside array
+	seeds = append(seeds, rpmHeaderWithTags(entries))
+	entries[4].value = []byte{0, 0, 0, 0, 0, 0, 0, 1}
+	entries[6].count = 3 // directory count exceeds its string store
+	seeds = append(seeds, rpmHeaderWithTags(entries))
+	return seeds
+}
+
 func FuzzRPMHeaderPackage(f *testing.F) {
+	for _, seed := range rpmArrayFuzzSeeds() {
+		f.Add(seed)
+	}
 	f.Add(rpmTestHeader(0))
 	f.Add(rpmTestHeader(3))
 	f.Add(append([]byte{0x8e, 0xad, 0xe8, 1, 0, 0, 0, 0}, rpmTestHeader(1)...))
@@ -79,6 +108,9 @@ func FuzzRPMHeaderPackage(f *testing.F) {
 }
 
 func FuzzRPMBDB(f *testing.F) {
+	for _, seed := range rpmArrayFuzzSeeds() {
+		f.Add(rpmTestBDB(seed, binary.LittleEndian, false))
+	}
 	blob := rpmTestHeader(2)
 	f.Add(rpmTestBDB(blob, binary.LittleEndian, false))
 	f.Add(rpmTestBDB(blob, binary.BigEndian, false))
@@ -109,6 +141,9 @@ func FuzzRPMBDB(f *testing.F) {
 }
 
 func FuzzRPMNDB(f *testing.F) {
+	for _, seed := range rpmArrayFuzzSeeds() {
+		f.Add(rpmTestNDB(seed))
+	}
 	blob := rpmTestHeader(0)
 	f.Add(rpmTestNDB(blob))
 	two := rpmTestNDB(blob)
@@ -174,5 +209,18 @@ func TestRPMHeaderBoundedWork(t *testing.T) {
 	}
 	if _, err := parseRPMHeader(rpmTestHeader(1)); err != nil {
 		t.Fatalf("valid header rejected: %v", err)
+	}
+}
+
+func TestRPMArrayFuzzSeeds(t *testing.T) {
+	for i, seed := range rpmArrayFuzzSeeds() {
+		h, err := parseRPMHeader(seed)
+		if i == 0 {
+			if err != nil || h.Modularity != "python39:3.9:1234:abcd" || len(h.Files) != 2 {
+				t.Fatalf("valid seed does not reach array/module parsing: %+v %v", h, err)
+			}
+		} else if err == nil {
+			t.Fatalf("malformed seed %d accepted", i)
+		}
 	}
 }
