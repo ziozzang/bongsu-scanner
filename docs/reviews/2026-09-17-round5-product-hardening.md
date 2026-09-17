@@ -18,3 +18,13 @@ work, each fix landing with regression tests and full verification.
 
 Current baselines on the same host: host scan ~14 s / ~240 MB, match ~5 s /
 ~290 MB, catalog build ~50 s (cached feeds). Full `go test -race` ~50 s.
+
+## Round 6 (same day)
+
+| Step | Outcome |
+|---|---|
+| Acceptance test, 189 steps as a new user | 8 defects (2 P1); all fixed: offline registry block, container /tmp, negative parallelism, help stream/names, cancel summary, report array message, lock wait |
+| Static analysis | staticcheck/gosec/errcheck clean in production code; `make lint` + CI job |
+| Coverage | security packages ≥ 85 % (most ≥ 95 %) |
+| Soak/concurrency | 200 scans, 50 matches, 10 mid-download interrupts: no leaks or corruption; fixed docker export temp-file leak on cancel; added `--findings-exit-code` and `--memory-limit` |
+| Test speed | `-short -race` 48 s → 17 s after fixture shrinking |
