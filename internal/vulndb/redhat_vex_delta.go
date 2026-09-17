@@ -2,6 +2,7 @@ package vulndb
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 )
 
 const vexListMaxBytes = 16 << 20
+const vexMaxTombstones = 200_000
 
 var vexDeltaPath = regexp.MustCompile(`^[0-9]{4}/cve-[0-9]{4}-[0-9]{4,}\.json$`)
 var errVEXBudget = errors.New("redhat-vex: delta byte budget exhausted")
@@ -69,6 +71,10 @@ type vexDeltaFeed struct {
 	// On archive replacement, only deletions may survive the old overlay.
 	// Reconcile these after both feed workers finish, before cross-source union.
 	archiveTombstones map[string]*Record
+	tombstoneOrder    *vexTombstoneHeap
+	evictedTombstones int
+	progress          func(string)
+	reuseOverlay      bool
 }
 
 // Small lists are retained in cache even with --no-keep-raw: a 304 must still
@@ -80,9 +86,13 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 	ledgerRel := cacheRel + ".ledger.json"
 	old, exists := previous[feed.Source+"\x00"+feed.URL]
 	reusable := exists && old.ArchiveDate.Equal(d.archiveDate) && old.ConversionVersion == conversionCacheVersion && !opts.Force
+	d.reuseOverlay = reusable
 	d.ledger = map[string]time.Time{}
 	d.oldCache = ""
-	d.archiveTombstones = nil
+	d.archiveTombstones = map[string]*Record{}
+	d.tombstoneOrder = &vexTombstoneHeap{positions: map[string]int{}}
+	d.evictedTombstones = 0
+	d.progress = opts.Progress
 	d.cacheLimit = feedCacheLimit(feed.Source, opts)
 	d.meta = SourceMeta{ArchiveDate: d.archiveDate}
 	if reusable {
@@ -91,9 +101,8 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 		}
 		d.oldCache = filepath.Join(dir, cacheRel)
 		d.meta.DeltaThrough, d.meta.DeltaDocuments, d.meta.DeltaDeleted = old.DeltaThrough, old.DeltaDocuments, old.DeltaDeleted
-	} else if exists && !old.ArchiveDate.Equal(d.archiveDate) {
+	} else if exists {
 		d.oldCache = filepath.Join(dir, cacheRel)
-		d.archiveTombstones = map[string]*Record{}
 	}
 	var prev *SourceMeta
 	if exists {
@@ -123,6 +132,7 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 	m.DeltaThrough, m.DeltaDocuments, m.DeltaDeleted = d.meta.DeltaThrough, d.meta.DeltaDocuments, d.meta.DeltaDeleted
 	m.DeltaFetched, m.DeltaMalformed, m.DeltaOversized, m.DeltaRemaining, m.DeltaBytes = d.meta.DeltaFetched, d.meta.DeltaMalformed, d.meta.DeltaOversized, d.meta.DeltaRemaining, d.meta.DeltaBytes
 	m.DeltaMissing = d.meta.DeltaMissing
+	m.DeltaDeletedEvents = d.meta.DeltaDeletedEvents
 	m.DataThrough, m.Records = d.meta.DataThrough, count
 	if err == nil {
 		err = writeJSON(filepath.Join(stage, ledgerRel), d.ledger)
@@ -133,6 +143,9 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 		m.Error = httpx.Sanitize(err.Error())
 	}
 	if progress != nil {
+		if m.DeltaRemaining > 0 || m.DeltaMissing > 0 {
+			progress(fmt.Sprintf("WARNING: redhat-vex update incomplete: remaining=%d missing=%d; rerun db update to retry", m.DeltaRemaining, m.DeltaMissing))
+		}
 		progress(fmt.Sprintf("redhat-vex deltas: fetched=%d documents=%d deleted=%d malformed=%d oversized=%d missing=%d remaining=%d bytes=%d", m.DeltaFetched, m.DeltaDocuments, m.DeltaDeleted, m.DeltaMalformed, m.DeltaOversized, m.DeltaMissing, m.DeltaRemaining, m.DeltaBytes))
 	}
 	return m, err
@@ -171,7 +184,8 @@ func readVEXDeltaList(ctx context.Context, filename string, deleted bool, archiv
 			continue
 		}
 		e := vexDeltaEntry{Path: row[0], At: at.UTC(), Deleted: deleted}
-		if !e.At.After(archive) || e.done(ledger) {
+		// Deletion rows can predate the archive but still supersede its document.
+		if !deleted && !e.At.After(archive) || e.done(ledger) {
 			continue
 		}
 		if prev, ok := entries[e.Path]; !ok || e.At.After(prev.At) {
@@ -252,10 +266,14 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if d.archiveTombstones != nil {
-				if r.Withdrawn != "" {
-					d.archiveTombstones[r.ID] = r
+			if r.Withdrawn != "" && d.archiveTombstones != nil {
+				if r.VEXDelta == "" {
+					r.VEXDelta = r.Withdrawn
 				}
+				d.retainTombstone(r)
+				return nil
+			}
+			if d.archiveTombstones != nil && !d.reuseOverlay {
 				return nil
 			}
 			// Older conversion caches lack the tie-break marker. Recover it from
@@ -302,7 +320,7 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 				if errors.As(result.err, &status) && status.StatusCode == http.StatusNotFound {
 					d.meta.DeltaMissing++
 					if progress != nil {
-						progress(fmt.Sprintf("redhat-vex: skipping missing delta document %s (HTTP 404); will retry", e.Path))
+						progress(fmt.Sprintf("WARNING: redhat-vex: skipping missing delta document %s (HTTP 404); will retry", e.Path))
 					}
 					continue // A transient missing document is not a checkpoint.
 				}
@@ -313,11 +331,14 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 			} else if result.malformed {
 				d.meta.DeltaMalformed++
 			} else {
-				if err := appendRecord(result.record); err != nil {
+				if e.Deleted && d.archiveTombstones != nil {
+					d.retainTombstone(result.record)
+				} else if err := appendRecord(result.record); err != nil {
 					return err
 				}
 				if e.Deleted {
 					d.meta.DeltaDeleted++
+					d.meta.DeltaDeletedEvents++
 				} else {
 					d.meta.DeltaDocuments++
 					d.meta.DeltaFetched++
@@ -464,13 +485,13 @@ func (m SourceMeta) VEXStatus() string {
 	if !m.DeltaThrough.IsZero() {
 		through = m.DeltaThrough.UTC().Format("2006-01-02T15:04Z")
 	}
-	return fmt.Sprintf("archive %s, deltas through %s (%s documents); deleted=%d skipped=%d remaining=%d", m.ArchiveDate.UTC().Format(time.DateOnly), through, formatCount(m.DeltaDocuments), m.DeltaDeleted, m.DeltaMalformed+m.DeltaOversized+m.DeltaMissing, m.DeltaRemaining)
+	return fmt.Sprintf("archive %s, deltas through %s (%s documents); deleted=%d skipped=%d remaining=%d tombstones=%d", m.ArchiveDate.UTC().Format(time.DateOnly), through, formatCount(m.DeltaDocuments), m.DeltaDeleted, m.DeltaMalformed+m.DeltaOversized+m.DeltaMissing, m.DeltaRemaining, m.DeltaTombstones)
 }
 
 // Resolve VEX versions before a same-ID record from another source can turn
 // their provenance into a comma-joined source. Keep the original source order
 // for all cross-source union rules (including summary/severity preference).
-func consolidateVEXSpools(ctx context.Context, stage string, feeds []Feed, spools []*ingestionSpool) ([]*ingestionSpool, error) {
+func consolidateVEXSpools(ctx context.Context, stage string, feeds []Feed, spools []*ingestionSpool, metadata ...[]SourceMeta) ([]*ingestionSpool, error) {
 	var archives []*ingestionSpool
 	for i, feed := range feeds {
 		if feed.Source == SourceRedHatVEX && feed.vexDelta == nil {
@@ -478,12 +499,20 @@ func consolidateVEXSpools(ctx context.Context, stage string, feeds []Feed, spool
 		}
 	}
 	for i, feed := range feeds {
-		if d := feed.vexDelta; d != nil && len(d.archiveTombstones) > 0 {
+		if d := feed.vexDelta; d != nil {
 			spool, err := d.reconcileArchive(ctx, stage, feed, archives, spools[i])
 			if err != nil {
 				return nil, err
 			}
 			spools[i] = spool
+			for _, sources := range metadata {
+				if err := d.finalCacheMeta(ctx, filepath.Join(stage, "cache", feed.Source, feed.Key+".jsonl.gz"), &sources[i]); err != nil {
+					return nil, err
+				}
+			}
+			if d.evictedTombstones > 0 && d.progress != nil {
+				d.progress(fmt.Sprintf("WARNING: redhat-vex: evicted %d oldest tombstones (limit=%d); deletion history is incomplete", d.evictedTombstones, vexMaxTombstones))
+			}
 		}
 	}
 	var vex []*ingestionSpool
@@ -537,17 +566,47 @@ func (d *vexDeltaFeed) reconcileArchive(ctx context.Context, stage string, feed 
 		return nil, err
 	}
 	defer func() { _ = retained.close(); _ = os.RemoveAll(retained.dir) }()
-	err = visitMergedIngestionSpools(ctx, archives, nil, time.Time{}, func(r *Record) error {
-		tombstone := d.archiveTombstones[r.ID]
-		if tombstone == nil || compareRFC3339(r.Modified, tombstone.Withdrawn) > 0 {
-			return nil
-		}
-		b, err := json.Marshal(tombstone)
+	// Archive dates describe packaging, not the document's tracking date.
+	// Fresh/incremental equivalence cannot hold once upstream prunes deletions.csv:
+	// only an existing catalog can carry deletion history no longer published.
+	seen := map[string]bool{}
+	keep := func(r *Record) error {
+		b, err := json.Marshal(r)
 		if err != nil {
 			return err
 		}
 		return retained.append(r.ID, append(b, '\n'))
+	}
+	err = visitMergedIngestionSpools(ctx, archives, nil, time.Time{}, func(r *Record) error {
+		tombstone := d.archiveTombstones[r.ID]
+		if tombstone == nil {
+			return nil
+		}
+		seen[r.ID] = true
+		if compareRFC3339(r.Modified, tombstone.Withdrawn) > 0 {
+			return nil
+		}
+		return keep(tombstone)
 	})
+	if err != nil {
+		return nil, err
+	}
+	var coverage struct {
+		VEXIncomplete *bool `json:"vex_incomplete"`
+	}
+	// A missing coverage marker from older caches is not proof of omission.
+	coverageErr := readJSON(filepath.Join(stage, "cache", SourceRedHatVEX, "vex.jsonl.gz.meta.json"), &coverage)
+	for id, tombstone := range d.archiveTombstones {
+		if seen[id] {
+			continue
+		}
+		at, parseErr := time.Parse(time.RFC3339Nano, tombstone.Withdrawn)
+		if coverageErr != nil || coverage.VEXIncomplete == nil || *coverage.VEXIncomplete || parseErr != nil || at.After(d.archiveDate) {
+			if err := keep(tombstone); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err = errors.Join(err, retained.close()); err != nil {
 		return nil, err
 	}
@@ -568,4 +627,78 @@ func (d *vexDeltaFeed) reconcileArchive(ctx context.Context, stage string, feed 
 		return nil, err
 	}
 	return replacement, nil
+}
+
+// Keep only the newest deletion history, with deterministic ID ordering for ties.
+// An indexed heap bounds both retained records and bookkeeping during ingestion.
+type vexTombstoneHeap struct {
+	records   []*Record
+	positions map[string]int
+}
+
+func (h vexTombstoneHeap) Len() int { return len(h.records) }
+func (h vexTombstoneHeap) Less(i, j int) bool {
+	a, b := h.records[i], h.records[j]
+	if order := compareRFC3339(a.Withdrawn, b.Withdrawn); order != 0 {
+		return order < 0
+	}
+	return a.ID < b.ID
+}
+func (h vexTombstoneHeap) Swap(i, j int) {
+	h.records[i], h.records[j] = h.records[j], h.records[i]
+	h.positions[h.records[i].ID] = i
+	h.positions[h.records[j].ID] = j
+}
+func (h *vexTombstoneHeap) Push(value any) {
+	r := value.(*Record)
+	h.positions[r.ID] = len(h.records)
+	h.records = append(h.records, r)
+}
+func (h *vexTombstoneHeap) Pop() any {
+	n := len(h.records) - 1
+	r := h.records[n]
+	h.records[n] = nil
+	h.records = h.records[:n]
+	delete(h.positions, r.ID)
+	return r
+}
+func (d *vexDeltaFeed) retainTombstone(r *Record) {
+	if old := d.archiveTombstones[r.ID]; old != nil {
+		if compareRFC3339(old.Withdrawn, r.Withdrawn) >= 0 {
+			return
+		}
+		d.archiveTombstones[r.ID] = r
+		i := d.tombstoneOrder.positions[r.ID]
+		d.tombstoneOrder.records[i] = r
+		heap.Fix(d.tombstoneOrder, i)
+		return
+	}
+	d.archiveTombstones[r.ID] = r
+	heap.Push(d.tombstoneOrder, r)
+	if d.tombstoneOrder.Len() > vexMaxTombstones {
+		oldest := heap.Pop(d.tombstoneOrder).(*Record)
+		delete(d.archiveTombstones, oldest.ID)
+		d.evictedTombstones++
+	}
+}
+
+func (d *vexDeltaFeed) finalCacheMeta(ctx context.Context, cache string, m *SourceMeta) error {
+	m.Records, m.DeltaTombstones = 0, 0
+	m.DataThrough, m.DeltaThrough = time.Time{}, time.Time{}
+	return readFeedCache(cache, d.cacheLimit, func(r *Record) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		m.Records++
+		if r.Withdrawn != "" {
+			m.DeltaTombstones++
+		}
+		if at, err := time.Parse(time.RFC3339Nano, r.Modified); err == nil && at.After(m.DataThrough) {
+			m.DataThrough = at.UTC()
+		}
+		if at, err := time.Parse(time.RFC3339Nano, r.VEXDelta); err == nil && at.After(m.DeltaThrough) {
+			m.DeltaThrough = at.UTC()
+		}
+		return nil
+	})
 }

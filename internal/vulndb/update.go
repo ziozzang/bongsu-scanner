@@ -210,7 +210,7 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	if err := ctx.Err(); err != nil {
 		return meta, err
 	}
-	spools, err = consolidateVEXSpools(ctx, stage, feeds, spools)
+	spools, err = consolidateVEXSpools(ctx, stage, feeds, spools, meta.Sources)
 	if err != nil {
 		return meta, err
 	}
@@ -339,11 +339,12 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 			progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
 		}
 		var vexExpanded uint64
+		var vexIncomplete bool
 		parse := feed.Parse
 		if feed.Source == SourceRedHatVEX {
 			parse = func(ctx context.Context, path string, _ int64, emit Emit, progress func(string)) error {
 				var err error
-				vexExpanded, err = parseRedHatVEXExpanded(ctx, path, opts.maxFeedUncompressedBytes(), vexMaxDocument, emit, progress)
+				vexExpanded, err = parseRedHatVEXExpanded(ctx, path, opts.maxFeedUncompressedBytes(), vexMaxDocument, emit, progress, &vexIncomplete)
 				return err
 			}
 		}
@@ -359,7 +360,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 				expanded, err = feedExpandedBytes(ctx, filepath.Join(stage, rawRel))
 			}
 			if err == nil {
-				err = writeJSON(filepath.Join(stage, cacheMetaRel), feedExpansionMeta{Version: 1, SHA256: fetched.Meta.SHA256, ExpandedBytes: expanded})
+				err = writeJSON(filepath.Join(stage, cacheMetaRel), feedExpansionMeta{Version: 1, SHA256: fetched.Meta.SHA256, ExpandedBytes: expanded, VEXIncomplete: &vexIncomplete})
 			}
 		}
 	}
@@ -390,6 +391,8 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 // Stored beside each converted OSV/GHSA/VEX cache and included in the database
 // manifest. Missing/obsolete metadata requires parsing the original feed again.
 type feedExpansionMeta struct {
+	// Nil means an older cache cannot establish complete archive coverage.
+	VEXIncomplete *bool  `json:"vex_incomplete,omitempty"`
 	Version       int    `json:"version"`
 	SHA256        string `json:"sha256"`
 	ExpandedBytes uint64 `json:"expanded_bytes"`

@@ -434,11 +434,10 @@ docker:// uses the local daemon and remains allowed.
 
 ## Configuration keys
 
-Configuration override plumbing sets BONGSU_CONFIG before configuration consumers.
-The current internal/config package does not yet honor this variable. Selecting
-a different file is rejected with an explicit error until that package is migrated;
-no requested configuration is silently ignored. This also applies to BONGSU_CONFIG
-set directly in the environment.
+BONGSU_CONFIG, or the global --config PATH (which takes precedence), selects the
+configuration file; relative paths resolve against the current working directory.
+Keys and the default database stay under BONGSU_HOME. config show prints the
+resolved path, and config init and configuration saves use it.
 
 The default filename is intentionally spelled ` + "`scaner.yaml`" + `.
 Relative identity paths resolve under BONGSU_HOME; ~/ paths resolve under the

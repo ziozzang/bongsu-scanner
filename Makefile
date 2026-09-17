@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.6.0-dev
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: build test test-short ci release release-sign clean

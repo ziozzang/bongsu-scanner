@@ -334,7 +334,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 		OSVBaseURL: *mirror, Force: *force, NoKeepRaw: *noRaw, MaxFeedBytes: *maxBytes,
 		MaxFeedUncompressedBytes: *maxUncompressed,
 		Client:                   dbHTTPClient(*timeout),
-		Progress:                 func(message string) { logf("db", "%s\n", httpx.Sanitize(message)) },
+		Progress:                 func(message string) { _, _ = fmt.Fprintln(logWriter{stage: "db"}, httpx.Sanitize(message)) },
 		ResolveSelection: func(old vulndb.Meta) (vulndb.Selection, error) {
 			selection, provenance, err := resolveDBSelection(fs, cfg.DB, old, additions)
 			if err == nil {

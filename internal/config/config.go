@@ -100,6 +100,9 @@ func Dir() (string, error) {
 }
 
 func Path() (string, error) {
+	if path := os.Getenv("BONGSU_CONFIG"); strings.TrimSpace(path) != "" {
+		return filepath.Abs(path)
+	}
 	d, err := Dir()
 	return filepath.Join(d, "scaner.yaml"), err
 }

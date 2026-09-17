@@ -110,12 +110,17 @@ type SourceMeta struct {
 	DeltaThrough   time.Time `json:"delta_through,omitempty,omitzero"`
 	DeltaDocuments int       `json:"delta_documents,omitempty"`
 	DeltaFetched   int       `json:"delta_fetched,omitempty"`
-	DeltaDeleted   int       `json:"delta_deleted,omitempty"`
-	DeltaMalformed int       `json:"delta_malformed,omitempty"`
-	DeltaOversized int       `json:"delta_oversized,omitempty"`
-	DeltaMissing   int       `json:"delta_missing,omitempty"`
-	DeltaRemaining int       `json:"delta_remaining,omitempty"`
-	DeltaBytes     int64     `json:"delta_bytes,omitempty"`
+	// DeltaDocuments/DeltaDeleted are event totals for the current overlay epoch.
+	DeltaDeleted int `json:"delta_deleted,omitempty"`
+	// DeltaDeletedEvents counts deletions applied this run; DeltaTombstones
+	// counts deletion records retained in the final reconciled conversion cache.
+	DeltaDeletedEvents int   `json:"delta_deleted_events,omitempty"`
+	DeltaTombstones    int   `json:"delta_tombstones,omitempty"`
+	DeltaMalformed     int   `json:"delta_malformed,omitempty"`
+	DeltaOversized     int   `json:"delta_oversized,omitempty"`
+	DeltaMissing       int   `json:"delta_missing,omitempty"`
+	DeltaRemaining     int   `json:"delta_remaining,omitempty"`
+	DeltaBytes         int64 `json:"delta_bytes,omitempty"`
 }
 
 // Meta is the database manifest written after every update.

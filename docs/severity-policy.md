@@ -19,7 +19,7 @@ precedence over `ecosystem_specific.priority`, then a record-level severity
 entry with `type: Ubuntu`, then generic urgency metadata. The original priority
 is shown in the distro severity field in lowercase. Ubuntu `negligible` and
 Debian `unimportant` are displayed as `NEGLIGIBLE`, included by default, and
-counted under `Skipped["unimportant"]` when excluded with
+counted under `skipped["unimportant"]` when excluded with
 `--exclude-unimportant`. A negligible or unimportant marker without a matching
 range cannot lower a positive finding's severity. `priority_reason`, when
 present, is retained in the JSON finding's affected ecosystem metadata.

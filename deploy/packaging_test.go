@@ -249,6 +249,9 @@ printf '{}' > "$output/input.spdx.json"
 // Exercise the shipped UID and filesystem: no --user override or tmpfs can
 // conceal incorrect /tmp permissions in the final scratch image.
 func TestDockerDefaultUIDDirectoryScan(t *testing.T) {
+	if os.Getenv("BSCAN_DOCKER_TESTS") != "1" {
+		t.Skip("set BSCAN_DOCKER_TESTS=1 to build and test the Docker image")
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker unavailable")
 	}

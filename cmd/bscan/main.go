@@ -34,7 +34,7 @@ import (
 )
 
 var (
-	version   = "dev"
+	version   = "0.6.0-dev"
 	commit    string
 	buildDate string
 )
@@ -267,8 +267,11 @@ func cmdConfig(args []string) error {
 	}
 	switch args[0] {
 	case "show":
-		cfg, _, err := config.LoadForCLI()
+		cfg, path, err := config.LoadForCLI()
 		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(os.Stdout, "# Config file: %q\n", path); err != nil {
 			return err
 		}
 		_, err = os.Stdout.Write(config.MarshalDisplay(cfg))
@@ -1593,7 +1596,9 @@ type logWriter struct {
 func (w logWriter) Write(p []byte) (int, error) {
 	for _, line := range strings.Split(strings.TrimSuffix(string(p), "\n"), "\n") {
 		line = strings.TrimPrefix(line, "["+w.stage+"] ")
-		if w.warning {
+		if strings.HasPrefix(line, "WARNING: ") {
+			alertf(w.stage, "%s", line)
+		} else if w.warning {
 			warnf(w.stage, "%s", line)
 		} else {
 			logf(w.stage, "%s", line)
@@ -1628,28 +1633,8 @@ func scanSummaryf(format string, args ...any) {
 	fmt.Printf(format, args...)
 }
 
-// Config path resolution belongs to internal/config. Until that package honors
-// BONGSU_CONFIG, reject an unmatched override rather than silently using another
-// file (which could bypass a requested offline or signature policy).
+// Config path resolution belongs to internal/config, including BONGSU_CONFIG.
 func validateConfigOverride() error {
-	requested := strings.TrimSpace(os.Getenv("BONGSU_CONFIG"))
-	if requested == "" {
-		return nil
-	}
-	actual, err := config.Path()
-	if err != nil {
-		return err
-	}
-	requested, err = filepath.Abs(requested)
-	if err != nil {
-		return err
-	}
-	actual, err = filepath.Abs(actual)
-	if err != nil {
-		return err
-	}
-	if actual != requested {
-		return errors.New("configuration override unavailable: internal/config must support BONGSU_CONFIG before --config can select a different file")
-	}
-	return nil
+	_, err := config.Path()
+	return err
 }

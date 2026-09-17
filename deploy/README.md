@@ -1,7 +1,7 @@
 # Install and deploy bscan
 
 Build with the Go toolchain selected by `go.mod` (minimum Go 1.25). Run
-`make dist VERSION=0.5.0` on a POSIX build host with Go, make, tar, gzip and
+`make dist VERSION=0.6.0` on a POSIX build host with Go, make, tar, gzip and
 sha256sum. It builds static archives for linux/amd64, linux/arm64,
 darwin/arm64, darwin/amd64 and windows/amd64. Each
 `dist/bscan_<ver>_<os>_<arch>.tar.gz` contains `bscan` (`bscan.exe` on Windows),
@@ -21,12 +21,55 @@ native runtime behavior. The Unix-only walk helpers live in
 so `GOOS=windows go build ./cmd/bscan` succeeds; Windows host scanning is
 still unsupported (scan directories, archives and images there).
 
+## Install a release
+
+Download the archive for your OS and architecture from
+[GitHub Releases](https://github.com/ziozzang/bongsu-scanner/releases).
+Archives use `bscan_<ver>_<os>_<arch>.tar.gz`, with `amd64` or `arm64`, and
+contain the executable, `LICENSE` and `THIRD_PARTY_NOTICES.txt`.
+Linux and macOS archives contain `bscan`; Windows archives contain `bscan.exe`.
+Host scanning is Linux-specific; directory/archive scans and `db`, `match`,
+and `report` are intended for other platforms too. Windows and FreeBSD are cross-built in CI. Windows has a release archive;
+FreeBSD has only a CI cross-build, with no release archive. Cross-building does
+not establish native runtime behavior.
+
+Example for Linux amd64 (select an existing release version):
+
+```sh
+set -eu
+version=0.6.0
+asset="bscan_${version}_linux_amd64.tar.gz"
+base="https://github.com/ziozzang/bongsu-scanner/releases/download/v${version}"
+curl -fLO "$base/$asset"
+curl -fLO "$base/SHA256SUMS"
+# If this release publishes a signature, fetch and verify it first.
+curl -fLO "$base/SHA256SUMS.sig"
+# Use an already trusted bscan and a publisher key obtained independently.
+bscan verify --pubkey /path/to/publisher.pub SHA256SUMS.sig
+awk -v asset="$asset" '$2 == asset { print; found=1 } END { if (!found) exit 1 }' \
+  SHA256SUMS > selected.SHA256SUMS
+sha256sum --check selected.SHA256SUMS
+tar -xzf "$asset"
+sudo install -m 0755 bscan /usr/local/bin/bscan
+bscan init --signer host-scanner
+```
+
+`SHA256SUMS.sig` is a bscan Ed25519 signature record, not a GPG signature.
+For initial signature verification, build a verifier from trusted source or use
+an existing trusted installation; do not run the downloaded binary to verify
+itself. Signatures are optional on releases unless a publisher key is configured.
+If no signature is published, checksums provide transfer integrity only; do not
+silently skip a signature required by your deployment policy. On macOS use
+`shasum -a 256 -c selected.SHA256SUMS`; on Windows compare
+`Get-FileHash -Algorithm SHA256 .\bscan_<ver>_windows_amd64.tar.gz` with the exact
+entry in `SHA256SUMS`, then extract with `tar -xzf`.
+
 ## Container
 
 ```sh
-make image VERSION=0.5.0
+make image VERSION=0.6.0
 # Or use a published tag:
-image=ghcr.io/ziozzang/bongsu-scanner:v0.5.0
+image=ghcr.io/ziozzang/bongsu-scanner:v0.6.0
 docker run --rm "$image" version
 mkdir -p scan-results
 docker run --rm --read-only --network none \
@@ -36,6 +79,9 @@ docker run --rm --read-only --network none \
   --mount "type=bind,src=$PWD/scan-results,dst=/reports" \
   "$image" scan --no-sign --exclude scan-results --workers 2 --output /reports /input
 ```
+
+`scan /host` treats the root as a directory; it does not enable host policy
+automatically. Set the scan controls explicitly as in the example below.
 
 The scratch image contains a static binary, CA certificates and license notices;
 it defaults to UID/GID 65532 and `/reports` as its working directory. Bind-mount
@@ -136,21 +182,9 @@ account (`DynamicUser=no`), a read-only filesystem, private temporary storage,
 and writable `/var/lib/bscan` for configuration, keys, catalog and reports.
 Only the scan receives `CAP_DAC_READ_SEARCH` (bounding and ambient) so it can
 read protected host files without UID 0. The update service has no capabilities.
-The update service reuses the installed selection. Nonempty selection values
-in `/var/lib/bscan/scaner.yaml`'s `db:` block override the saved choices on every
-run; include additions in that configuration or remove those overrides if you
-want the saved selection to control future updates. Use `--add-source`,
-`--add-ecosystem`, and `--add-alpine-release` to extend coverage; their ordinary
-counterparts replace the corresponding lists. OSV per-release exports have been
-frozen since October 2024; release-qualified selections automatically fetch and
-save the base ecosystem (for example, `Ubuntu:24.04:LTS` becomes `Ubuntu`).
-Use `--add-ecosystem Ubuntu` for maintained Ubuntu coverage. Ubuntu (~700 MB)
-and Chainguard (~920 MB) fit the default 1 GiB per-feed download bound. The
-default catalog downloads ~670 MB of OSV feeds plus other sources; these sizes
-were measured on 2026-09-17 and can grow. The bound does not reserve memory.
-`db status` shows each source's newest record date as `data through`.
-Updates warn when that date is older than 60 days, even under `--quiet`;
-check scheduled-update logs for stale upstream feeds.
+The update service reuses the installed selection unless nonempty `db:`
+configuration values override it. See [database selection, limits and freshness](../docs/vulnerability-database.md#selection-and-updates)
+for adding coverage and interpreting `Selection:` and `data through` in status.
 
 `ProtectHome` is intentionally not enabled because home directories are inputs.
 
@@ -173,5 +207,49 @@ Its plain `bscan db update` preserves the installed selection, subject to the
 same config overrides as systemd. Add coverage as `bscan` with
 `BONGSU_HOME=/var/lib/bscan`, then verify the `Selection:` line in `db status`.
 
-For air-gapped hosts, import a signed catalog as `bscan` using the flow in the
-[main README](../README.md#install-and-deploy), and enable only the scan timer.
+## Air-gapped deployment
+
+For an air-gapped catalog, initialize the connected publisher once, then export
+the signed database and transfer the archive and separately trusted public key:
+
+```sh
+# Connected publisher; retain its initialized signing identity.
+bscan init --signer catalog-publisher
+bscan db update
+bscan db export --pubkey "$HOME/.bongsu/signing.pub" catalog.tar.gz
+
+# Offline machine; publisher.pub comes from a trusted channel.
+export BONGSU_OFFLINE=1
+bscan db import --pubkey /path/to/publisher.pub catalog.tar.gz
+bscan db verify --pubkey /path/to/publisher.pub
+bscan scan --match --report html --output ./scan-results /path/to/rootfs
+```
+
+If `BONGSU_HOME` is set, use that identity's `signing.pub` on the publisher.
+For the systemd deployment, import as user `bscan` with
+`BONGSU_HOME=/var/lib/bscan` and enable only `bscan-scan.timer` offline.
+
+The catalog import expansion limit is 8 GiB, independent of feed update limits;
+see [database transfer](../docs/vulnerability-database.md#storage-conversion-and-transfer).
+
+## Self-update
+
+```sh
+bscan update --check
+bscan update
+```
+
+Interactive commands perform a non-blocking update check at most once every
+24 hours. Set `BONGSU_NO_UPDATE_CHECK=1` to disable background version checks.
+Set `BONGSU_OFFLINE=1` or `offline: true` in configuration to disable both
+explicit network updates and background checks; local scanning and matching
+remain available.
+Updates download the matching Linux release binary, verify it against the
+release `SHA256SUMS`, and atomically replace the current executable.
+To require signed release checksums, register the publisher's public key with
+`bscan key trust release publisher.pub`, then run `bscan update --require-signature`.
+The signature must cover the downloaded `SHA256SUMS` and verify against that key
+(or a release key embedded at build time).
+For accepted v1 records, the updater labels the signer
+`(unauthenticated: v1 record)` because that field is not covered by the signature.
+Set `signature_min_version: 2` in `scaner.yaml` to reject these legacy records.

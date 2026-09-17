@@ -3,8 +3,18 @@
 Build bscan from source with Go 1.25 or newer (this checkout selects toolchain
 Go 1.27.1). The examples below run in a bscan source checkout; for an application
 repository, build in a separate pinned bscan checkout and put the resulting
-binary on the application's PATH before the scan step. No release tag is
-assumed while the format is still Unreleased.
+binary on the application's PATH before the scan step. For v0.6.0, select the
+`v0.6.0` tag of `ziozzang/bongsu-scanner` when it is published, for example:
+
+```sh
+git clone --branch v0.6.0 --depth 1 https://github.com/ziozzang/bongsu-scanner.git bscan-source
+(cd bscan-source && go build -ldflags '-X main.version=v0.6.0' -o ../bscan ./cmd/bscan)
+./bscan version
+```
+
+The workflow examples below scan the checked-out project; their build step
+assumes that project is bscan itself. In another repository, substitute the
+pinned build above. This example does not assert that the tag is already published.
 
 Supply a trusted `catalog.tar.gz` as a job input, exported from an existing
 catalog using the command below. For a connected deployment, refresh that
@@ -31,7 +41,8 @@ bscan --findings-exit-code 3 scan --match --report sarif --fail-on HIGH --output
 ```
 
 `--findings-exit-code`, `--memory-limit`, `-q` and `--log-format` are **global**
-flags and precede `scan`. All listed flags are in the
+flags and precede `scan`. The findings code accepts integers 1..125; avoid 1
+and 3 when operational failures and partial scans need distinct statuses. All listed flags are in the
 [generated command reference](commands.md). Placing `--findings-exit-code`
 after `scan`, as if it were a scan flag, fails with exit 1.
 
@@ -45,9 +56,12 @@ after `scan`, as if it were a scan flag, fails with exit 1.
 
 These examples do not enable `--fail-on-partial`. If you add it, choose a
 findings code other than 3 (for example 5) and update the CI exit handling.
-Cancellation takes precedence over findings; findings take precedence over
-accompanying errors. Always retain stderr and artifacts when investigating a
-nonzero exit.
+For combined errors, the current CLI checks cancellation first (130), then
+findings (the configured code), then partial scans (3), then other errors (1).
+A single partial scan stops before matching and writes no SBOM. In a batch,
+findings from a completed target therefore take precedence over a partial error
+from another target; inspect stderr even when the status is your findings code.
+Always retain stderr and artifacts when investigating a nonzero exit.
 
 `--memory-limit 512MiB` is a soft Go heap target, not an RSS/container limit.
 `--log-format json` writes progress to stderr as JSON lines; result files keep

@@ -174,7 +174,15 @@ func parseRedHatVEX(ctx context.Context, path string, maxExpanded uint64, maxDoc
 	return err
 }
 
-func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64, maxDocument int64, emit Emit, progress func(string)) (uint64, error) {
+func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64, maxDocument int64, emit Emit, progress func(string), incomplete ...*bool) (uint64, error) {
+	markIncomplete := func() {
+		for _, value := range incomplete {
+			*value = true
+		}
+	}
+	for _, value := range incomplete {
+		*value = false
+	}
 	maxDocument = min(maxDocument, vexMaxDocument)
 	f, err := os.Open(path) // #nosec G304 -- The update engine supplies its bounded downloaded feed path; archive paths are never extracted.
 	if err != nil {
@@ -217,6 +225,7 @@ func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64
 		}
 		if h.Size > maxDocument {
 			oversized++
+			markIncomplete()
 			continue
 		}
 		if err := document.Truncate(0); err != nil {
@@ -234,6 +243,7 @@ func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64
 				return 0, ctx.Err()
 			}
 			malformed++
+			markIncomplete()
 			continue
 		}
 		rec, err := convertRedHatVEX(ctx, doc)
@@ -242,6 +252,7 @@ func parseRedHatVEXExpanded(ctx context.Context, path string, maxExpanded uint64
 				return 0, ctx.Err()
 			}
 			malformed++
+			markIncomplete()
 			continue
 		}
 		if rec == nil {

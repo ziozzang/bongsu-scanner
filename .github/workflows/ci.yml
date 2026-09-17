@@ -103,8 +103,15 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      BSCAN_DOCKER_TESTS: '1'
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -count=1 -p 2 ./deploy -run '^TestDockerDefaultUIDDirectoryScan$'
       - name: Build static image and smoke test
         run: |
           docker build --platform linux/amd64 --build-arg VERSION=ci -t bscan:ci .

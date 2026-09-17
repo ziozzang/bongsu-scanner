@@ -83,7 +83,7 @@ non-exact CPE applicability, and vendor `undetermined` status.
 | `upstream` | string | Optional source package name. |
 | `upstream_version` | string | Optional source package version used for matching. |
 | `modularity` | string | Optional RPM MODULARITYLABEL; CycloneDX `bscan:modularity`, SPDX `comment` note `modularity=<label>`. |
-| `owner` | string | Optional distribution owner, e.g. `rpm:python3-idna@2.5-8.el8_10`; CycloneDX `bscan:owner`, SPDX `comment` note `owner=<owner>`. Inventory is retained; language ecosystem matching is skipped. |
+| `owner` | string | Optional distribution owner, e.g. `rpm:python3-idna@2.5-8.el8_10`; CycloneDX `bscan:owner`, SPDX `comment` note `owner=<owner>`. Inventory is retained; language matching is skipped only when the owner is present and matchable. Otherwise `owner-unmatched` records the gap and language matching continues; see [skip conditions](#skipped-reason-vocabulary). |
 | `properties` | object of string | Optional SBOM properties, including evidence/source paths; property names are preserved. |
 
 ## Advisory, affected entry and assessment
@@ -145,7 +145,34 @@ null `sources`/`ecosystems` and a zero timestamp.
 Each source has string `name`, string `url`, integer `records`, and timestamp
 `fetched_at`. Optional fields are integer `conversion_version`, string-array
 `ecosystems`, strings `etag`, `last_modified` (HTTP date), `sha256`, integer
-`bytes`, and string `error`. Source counts can overlap across feeds.
+`bytes`, and string `error`. Source counts can overlap across feeds. Additional optional source fields follow
+`SourceMeta` in [the catalog model](../internal/vulndb/model.go):
+
+| `db.sources[]` field | JSON type | Meaning / time scope |
+| --- | --- | --- |
+| `data_through` | timestamp string | Newest valid advisory `modified` time in this source's converted records; distinct from `fetched_at`. Omitted when unknown, including older catalogs. |
+| `archive_date` | timestamp string | Date parsed from the VEX weekly archive name; identifies the archive underlying the delta state. |
+| `delta_through` | timestamp string | Newest delta event timestamp represented in the final reconciled cache. Not a guarantee that every earlier event succeeded; inspect `delta_remaining`. |
+| `delta_documents` | integer | Cumulative successful document change events in the reusable delta state, not a unique-CVE count or just this run's downloads. |
+| `delta_deleted` | integer | Cumulative successfully applied deletion events in that state. |
+| `delta_deleted_events` | integer | Deletion events successfully applied during the latest run. |
+| `delta_tombstones` | integer | Deletion records retained in the final reconciled cache; a current-state count, not an event total. |
+| `delta_fetched` | integer | Successfully applied changed documents fetched during the latest update run. |
+| `delta_malformed` | integer | Malformed list rows/documents skipped during the latest run. |
+| `delta_oversized` | integer | Oversized delta documents skipped during the latest run. |
+| `delta_missing` | integer | HTTP 404 delta documents seen during the latest run; left pending for retry unless superseded. |
+| `delta_remaining` | integer | Pending events left after the latest run, including budget stops and missing-document retries. |
+| `delta_bytes` | integer | Bytes charged to the delta write budget during the latest run, including downloads that did not yield an applied document. |
+
+Timestamps use RFC3339 JSON strings; zero timestamps and zero delta counters are
+omitted. Delta fields describe the VEX delta feed, not every archive feed.
+`delta_documents` and `delta_deleted` carry forward only when the archive date
+and conversion version match and the update is not forced. They reset when
+that reusable state is rebuilt. `delta_through`, `data_through`, `records` and
+`delta_tombstones` describe the final reconciled cache; deletion tombstones can
+survive an archive change independently of the cumulative event counters.
+The other delta counters reset per run. See [VEX updates](advisory-sources.md#red-hat-csaf-vex)
+for replacement, deletion and retry semantics.
 
 Optional `db.selection` records update inputs: string arrays `sources`,
 `ecosystems`, `alpine_releases`; string `nvd_years`; boolean `nvd_enabled`.
@@ -157,7 +184,7 @@ Selection describes requested feeds, not guaranteed matching coverage.
 | --- | --- |
 | `centos-stream-unsupported` | A Red Hat subject identifies CentOS Stream, which is not mapped to RHEL advisories. |
 | `distro-owned` | A language subject has a distribution owner (`bscan:owner`) whose OS package is present in the same document and matchable. The owning OS package is matched through its own subject. |
-| `owner-unmatched` | A language subject names an owner that is absent from the document or cannot be matched (ecosystem or release not in the catalog); the language package is matched normally and the count records the gap. |
+| `owner-unmatched` | A language subject names an owner that is absent from the document or cannot be matched (unsupported ecosystem/release, missing catalog coverage, or no installed/upstream version); the language package is matched normally and the count records the gap. |
 | `module-mismatch` | An RPM affected-entry/version/query check has a `.module+` build marker but the subject lacks MODULARITYLABEL, or vice versa. Counted after package/release filtering, including version nonmatches; repeated binary/source queries can count separately. |
 | `unknown-ecosystem` | A subject cannot be assigned a supported ecosystem. |
 | `ecosystem-not-in-database` | The subject ecosystem is absent from the catalog. |
