@@ -72,7 +72,7 @@ func TestDistroSeverityCLIAndCoverageWarnings(t *testing.T) {
 			if exitCode(err) != wantExit {
 				t.Fatalf("exit=%d want=%d: %v", exitCode(err), wantExit, err)
 			}
-			if !strings.Contains(log, "WARNING: coverage gap: PyPI (1 subjects)") || !strings.Contains(log, "bscan db update --ecosystem PyPI") {
+			if !strings.Contains(log, "WARNING: coverage gap: PyPI (1 subjects)") || !strings.Contains(log, "bscan db update --add-ecosystem PyPI") {
 				t.Fatalf("missing warning: %s", log)
 			}
 			raw, err := os.ReadFile(output)

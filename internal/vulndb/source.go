@@ -50,10 +50,11 @@ const (
 )
 
 // DefaultOSVEcosystems is the OSV ecosystem list fetched when
-// Options.Ecosystems is empty. Ubuntu and Chainguard exports exceed the
+// Options.Ecosystems is empty, including the small Red Hat, Rocky Linux and
+// AlmaLinux RPM feeds. Ubuntu and Chainguard exports exceed the
 // default feed size bound; select them explicitly with a larger MaxFeedBytes.
 var DefaultOSVEcosystems = []string{
-	"Debian", "Alpine", "Wolfi",
+	"Debian", "Alpine", "Wolfi", "Red Hat", "Rocky Linux", "AlmaLinux",
 	"npm", "PyPI", "Go", "crates.io", "Maven", "RubyGems", "NuGet", "Packagist",
 }
 

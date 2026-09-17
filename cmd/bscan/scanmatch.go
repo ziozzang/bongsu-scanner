@@ -37,7 +37,7 @@ func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.StringVar(&f.fail, "fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity")
 	fs.BoolVar(&f.onlyFixed, "only-fixed", false, "include only findings with a known fix")
 	addDeprecatedIncludeUnimportant(fs)
-	fs.BoolVar(&f.excludeUnimportant, "exclude-unimportant", false, "exclude Debian unimportant advisories")
+	fs.BoolVar(&f.excludeUnimportant, "exclude-unimportant", false, "exclude advisories the distribution rates unimportant or negligible")
 }
 
 func applyMatchDefaults(fs *flag.FlagSet, cfg config.MatchConfig) error {

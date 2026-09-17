@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/ziozzang/bongsu-scanner/internal/purl"
@@ -67,17 +68,24 @@ type osvRange struct {
 // needed for matching (Ubuntu lists every binary package build per release).
 var droppedSpecificKeys = map[string]bool{"binaries": true}
 
+var ubuntuCVEID = regexp.MustCompile(`^UBUNTU-(CVE-[0-9]{4}-[0-9]{4,})$`)
+
 // ConvertOSV turns a decoded OSV record into a Record with the given
 // provenance. Details are truncated to MaxDetails; "upstream" identifiers
 // (OSV 1.7) are folded into Aliases so distribution advisories group with
-// their CVE.
+// their CVE. Ubuntu 1.6 exports encode that same CVE in the record ID;
+// unrelated vulnerabilities in "related" must not become aliases.
 func ConvertOSV(v *osvVuln, source string) (*Record, bool) {
 	if !validID(v.ID) {
 		return nil, false
 	}
+	var derivedAliases []string
+	if match := ubuntuCVEID.FindStringSubmatch(v.ID); match != nil {
+		derivedAliases = []string{match[1]}
+	}
 	r := &Record{
 		ID:               v.ID,
-		Aliases:          boundedOSVStrings(osvMaxAliases, 128, v.Aliases, v.Upstream),
+		Aliases:          boundedOSVStrings(osvMaxAliases, 128, derivedAliases, v.Aliases, v.Upstream),
 		Related:          boundedOSVStrings(osvMaxAliases, 128, v.Related),
 		Summary:          truncateText(v.Summary, osvMaxSummary),
 		Details:          truncateDetails(v.Details),

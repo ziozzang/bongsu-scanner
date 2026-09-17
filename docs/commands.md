@@ -257,7 +257,7 @@ bscan scan [flags] TARGET
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
-| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
+| `--exclude-unimportant` | `false` | exclude advisories the distribution rates unimportant or negligible |
 | `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
@@ -303,7 +303,7 @@ bscan batch [flags] TARGET...
 | `--db` | `""` | local vulnerability database directory (default configured db directory) |
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
-| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
+| `--exclude-unimportant` | `false` | exclude advisories the distribution rates unimportant or negligible |
 | `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
@@ -595,7 +595,7 @@ bscan match [flags] SBOM...
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--details` | `false` | include full advisory details text in findings |
 | `--env-fact` | `""` | user-declared LLM context KEY=VALUE (repeatable) |
-| `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
+| `--exclude-unimportant` | `false` | exclude advisories the distribution rates unimportant or negligible |
 | `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--format` | `table` | table, json, cyclonedx, html, markdown, csv, or sarif |
 | `--ignore` | `""` | comma-separated advisory IDs to ignore |

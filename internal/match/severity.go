@@ -205,6 +205,20 @@ func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (f
 // Package/release urgency takes precedence over record-wide urgency. Preserve
 // non-ranked values (for example end-of-life) for presentation, not scoring.
 func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
+	if vulndb.BaseEcosystem(a.Ecosystem) == "Ubuntu" {
+		// Ubuntu publishes package priority in exports and record priority in
+		// API responses. Both are more specific than generic urgency metadata.
+		for _, key := range []string{"ubuntu_priority", "priority"} {
+			if priority, ok := a.Specific[key].(string); ok && strings.TrimSpace(priority) != "" {
+				return strings.ToLower(strings.TrimSpace(priority))
+			}
+		}
+		for _, rating := range rec.Severity {
+			if rating.Type == "Ubuntu" && strings.TrimSpace(rating.Score) != "" {
+				return strings.ToLower(strings.TrimSpace(rating.Score))
+			}
+		}
+	}
 	for _, database := range []map[string]any{a.Database, a.Specific, rec.Database} {
 		if urgency, ok := database["urgency"].(string); ok && strings.TrimSpace(urgency) != "" {
 			return strings.ToLower(strings.TrimSpace(urgency))
@@ -258,6 +272,9 @@ func selectedSeverity(cvss, distro, source string) string {
 func mergeDistroSeverity(a, b string) string {
 	if a == "unimportant" || b == "unimportant" {
 		return "unimportant"
+	}
+	if a == "negligible" || b == "negligible" {
+		return "negligible"
 	}
 	if a == "" || SeverityRank(distroSeverityLevel(b)) > SeverityRank(distroSeverityLevel(a)) {
 		return b

@@ -56,7 +56,7 @@ func commandRegistry() []commandSpec {
 		{"fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity", "string", false},
 		{"ignore", "", "comma-separated advisory IDs to ignore", "string", false},
 		{"include-unimportant", "false", "deprecated no-op: unimportant advisories are included by default", "bool", false},
-		{"exclude-unimportant", "false", "exclude Debian unimportant advisories", "bool", false},
+		{"exclude-unimportant", "false", "exclude advisories the distribution rates unimportant or negligible", "bool", false},
 		{"severity-source", "distro", "severity policy: cvss, distro, or max", "string", false},
 		{"details", "false", "include full advisory details text in findings", "bool", false},
 		{"cpe", "false", "enable conservative NVD CPE matching (CPE data can be noisy)", "bool", false},

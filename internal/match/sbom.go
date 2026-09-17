@@ -218,21 +218,12 @@ func loadDocument(d Document) (Document, error) {
 			s.Ecosystem = vulndb.PURLTypeToEcosystem(p.Type, p.Namespace)
 			if s.Version == "" {
 				s.Version = p.Version
+				if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
+					s.Version = p.Qualifiers["epoch"] + ":" + s.Version
+				}
 			}
 			s.Name = p.FullName()
-			distro := p.Qualifiers["distro"]
-			if distro == "" {
-				distro = s.Properties["bscan:distro"]
-			}
-			if distro != "" {
-				s.Release = release(s.Ecosystem, distro)
-			} else if d.Context.OS != nil && strings.EqualFold(d.Context.OS.ID, strings.ToLower(s.Ecosystem)) {
-				osVersion := d.Context.OS.VersionID
-				if osVersion == "" {
-					osVersion = d.Context.OS.Codename
-				}
-				s.Release = release(s.Ecosystem, osVersion)
-			}
+			s.Release = subjectRelease(s, d.Context.OS)
 			upstream := p.Qualifiers["upstream"]
 			if upstream == "" {
 				upstream = s.Properties["bscan:upstream"]
@@ -270,29 +261,57 @@ func sameOS(a, b *OSInfo) bool {
 		strings.TrimSpace(a.VersionID) == strings.TrimSpace(b.VersionID) &&
 		strings.TrimSpace(a.Codename) == strings.TrimSpace(b.Codename)
 }
+
+// subjectRelease uses the same distro metadata for in-memory and streaming SBOMs.
+func subjectRelease(s Subject, osInfo *OSInfo) string {
+	distro := s.PURL.Qualifiers["distro"]
+	if distro == "" {
+		distro = s.Properties["bscan:distro"]
+	}
+	if distro != "" {
+		if s.Ecosystem == "Red Hat" && s.PURL.Namespace == "centos" && isDigits(strings.Split(distro, ".")[0]) {
+			distro = "centos-" + distro
+		}
+		return release(s.Ecosystem, distro)
+	}
+	if osInfo == nil {
+		return ""
+	}
+	v := osInfo.VersionID
+	if v == "" {
+		v = osInfo.Codename
+	}
+	if s.Ecosystem == "Red Hat" && vulndb.PURLTypeToEcosystem("rpm", osInfo.ID) == "Red Hat" {
+		return release(s.Ecosystem, osInfo.ID+"-"+v)
+	}
+	if strings.EqualFold(osInfo.ID, s.Ecosystem) {
+		return release(s.Ecosystem, v)
+	}
+	return ""
+}
+
 func release(eco, v string) string {
 	if eco == "Ubuntu" {
 		return vulndb.NormalizeUbuntuRelease(v)
 	}
 	// OSV distribution suffixes are not uniform. Rocky/Alma use major
 	// versions; openSUSE uses product names, and SUSE uses service packs.
-	// Red Hat additionally requires repository/product metadata absent
-	// from os-release, so a bare rhel-N must not invent a release scope.
+	// Red Hat mainline advisories also use the major version; lifecycle
+	// streams remain separate, and CentOS Stream cannot use RHEL errata.
 	switch eco {
 	case "Rocky Linux", "AlmaLinux", "openSUSE", "SUSE", "Red Hat":
 		v = strings.TrimSpace(v)
 		if suffix, ok := strings.CutPrefix(v, eco+":"); ok {
-			return suffix
+			return vulndb.EcosystemRelease(eco + ":" + suffix)
 		}
 		prefixes := map[string][]string{
 			"Rocky Linux": {"rocky-linux-", "rockylinux-", "rocky-"},
 			"AlmaLinux":   {"almalinux-", "alma-"},
+			"Red Hat":     {"rhel-", "redhat-", "centos-"},
 			"openSUSE":    {"opensuse-leap-", "opensuse-"},
 			"SUSE":        {"sles-", "suse-"},
 		}
-		if eco == "Red Hat" {
-			return ""
-		}
+		centos := eco == "Red Hat" && strings.HasPrefix(v, "centos-")
 		if eco == "openSUSE" && (v == "opensuse-tumbleweed" || strings.HasPrefix(v, "opensuse-tumbleweed-")) {
 			return "Tumbleweed"
 		}
@@ -309,6 +328,12 @@ func release(eco, v string) string {
 			}
 		}
 		switch eco {
+		case "Red Hat":
+			if centos && (len(parts[0]) > 1 || parts[0] > "7") {
+				// Stream builds run ahead of RHEL and have different release strings.
+				return "centos-stream:" + parts[0]
+			}
+			return parts[0]
 		case "Rocky Linux", "AlmaLinux":
 			return parts[0]
 		case "openSUSE":
@@ -876,21 +901,12 @@ func loadStream(reader io.Reader) (Document, error) {
 			s.Ecosystem = vulndb.PURLTypeToEcosystem(p.Type, p.Namespace)
 			if s.Version == "" {
 				s.Version = p.Version
+				if p.Type == "rpm" && isDigits(p.Qualifiers["epoch"]) && !strings.Contains(s.Version, ":") && s.Version != "" {
+					s.Version = p.Qualifiers["epoch"] + ":" + s.Version
+				}
 			}
 			s.Name = p.FullName()
-			distro := p.Qualifiers["distro"]
-			if distro == "" {
-				distro = s.Properties["bscan:distro"]
-			}
-			if distro != "" {
-				s.Release = release(s.Ecosystem, distro)
-			} else if d.Context.OS != nil && strings.EqualFold(d.Context.OS.ID, strings.ToLower(s.Ecosystem)) {
-				v := d.Context.OS.VersionID
-				if v == "" {
-					v = d.Context.OS.Codename
-				}
-				s.Release = release(s.Ecosystem, v)
-			}
+			s.Release = subjectRelease(s, d.Context.OS)
 			s.Upstream = p.Qualifiers["upstream"]
 			if s.Upstream == "" {
 				s.Upstream = s.Properties["bscan:upstream"]

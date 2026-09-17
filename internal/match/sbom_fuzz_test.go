@@ -73,7 +73,7 @@ func FuzzLoadSBOM(f *testing.F) {
 
 func FuzzRelease(f *testing.F) {
 	for _, eco := range []string{"Debian", "Ubuntu", "Alpine", "Rocky Linux", "AlmaLinux", "openSUSE", "SUSE", "Red Hat", "npm", ""} {
-		for _, v := range []string{"debian-13", "bookworm", "ubuntu-22.04", "jammy", "alpine-3.20.3", "v3.20", "rocky-9.4", "almalinux-9", "opensuse-leap-15.6", "opensuse-tumbleweed-20240101", "sles-15.6", "sles-15.0", "rhel-9", "SUSE:x", "", "."} {
+		for _, v := range []string{"debian-13", "bookworm", "ubuntu-22.04", "jammy", "alpine-3.20.3", "v3.20", "rocky-9.4", "almalinux-9", "opensuse-leap-15.6", "opensuse-tumbleweed-20240101", "sles-15.6", "sles-15.0", "rhel-9", "redhat-9.4", "centos-7", "centos-9", "SUSE:x", "", "."} {
 			f.Add(eco, v)
 		}
 	}
@@ -85,8 +85,8 @@ func FuzzRelease(f *testing.F) {
 		if eco == "Alpine" && r != "" && !strings.HasPrefix(r, "v") {
 			t.Fatalf("release(%q, %q) = %q", eco, v, r)
 		}
-		if eco == "Red Hat" && r != "" && !strings.HasPrefix(v, "Red Hat:") {
-			t.Fatalf("release(%q, %q) = %q invented a scope", eco, v, r)
+		if eco == "Red Hat" && r != "" && !strings.HasPrefix(strings.TrimSpace(v), "Red Hat:") && !isDigits(r) && !strings.HasPrefix(r, "centos-stream:") {
+			t.Fatalf("release(%q, %q) = %q is neither a major version nor a CentOS Stream scope", eco, v, r)
 		}
 	})
 }

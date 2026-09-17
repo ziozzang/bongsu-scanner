@@ -170,9 +170,9 @@ Archives use `bscan_<ver>_<os>_<arch>.tar.gz`, with `amd64` or `arm64`, and
 contain the executable, `LICENSE` and `THIRD_PARTY_NOTICES.txt`.
 Linux and macOS archives contain `bscan`; Windows archives contain `bscan.exe`.
 Host scanning is Linux-specific; directory/archive scans and `db`, `match`,
-and `report` are intended for other platforms too. The current Windows build
-is blocked by Unix-only helpers in `internal/scan/walk.go`; see the
-[deployment notes](deploy/README.md) before building all release archives.
+and `report` are intended for other platforms too. Windows and FreeBSD
+archives are cross-compiled in CI; see the [deployment notes](deploy/README.md)
+for what is verified natively.
 
 Example for Linux amd64 (select an existing release version):
 
@@ -343,6 +343,14 @@ or artifact-version filenames; nesting is limited to three levels, with a
 512 MiB archive cap and a cumulative 512 MiB decompression budget per archive.
 
 RPM databases (rpmdb.sqlite, BerkeleyDB Packages, ndb Packages.db) are inventoried for Rocky, AlmaLinux, RHEL/CentOS, Fedora, Amazon Linux and SUSE-based hosts and images; purls use pkg:rpm/<distro>/... with arch, distro, epoch and upstream (source RPM) qualifiers.
+RHEL and UBI match Red Hat mainline errata by major version (including RHEL 10
+minor-version feeds), as do CentOS Linux 7 and earlier. CentOS 8 and later are
+excluded with `centos-stream-unsupported`: Stream builds run ahead of RHEL and
+use different release strings. Red Hat extended-lifecycle streams (EUS, E4S,
+AUS, TUS, ELS, EUS long life, and enterprise_linux_eus) remain in the catalog
+under separate product/minor-version keys. They do not match ordinary hosts;
+fixed builds such as `*.el9_4` are not comparable with mainline builds and
+would cause false positives. Original OSV ecosystem names remain visible.
 
 Output and signing depend on the target:
 
@@ -490,8 +498,10 @@ exit code 2 takes precedence over an LLM enrichment error (exit code 1).
 The findings report is retained and the LLM error is still reported. Without a
 threshold match, an LLM enrichment error returns exit code 1.
 
-`db update` with no selections downloads OSV's default ecosystems, Alpine's
-configured release list, Debian tracker, and RubySec. Downloads can be hundreds of MB
+`db update` with no selections downloads OSV's default ecosystems (Debian,
+Alpine, Wolfi, Red Hat, Rocky Linux, AlmaLinux, npm, PyPI, Go, crates.io, Maven,
+RubyGems, NuGet, and Packagist), Alpine's configured release list, Debian tracker,
+and RubySec. Downloads can be hundreds of MB
 per feed. Use `--max-feed-bytes N` to adjust the feed bound, `--timeout 30m` to
 bound the operation, `--mirror https://...` for an OSV mirror, and
 `--no-keep-raw` to omit original downloads. `--force` bypasses conditional GETs.

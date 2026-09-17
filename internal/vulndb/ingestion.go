@@ -321,10 +321,12 @@ func (index aliasSeverityIndex) add(r *Record) {
 }
 
 func (index aliasSeverityIndex) apply(r *Record) {
-	// Existing record severity already supplies the fallback for affected
-	// entries without their own severity; preserve that effective rating.
-	if len(r.Severity) != 0 {
-		return
+	// Preserve existing effective severity, but Ubuntu vendor priority is a
+	// separate rating and must not prevent CVSS enrichment from the CVE alias.
+	for _, severity := range r.Severity {
+		if severity.Type != "Ubuntu" {
+			return
+		}
 	}
 	var best aliasSeverityCandidate
 	for _, id := range recordCVEs(r) {
@@ -335,7 +337,7 @@ func (index aliasSeverityIndex) apply(r *Record) {
 	if best.rank == 0 {
 		return
 	}
-	r.Severity = append([]Severity(nil), best.severity...)
+	r.Severity = append(append([]Severity(nil), r.Severity...), best.severity...)
 	for i := range r.Affected {
 		if len(r.Affected[i].Severity) == 0 {
 			r.Affected[i].Severity = append([]Severity(nil), best.severity...)

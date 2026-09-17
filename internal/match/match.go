@@ -214,7 +214,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					if prepared.distroStatus == "not-affected" {
 						continue
 					}
-					if opts.ExcludeUnimportant && (prepared.unimportant || urgency == "unimportant") {
+					if opts.ExcludeUnimportant && (prepared.unimportant || urgency == "unimportant" || urgency == "negligible") {
 						report.Skipped["unimportant"]++
 						continue
 					}
@@ -258,10 +258,13 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	}
 	for key, count := range missing {
 		eco := vulndb.BaseEcosystem(key)
-		if strings.ContainsAny(eco, " \t") {
+		if release := vulndb.EcosystemRelease(key); eco == "Ubuntu" && release != "" {
+			eco += ":" + release + ":LTS"
+		}
+		if strings.ContainsAny(eco, " \t:") {
 			eco = "'" + eco + "'"
 		}
-		report.MissingCoverage = append(report.MissingCoverage, fmt.Sprintf("coverage gap: %s (%d subjects) — run bscan db update --ecosystem %s", key, count, eco))
+		report.MissingCoverage = append(report.MissingCoverage, fmt.Sprintf("coverage gap: %s (%d subjects) — run bscan db update --add-ecosystem %s", key, count, eco))
 	}
 	sort.Strings(report.MissingCoverage)
 	matched := map[string]bool{}
@@ -295,6 +298,9 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 }
 
 func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
+	if s.Ecosystem == "Red Hat" && strings.HasPrefix(s.Release, "centos-stream:") {
+		return "centos-stream-unsupported"
+	}
 	if s.Ecosystem == "" {
 		return "unknown-ecosystem"
 	}

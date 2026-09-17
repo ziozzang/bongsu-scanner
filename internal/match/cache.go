@@ -257,7 +257,12 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
 			}
-			result := evaluatedAffected{version: v, release: release, unimportant: entryUrgency == "unimportant", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			result := evaluatedAffected{version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			// A range-free unimportant/negligible marker can be counted as
+			// excluded, but cannot lower a positive alias entry's rating.
+			if !hit && result.unimportant {
+				result.distroSeverity = ""
+			}
 			if hit {
 				result.detail = detail
 			}

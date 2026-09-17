@@ -14,8 +14,13 @@ func TestRPMOSVRelease(t *testing.T) {
 		{"AlmaLinux", "almalinux-9.5", "9"}, {"AlmaLinux", "10.0", "10"},
 		{"openSUSE", "opensuse-leap-15.6", "Leap 15.6"}, {"openSUSE", "opensuse-tumbleweed-20260901", "Tumbleweed"},
 		{"SUSE", "sles-15.6", "Linux Enterprise Server 15 SP6"},
-		{"Red Hat", "rhel-9.4", ""}, // os-release cannot identify BaseOS vs AppStream or EUS.
-		{"Red Hat", "Red Hat:enterprise_linux:9::baseos", "enterprise_linux:9::baseos"},
+		{"Red Hat", "rhel-9.4", "9"},
+		{"Red Hat", "redhat-9.4", "9"}, {"Red Hat", "rhel-9", "9"},
+		{"Red Hat", "9.4", "9"}, {"Red Hat", "10.2", "10"},
+		{"Red Hat", "centos-7.9", "7"}, {"Red Hat", "centos-6", "6"},
+		{"Red Hat", "centos-8", "centos-stream:8"}, {"Red Hat", "centos-9", "centos-stream:9"}, {"Red Hat", "centos-10", "centos-stream:10"},
+		{"Red Hat", "rhel-unknown", ""},
+		{"Red Hat", "Red Hat:enterprise_linux:9::baseos", "9"},
 		{"SUSE", "SUSE:Linux Enterprise Server 15 SP6-LTSS", "Linux Enterprise Server 15 SP6-LTSS"},
 		{"Rocky Linux", "rocky-unknown", ""}, {"Rocky Linux", "almalinux-9.4", ""},
 	} {

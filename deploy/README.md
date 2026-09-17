@@ -16,15 +16,10 @@ image to `ghcr.io/<repository>:<tag>`. DEB/RPM packages are not produced.
 Directory/archive scans, `db`, `match` and `report` are intended to be portable;
 host inventory and host metadata are Linux features. CI builds all packages
 for Linux, macOS, Windows and FreeBSD; cross-compilation alone does not prove
-native runtime behavior. **Current Windows blocker:** `internal/scan/walk.go`
-references Unix-only `syscall.Stat_t`, open flags and `unix.Openat/Fstatat`
-without build tags. These helpers must be split into OS-specific files before
-the Windows build, complete `make dist`, and tag-release job can succeed.
-Specifically, move `deviceOf`'s Unix stat access behind platform build tags,
-and extract the Linux open flags, descriptor-relative `Openat`, and `Fstatat`
-branches from `openWalkFile` and `fileModeSize` into Linux helpers with portable
-fallbacks. Their imports must move with them; a runtime `GOOS` condition alone
-does not hide undefined symbols from the Windows compiler.
+native runtime behavior. The Unix-only walk helpers live in
+`internal/scan/walk_unix.go`, with portable fallbacks in `walk_windows.go`,
+so `GOOS=windows go build ./cmd/bscan` succeeds; Windows host scanning is
+still unsupported (scan directories, archives and images there).
 
 ## Container
 

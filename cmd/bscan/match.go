@@ -123,7 +123,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	fail := fs.String("fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity")
 	ignore := fs.String("ignore", "", "comma-separated advisory IDs to ignore")
 	addDeprecatedIncludeUnimportant(fs)
-	excludeUnimportant := fs.Bool("exclude-unimportant", false, "exclude Debian unimportant advisories")
+	excludeUnimportant := fs.Bool("exclude-unimportant", false, "exclude advisories the distribution rates unimportant or negligible")
 	details := fs.Bool("details", false, "include full advisory details text in findings")
 	cpe := fs.Bool("cpe", false, "enable conservative NVD CPE matching (CPE data can be noisy)")
 	fixed := fs.Bool("only-fixed", false, "include only findings with a known fix")

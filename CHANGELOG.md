@@ -38,6 +38,14 @@ Historical entries are grouped by commit date rather than inferred release versi
   against NVD configurations; `registry://` and `oci://` targets that pull
   images without a Docker daemon; configuration-file defaults for scan,
   match and db options with `bscan config show|init`.
+- Red Hat, Rocky Linux and AlmaLinux OSV feeds in the default catalog. RHEL
+  and UBI hosts match mainline errata by major version; EUS/AUS/E4S/TUS
+  streams stay out of host matching; CentOS Stream packages are skipped with
+  their own reason. Ubuntu vendor priority (`ubuntu_priority`) is the distro
+  severity; `negligible` is shown as NEGLIGIBLE and excluded by
+  `--exclude-unimportant`; `UBUNTU-CVE-*` records carry their CVE alias.
+  Coverage-gap warnings recommend `db update --add-ecosystem` with the
+  per-release Ubuntu export.
 
 ### Changed
 
