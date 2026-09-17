@@ -222,3 +222,146 @@ GNU `/usr/bin/time -v`로 scan+match 전체를 측정했다. image pull 시간�
 선택 회귀 테스트: `go test ./internal/match ./internal/vulndb ./cmd/bscan -run 'RedHat|RPMRelease|UbuntuPriority|DBSelection|DefaultRPM' -count=1` — **3개 패키지 통과**. 제품 코드·테스트·기존 보고서는 수정하지 않았다. 종료 점검에서 다른 작업의 새 문서 `docs/reviews/2026-09-17-round7-distro-coverage.md`가 관찰됐으며 건드리지 않았다. 버전 비교 자체의 새 오류나 EUS 혼입은 입증되지 않았다. AppStream 범위와 RPM backport 문제는 별개로 남는다. CVE exploit 전수 재현, 전체 테스트 suite, 다른 CPU architecture는 수행하지 않았다.
 
 이번에 받은 Docker 이미지 **7개를 모두 `docker rmi`로 제거**하고 image ID가 존재하지 않음을 확인했다. 생성한 바이너리·DB·도구 캐시·SBOM·임시 스크립트도 모두 삭제했다. 작업 루트에는 시작 전부터 있던 sandbox mount용 디렉터리만 남겼다. 상세 JSON `cleanup`에 삭제 결과를 기록했다. 이 작업이 작성한 저장소 파일은 허용된 문서 3개뿐이다.
+
+## After fixes (round 7b)
+
+**결과:** 기본+Ubuntu 카탈로그 A에서 기존 UBI8 모듈 오탐 **349쌍**, UBI의 RPM 소유 PyPI 경고 **38쌍**, Ubuntu stale 오탐 **27쌍·누락 32쌍**이 모두 제거·복원됐다. AlmaLinux는 수동 errata 확장 없이 **48 CVE 쌍**, **9 findings 모두 Moderate/Important에 대응하는 MEDIUM/HIGH**를 출력했다. 그러나 VEX 카탈로그 B에는 **모듈 범위가 없는 Python 소스 항목 13쌍**이 남으며, 그중 **5쌍은 기존 모듈 오탐 집합과 겹친다**. 따라서 “모듈 문제가 모든 공급원에서 해결됐다”는 결론은 부적절하다.
+
+지원 6개 이미지에서 A는 **공통 767/1,672(45.87%), bscan만 174, Trivy만 905**다. UBI 두 개에만 B를 사용하면 **공통 1,655/1,672(98.98%), bscan만 287, Trivy만 17**이다. 17쌍 중 16쌍은 현재 Red Hat API의 Not affected와 Trivy가 충돌하며, 나머지 1쌍은 버전 한정 VEX 음성 marker의 범위 확대 문제다. 이 비율은 도구 일치율이며 정밀도·재현율이 아니다. 불확실·Ignored 상태를 확정 취약점으로 세지 않는다. [Round 7b 상세 JSON](2026-09-17-accuracy-round7b-details.json)에 이미지별 차집합 전수, 분류, 원문 판정, metadata와 성능을 저장했다.
+
+**재현 조건·동시 작업**
+
+- 측정 커밋 **`1ddd44d77fe93f94d97091b0600bd6d6fed80de0`**, Go **1.27.1**(최소 1.25.0), `go build -mod=readonly -o "$W/bscan" ./cmd/bscan`. `vcs.modified=false`, 바이너리 SHA-256 `f161a5a34232a1ee364b1f9417c7d92ce47908178bfe97a6d2a53391fa231275`.
+- `$W=/home/ziozzang/.cache/bongsu-work/work-R14`. 임시 도구·Go build cache·DB·SBOM·스크립트·원문 모두 W 아래 사용. Docker 이미지는 아래 본문의 동일 digest 7개를 `--platform linux/amd64`로 pull했으며 image ID도 이전 측정과 일치했다. 태그로 갱신하지 않았다.
+- 최신 GitHub release를 조회해 Trivy **0.74.0**, Grype **0.118.0**을 다운로드했다. DB는 각각 한 번만 갱신: Trivy **2026-09-17 07:06:17 UTC**, Grype **06:31:43 UTC**. 두 도구의 모든 이미지 CVE 집합은 이전 run과 완전히 동일했다.
+- 본문의 PURL·epoch 정규화 및 ID/related_ids/aliases CVE 확장을 그대로 사용했다. AlmaLinux 예외 DB/errata 수동 확장은 **사용하지 않았다**. Grype는 이미지마다 한 번 호출해 JSON과 CycloneDX JSON을 동시에 출력했다. 이후 bscan offline, Trivy DB/Java DB/version update 비활성화·offline-scan, Grype DB/app update 및 외부 조회 비활성화 상태로 실행했다.
+- **이 절과 지원 표의 file:line은 측정 커밋 `1ddd44d` 기준**이다. 측정 도중 다른 작업이 matcher/VEX/ownership 등의 소스·테스트를 변경했다. 재빌드하지 않았고 초기 source hash가 해당 커밋과 일치함을 확인했다. 이 검토가 제품 소스·테스트를 수정한 것은 아니다. 이후 작업 트리 수정의 효과는 이 수치에 포함되지 않는다.
+
+**카탈로그 갱신**
+
+| 갱신 | records | wall 초 | peak RSS KiB | DB 디렉터리 bytes |
+| --- | --- | --- | --- | --- |
+| A-default | 765,042 | 157.64 | 731,096 | 3,427,343,574 |
+| A-ubuntu | 831,978 | 348.45 | 1,526,104 | 6,656,173,070 |
+| B-vex | 748,909 | 402.45 | 1,504,664 | 5,540,126,568 |
+
+A는 `BONGSU_HOME=$W/homeA bscan init` 후 `db update --no-keep-raw`, 이어 `db update --add-ecosystem Ubuntu --no-keep-raw`를 실행했다. 로그에 **`installed catalog + --add-ecosystem`**, 저장 metadata에 기존 sources 4개·Alpine releases 5개·OSV 선택 14개 보존 및 Ubuntu 추가를 확인했다. B는 새 `$W/homeB`에서 `db update --add-source redhat-vex --no-keep-raw`를 실행해 **`defaults + --add-source`**, **`skipping OSV Red Hat feed: redhat-vex supplies authoritative per-CVE data`**를 확인했다. B selection에 Red Hat 이름이 남아도 실제 OSV Red Hat URL은 sources metadata에 없다.
+
+Ubuntu 전체 export는 **701,433,255 bytes(668.9 MiB), 66,936 records**로 기본 **1 GiB** 제한 안에서 성공했다. A 최종 records **831,978**, B **748,909**. A/B 최종 SQLite 자체 크기는 각각 **5,957,746,688 / 5,257,658,368 bytes다. 표의 크기는 변환 cache를 포함한 DB 디렉터리이며 `--no-keep-raw`는 변환 cache를 제거하지 않는다. conversion version **4**를 확인했다.
+
+`db status`는 A **27개**, B **26개** feed 모두 `data through` 행을 표시했다. Ubuntu **2026-09-17**, VEX **2026-09-13**, OSV 나머지는 9월 15–17일이다. Alpine secdb 10개·Debian tracker·RubySec는 날짜가 공급되지 않아 **unknown**이다. 두 갱신/상태 출력에 freshness 경고는 **0건**이었다. unknown을 최신임의 증거로 해석하지 않는다.
+
+VEX 최신 archive는 [csaf_vex_2026-09-13.tar.zst](https://security.access.redhat.com/data/csaf/v2/vex/csaf_vex_2026-09-13.tar.zst), **317,099,481 bytes**다. **42,230 records / 6,279,455 affected entries**, malformed **0**, non-RHEL **25,249**, oversized **2**를 기록했다. 스트리밍 tar 목록으로 oversized 문서를 식별했다: `CVE-2023-39325` **75,392,762 bytes**, `CVE-2026-33186` **106,439,641 bytes**. 다운로드 1 GiB·전체 해제 32 GiB와 별도로 **문서당 64 MiB** 제한이 적용된다 (`internal/vulndb/osv.go:23`, `internal/vulndb/redhat_vex.go:192`). 두 CVE는 이번 7개 이미지의 비교 도구 CVE 쌍에는 없어 측정 차집합의 원인은 아니다.
+
+**인벤토리 — A, B의 UBI 인벤토리는 동일**
+
+| 이미지 | bscan | Trivy | 공통 | bscan만 | Trivy만 | Grype |
+| --- | --- | --- | --- | --- | --- | --- |
+| ubi9 | 206 | 184 | 182 | 24 | 2 | 202 |
+| ubi8 | 207 | 185 | 183 | 24 | 2 | 205 |
+| rocky9 | 150 | 141 | 141 | 9 | 0 | 144 |
+| alma9 | 171 | 159 | 158 | 13 | 1 | 166 |
+| ubuntu24 | 96 | 92 | 92 | 4 | 0 | 92 |
+| ubuntu22 | 105 | 101 | 101 | 4 | 0 | 101 |
+| centos9 | 158 | 미지원 | — | — | — | 152 |
+
+모든 도구의 정규화 인벤토리가 이전 run과 동일하다. 지원 6개 교집합 **857/862**, 버전 집합 불일치 **0**. 기존 generic 추가 30개·Trivy가 생략한 Python 48개·GPG 키 5개 제외 정책도 동일하다. 예: `generic/glibc@2.34`, `generic/openssl@3.0.7`, `generic/python@3.9.18`; Python `idna@2.10`, `requests@2.25.1`, `urllib3@1.26.5`; GPG `5a6340b3-6229229e`, `fd431d51-4ae0493b`, `d4082792-5b32db75`. 비교 도구의 정책 차이(a)이며 새 인벤토리 누락은 없다.
+
+**패키지별 CVE — 괄호는 round 7 대비 증감**
+
+| 이미지 / catalog | bscan CVE | Trivy | 공통 | bscan만 | Trivy만 | 공통 severity 집합 불일치 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ubi9 / A | 366 (-10) | 702 | 327 (+0) | 39 (-10) | 375 (+0) | 169 |
+| ubi9 / B | 822 (+446) | 702 | 685 (+358) | 137 (+88) | 17 (-358) | 0 |
+| ubi8 / A | 0 (-369) | 530 | 0 (+0) | 0 (-369) | 530 (+0) | 0 |
+| ubi8 / B | 545 (+176) | 530 | 530 (+530) | 15 (-354) | 0 (-530) | 0 |
+| rocky9 / A | 373 (+0) | 365 | 365 (+0) | 8 (+0) | 0 (+0) | 0 |
+| alma9 / A | 48 (+8) | 31 | 31 (+0) | 17 (+8) | 0 (+0) | 0 |
+| ubuntu24 / A | 58 (+52) | 11 | 11 (+11) | 47 (+41) | 0 (-11) | 0 |
+| ubuntu22 / A | 96 (+52) | 33 | 33 (+21) | 63 (+31) | 0 (-21) | 10 |
+| centos9 / A | 0 (+0) | 미지원 | 0 (+0) | 0 (+0) | 0 (+0) | 0 |
+
+B의 증감도 이전 기본 카탈로그와 비교했다. Alma 이전 **40**은 errata 수동 보정치였고, 당시 출력만으로는 **0**이었다. 지금은 출력만으로 **48**이며 기존 40쌍 전부를 포함한다. UBI9·Alma에 새로 추가된 각 **libevent 8쌍**은 upstream errata 갱신 효과이며 수정 코드만의 효과로 돌리지 않는다. Rocky는 기존과 동일한 libevent 8쌍이다. Rocky 공통 severity 불일치는 **140→0**, Alma는 **31→0**이다.
+
+**필수 수정 검증 및 skip histogram**
+
+| 이미지 / catalog | module-mismatch | distro-owned | centos-stream-unsupported | unknown-ecosystem | withdrawn | distro-not-affected |
+| --- | --- | --- | --- | --- | --- | --- |
+| ubi9 / A | 0 | 18 | 0 | 8 | 15 | 0 |
+| ubi9 / B | 0 | 18 | 0 | 8 | 4 | 3 |
+| ubi8 / A | 190 | 20 | 0 | 6 | 13 | 0 |
+| ubi8 / B | 908 | 20 | 0 | 6 | 4 | 0 |
+| rocky9 / A | 0 | 3 | 0 | 8 | 0 | 0 |
+| alma9 / A | 0 | 7 | 0 | 8 | 0 | 0 |
+| ubuntu24 / A | 0 | 0 | 0 | 6 | 134 | 0 |
+| ubuntu22 / A | 0 | 0 | 0 | 6 | 174 | 0 |
+| centos9 / A | 0 | 7 | 145 | 8 | 0 | 0 |
+
+- UBI8 A는 raw finding **151→0**, 기존 잘못된 Python RPM module CVE **349→0**. `module-mismatch=190`은 제외한 affected 비교 횟수이며 CVE 수 349와 분모가 다르다. B는 `module-mismatch=908`이지만 아래 설명하는 라벨 없는 source 상태 13쌍이 통과한다. 기존 349 중 5쌍도 B에서 재등장한다.
+- PyPI는 UBI9 **18**, UBI8 **20**, Rocky **3**, Alma **7**, CentOS **7**개가 모두 SBOM의 **`bscan:owner`**(RPM 이름/버전)를 유지한 채 `distro-owned`로 제외됐다. 총 **55개**, UBI만 **38개**. unowned PyPI는 이 표본에서 0개다. UBI의 기존 PyPI CVE 경고 38쌍은 A/B 모두 0이다. 예: UBI8 `idna@2.5 → rpm:python3-idna@2.5-8.el8_10`, `requests@2.20.0 → rpm:python3-requests@2.20.0-6.el8_10`, `urllib3@1.24.2 → rpm:python3-urllib3@1.24.2-10.el8_10`.
+- Ubuntu24/22의 기존 stale 오탐 **2+25=27**은 모두 사라졌고, 누락 **11+21=32**는 모두 복원됐다. 전체 export 보충 실험과 지금의 CVE 집합은 완전히 같다. 남은 bscan 전용 **110쌍**은 **Ignored 27 + Needs evaluation 81 + 잘못된 릴리스 CVE 전파 2**로 전수 분류했다. 81쌍은 원문 미평가 상태인데 출력 `confidence=high`, `distro_status` 없음이므로 확정 취약점으로 해석하면 안 된다. OSV가 이 상태를 `[0,∞)`로 공급하며 상태 자체를 담지 않는 한계다.
+- Alma **9 findings = HIGH 5 + MEDIUM 4**, UNKNOWN 0. 기존 8개에 libevent Important 1개가 추가됐다. [coreutils](https://errata.almalinux.org/9/ALSA-2026-66403.html), [expat](https://errata.almalinux.org/9/ALSA-2026-64812.html), [glib2](https://errata.almalinux.org/9/ALSA-2026-64800.html) 등 **7개 errata**의 CVE 목록과 Moderate/Important를 대조했다. CVE 출력 연결 및 title rating 수정이 동작한다 (`internal/vulndb/ingestion.go:181`, `internal/match/severity.go:254`).
+- CentOS Stream은 RPM **145**개가 `centos-stream-unsupported`, Python **7**개는 `distro-owned`, 기타 subject 8개는 unknown이다. finding 0은 안전 판정이 아니다.
+
+**VEX 미수정 상태 — 패키지/CVE 쌍 수**
+
+| 이미지 | affected | fix-deferred | will-not-fix | under-investigation | out-of-support-scope | 합계 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ubi9 | 115 | 338 | 11 | 17 | 2 | 483 |
+| ubi8 | 74 | 391 | 47 | 19 | 14 | 545 |
+
+UBI9 B의 822쌍 중 **483쌍**은 수정 버전이 없고, UBI8은 **545쌍 전부** 미수정이다. `affected`와 `fix-deferred`를 합치지 않았으며 `under-investigation`·`out-of-support-scope`는 실제 영향 확정과 구분했다. UBI9 공통 **685/685(100%)**, UBI8 **530/530**에서 Red Hat severity와 Trivy severity가 일치했다. UBI9 A는 공통 327 중 169개가 달랐다. 예: `acl/CVE-2026-54370`, `expat/CVE-2024-8176`, `glib2/CVE-2024-52533`은 A의 HIGH가 B에서 Red Hat Moderate에 해당하는 MEDIUM으로 바뀐다.
+
+**남은 차이 전수 분류와 원문 판정**
+
+분류 문자는 본문과 같다: a cataloger, b 이름·메타데이터, c 공급원·coverage, d 버전 비교, e 릴리스·모듈, f Trivy 오탐·누락. 아래 수치는 비교별로 별도 집계한다. A–Trivy 합계 **1,079쌍(174+905)**, B의 UBI–Trivy 합계 **169쌍(152+17)**. 3개 미만인 분류는 존재하는 모든 사례를 적었다. 순수 EVR 순서 비교 오류(d)는 입증되지 않았다.
+
+- **c / A RHEL 미수정 coverage·정책 889쌍:** `ubi9 bzip2-libs@1.0.8-8.el9 / CVE-2026-42250`, `coreutils-single@8.32-35.el9 / CVE-2026-56391`, `curl-minimal@7.76.1-29.el9_4.1 / CVE-2024-11053`. [Red Hat API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-42250.json)의 Fix deferred/Affected 상태를 RHSA fixed 중심 OSV가 담지 못한다. A의 Trivy 전용 905 중 나머지 16쌍은 아래 f 분류의 공식 비영향 사례다. B가 이 coverage 공백을 대부분 채운다. 기본 source 목록은 `internal/vulndb/source.go:56`, VEX 대체 선택은 `internal/vulndb/redhat_vex.go:73`.
+- **b / A binary·branch 범위 40쌍, B UBI 31쌍:** UBI9 RPM 31 + Alma FIPS 9(A). 예: `ubi9 openssl@1:3.0.7-28.el9_4 / CVE-2026-14456`, `alma9 openssl-fips-provider@1:3.5.5-6.el9_8 / CVE-2026-14457`, 같은 provider의 `CVE-2026-18798`. [CVE-2026-14456 Red Hat statement](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-14456.json)은 RHEL 9.8+ OpenSSL 3.5 QUIC server만 영향, 이전 branch와 FIPS module은 비영향이라고 명시한다. UBI9 openssl/openssl-libs 2쌍은 이 조건과 충돌한다. Alma provider 9개 CVE 원문도 모두 FIPS 밖의 코드라고 명시하지만 [ALSA-2026:67165](https://errata.almalinux.org/9/ALSA-2026-67165.html)의 전체 CVE가 provider에 전파된다. 나머지 glibc-common·vim-minimal 등 개별 binary 영향은 보류한다. 원인: source-name 확장 `internal/match/match.go:365`, 전체 aliases 출력 `internal/match/cache.go:294`, VEX의 `[0,fixed)`/`[0,∞)` 범위 `internal/vulndb/redhat_vex.go:424`, `:437`.
+- **c/f / libevent 공급원 적재 차이 A 24쌍, B 8쌍:** `ubi9 libevent@2.1.12-8.el9_4 / CVE-2026-63379`, `rocky9 libevent@2.1.12-6.el9 / CVE-2026-63381`, `alma9 libevent@2.1.12-8.el9_4 / CVE-2026-63382`. [Rocky 공식 JSON](https://storage.googleapis.com/resf-osv-data/RLSA-2026:67910.json), [Alma errata](https://errata.almalinux.org/9/ALSA-2026-67910.html), [Red Hat API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-63379.json)의 CVE 8개·fixed `2.1.13-1.el9_8`과 일치하며 Trivy 누락으로 판정한다. B의 9/13 snapshot은 이 8개를 아직 affected/미수정으로 표시하므로 **탐지 여부는 맞지만 현재 fix 정보는 늦다**.
+- **c / Ubuntu Ignored 27쌍:** `ubuntu24 coreutils@9.4-3ubuntu6.3 / CVE-2016-2781`, `gpgv@2.4.4-2ubuntu17.6 / CVE-2022-3219`, `libc-bin@2.39-0ubuntu8.9 / CVE-2016-20013`. [coreutils](https://ubuntu.com/security/CVE-2016-2781), [gnupg2](https://ubuntu.com/security/CVE-2022-3219), [glibc](https://ubuntu.com/security/CVE-2016-20013)의 Ignored와 일치하는 정책 차이이며 코드 부재를 뜻하지 않는다.
+- **c / Ubuntu Needs evaluation 81쌍:** `ubuntu24 libc6@2.39-0ubuntu8.9 / CVE-2026-89092`, `libpcre2-8-0@10.42-4ubuntu2.1 / CVE-2026-89156`, `util-linux@2.39.3-9ubuntu6.6 / CVE-2026-78408`. [glibc](https://ubuntu.com/security/CVE-2026-89092), [pcre2](https://ubuntu.com/security/CVE-2026-89156), [util-linux](https://ubuntu.com/security/CVE-2026-78408) 모두 vendor 미평가다. Trivy 확정 누락 또는 bscan 확정 오탐으로 판정하지 않는다. OSV 상태 한계와 high confidence 출력의 결합이며 `internal/vulndb/osv.go:130`, `internal/match/match.go:264` 경로다.
+- **b / Ubuntu 잘못된 release-CVE 전파 2쌍(전수):** `ubuntu22 libc-bin@2.35-0ubuntu3.14 / CVE-2026-19499`, `libc6@2.35-0ubuntu3.14 / CVE-2026-19499`. [Ubuntu 원문](https://ubuntu.com/security/CVE-2026-19499)은 Jammy Not affected. `USN-8737-1`의 전체 alias에는 이 CVE가 있지만 Jammy `affected.database_specific.cves_map.cves`에는 없다. `internal/match/cache.go:294`가 per-release CVE 목록 대신 전체 alias를 출력한다. 이 2쌍은 오탐이다. 같은 USN의 raw finding 2개는 UNKNOWN이며, 정상 CVE 레코드 MEDIUM과 함께 나타나 공통 CVE 10쌍의 severity **집합** 불일치를 만든다(예: libc-bin의 CVE-2026-19542/6368/6791). `internal/match/severity.go:207`은 cves_map Ubuntu 등급을 읽지 않고 `:172`는 CVSS v4 vector를 점수화하지 않는다. 정상 MEDIUM 결과 자체가 없어진 것은 아니다.
+- **c / B Red Hat 미수정 공급원·정책 차이 96쌍:** `ubi9 curl-minimal@7.76.1-29.el9_4.1 / CVE-2026-8458`, `expat@2.5.0-2.el9_4.1 / CVE-2026-56131`, `gawk@5.1.0-6.el9 / CVE-2026-40467`. [curl API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-8458.json), [expat API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-56131.json), [gawk API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-40467.json) 등 전수 조회에서 source 상태 Affected/Fix deferred/Under investigation을 확인했다. 이 중 Under investigation은 확정 취약점으로 판정하지 않는다. API 404 1개 CVE는 다음 별도 분류에 있다.
+- **c / B Negligible 정책 4쌍:** UBI9 `gdb-gdbserver@10.2-13.el9 / CVE-2023-2222`, UBI8 `gdb-gdbserver@8.2-20.el8 / CVE-2023-2222`, UBI9 `gdb-gdbserver@10.2-13.el9 / CVE-2026-19582`(UBI8에도 동일 CVE). [CVE-2023-2222 API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2023-2222.json)의 None와 VEX의 None를 NEGLIGIBLE로 포함하는 정책이다. CVE-2026-19582는 archive 안에 있으나 현재 API/VEX 단건 URL은 모두 404여서 최신 유효성 판정은 보류한다.
+- **e/c / B UBI8 라벨 없는 Python 소스 범위 13쌍:** `python3-chardet@3.0.4-7.el8 / CVE-2021-28861`, `python3-idna@2.5-8.el8_10 / CVE-2026-4786`, `python3-six@1.11.0-8.el8 / CVE-2026-5713`. [Red Hat API 28861](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2021-28861.json)는 python38, [4786](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-4786.json)는 python38/python39를 영향 대상으로 명시한다. 하지만 [VEX 28861](https://security.access.redhat.com/data/csaf/v2/vex/2021/cve-2021-28861.json)은 `python-chardet.src` 등을 module 없는 RHEL 8 known_affected로 제공한다. 5713도 python-six에 대한 API 직접 판정은 없으며 VEX에 source 묶음으로 나타난다. source/module 범위 과대 적용으로 분류하고 실제 exploit은 전수 재현하지 않았다. 원문에 module이 없으면 `internal/vulndb/redhat_vex.go:417`은 라벨을 넣지 못하고 `:437`의 무한 범위를 `internal/match/match.go:232`의 boolean module 검사로 걸러낼 수 없다.
+- **f / A와 B 각각 Trivy 오탐 16쌍:** `ubi9 curl-minimal@7.76.1-29.el9_4.1 / CVE-2026-11352`, `libarchive@3.5.3-4.el9 / CVE-2026-16517`, `rpm@4.16.1.3-29.el9 / CVE-2026-44604`. [curl](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-11352.json), [libarchive](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-16517.json), [rpm](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-44604.json) 등 해당 8개 CVE의 API와 VEX가 모두 RHEL9 Not affected를 제공한다. 따라서 이 16개를 bscan 누락으로 세지 않는다.
+- **b / VEX 음성 marker EVR 유실 1쌍(유일 사례):** `ubi9 acl@2.3.1-4.el9 / CVE-2026-54369`. [VEX 원문](https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-54369.json)의 mainline CPE에서 `acl-0:2.4.0-1.el9_8.src`는 fixed, **`acl-0:2.4.0-1.el9_8.x86_64`**는 known_not_affected다. `internal/vulndb/redhat_vex.go:412`에서 읽은 EVR을 `:435`의 not-affected 분기에서 버려 버전 없는 acl marker가 되고, `internal/match/match.go:196`, `:242`가 구버전에도 적용해 양성 범위를 억제한다. **특정 버전 정보를 전체 버전으로 넓히는 변환 결함**은 확인했지만, 구버전 acl binary 자체의 실제 영향과 source/binary 경계 판정은 보류한다.
+
+**Grype 보조 비교**
+
+| 이미지 / catalog | Grype CVE | bscan 공통 | bscan만 | Grype만 |
+| --- | --- | --- | --- | --- |
+| ubi9 / A | 804 | 362 | 4 | 442 |
+| ubi9 / B | 804 | 802 | 20 | 2 |
+| ubi8 / A | 511 | 0 | 0 | 511 |
+| ubi8 / B | 511 | 510 | 35 | 1 |
+| rocky9 / A | 933 | 371 | 2 | 562 |
+| alma9 / A | 557 | 47 | 1 | 510 |
+| ubuntu24 / A | 58 | 58 | 0 | 0 |
+| ubuntu22 / A | 94 | 94 | 2 | 0 |
+| centos9 / A | 495 | 0 | 0 | 495 |
+
+Grype는 Rocky/Alma/CentOS에 Red Hat namespace를 적용하는 공급원·범위 차이가 있다. 설치 PyPI metadata는 인벤토리에 포함하지만 이번 표본에서 PyPI CVE를 보고하지 않았다. 예: Rocky `krb5-libs / CVE-2023-36054`, `CVE-2023-39975`, Alma `pam / CVE-2026-54411`은 vendor errata와 bscan/Trivy가 지지하나 Grype가 놓친다. 반대 방향의 A–Grype 예: UBI9 `bzip2-libs@1.0.8-8.el9 / CVE-2026-42250`, `coreutils-single@8.32-35.el9 / CVE-2026-56391`, `curl-minimal@7.76.1-29.el9_4.1 / CVE-2024-11053`는 Red Hat 미수정 API 상태가 지지하며 B에서 복원된다. 다른 c 분류는 전수 차집합과 공급원 namespace를 기록하되 실제 exploit 여부를 단정하지 않았다. CentOS의 Grype 495쌍 역시 지원 판정의 정답으로 사용하지 않았다. 세 도구의 모든 비교 조합과 분류별 ≥3개 예(3개 미만이면 전수)는 JSON `class_summaries`에 있다.
+
+Grype 대조로 B의 추가 coverage 누락 **2쌍(전수)**도 확인했다: `ubi9 expat@2.5.0-2.el9_4.1 / CVE-2026-66046`, `ubi8 expat@2.5.0-2.el8_10.2 / CVE-2026-66046`. [Red Hat API](https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2026-66046.json)는 두 릴리스를 Affected로, [최신 단건 VEX](https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-66046.json)는 **2026-09-15** 수정본으로 제공하지만 9/13 archive로 만든 B에는 해당 CVE 레코드가 없다. **c: archive snapshot coverage** 공백이다. `internal/vulndb/redhat_vex.go:50`, `:66`은 archive_latest가 가리키는 archive만 읽고 이후 단건 변경을 보충하지 않는다. 반대로 B만 보고 Grype에는 없는 UBI9 `expat/CVE-2026-56403`, `glibc/CVE-2026-19499`, `glibc/CVE-2026-77117`은 현재 API Under investigation과 일치하며 확정 취약점은 아니다.
+
+**scan+match 성능**
+
+| 이미지 / catalog | wall 초 | peak RSS KiB |
+| --- | --- | --- |
+| ubi9 / A | 3.99 | 53,820 |
+| ubi9 / B | 4.61 | 62,252 |
+| ubi8 / A | 2.85 | 39,356 |
+| ubi8 / B | 3.98 | 43,620 |
+| rocky9 / A | 1.89 | 37,460 |
+| alma9 / A | 2.02 | 43,280 |
+| ubuntu24 / A | 1.41 | 39,624 |
+| ubuntu22 / A | 1.15 | 34,192 |
+| centos9 / A | 1.85 | 48,100 |
+
+image pull은 제외하고 로컬 Docker 읽기·SBOM 작성·매칭을 포함한다. 각 1회 실행이며 cold-cache/반복 평균 비교가 아니다. 제품 수정·전체 테스트 suite·다른 CPU architecture·실제 CVE exploit 재현은 수행하지 않았다.
+
+**정리·작성 범위**
+
+Docker 이미지 **7개 전부 `docker rmi` 성공**, digest와 실제 image ID가 더 이상 존재하지 않음을 확인했다. W 안에서 생성한 도구·DB·Go cache·SBOM·스크립트·원문은 검토 결과를 보존한 뒤 삭제했다. 시작 전부터 있던 sandbox mount 디렉터리만 남겼다. 이 작업이 쓴 저장소 파일은 기존 보고서에 이 절을 append한 파일, 새 round7b 상세 JSON, 지원 표의 **3개 문서**다. 초기 본문 바이트는 그대로 유지했다. 다른 작업의 소스·테스트 변경은 그대로 두었다.
