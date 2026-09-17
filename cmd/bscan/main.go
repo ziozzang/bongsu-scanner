@@ -61,8 +61,28 @@ func main() {
 		} else {
 			fmt.Fprintln(os.Stderr, "bscan:", err)
 		}
-		os.Exit(exitCode(err))
+		os.Exit(processExitCode(err))
 	}
+}
+
+// exitStatusError pins the exit status chosen while the global flags were in
+// effect. run restores those flags (including --findings-exit-code) before
+// returning, so main must not derive the status from the bare error again.
+type exitStatusError struct {
+	code int
+	err  error
+}
+
+func (e *exitStatusError) Error() string { return e.err.Error() }
+func (e *exitStatusError) Unwrap() error { return e.err }
+
+// processExitCode is the status main exits with for err.
+func processExitCode(err error) int {
+	var status *exitStatusError
+	if errors.As(err, &status) {
+		return status.code
+	}
+	return exitCode(err)
 }
 
 // partialScanError is returned by --fail-on-partial; it maps to exit code 3
@@ -92,7 +112,13 @@ func run(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	defer restore()
+	defer func() {
+		// Decide the exit status while --findings-exit-code is still applied.
+		if err != nil {
+			err = &exitStatusError{code: exitCode(err), err: err}
+		}
+		restore()
+	}()
 	args = rest
 	if err := validateConfigOverride(); err != nil {
 		return err
@@ -164,6 +190,8 @@ Global flags (before COMMAND):
   --log-format FORMAT text (default) or json
   --no-color          compatibility placeholder (no color is emitted)
   --config PATH       override BONGSU_CONFIG and the default config path
+  --findings-exit-code N  exit status when --fail-on is met (default 2; 1..125)
+  --memory-limit SIZE soft Go heap limit, e.g. 512MiB (or BSCAN_MEMORY_LIMIT)
   --version, -v       show build information
 
 Commands:
