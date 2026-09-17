@@ -12,18 +12,18 @@ import (
 // Deliberately small: generic package names alone are not globally unique.
 var cpeAliases = map[string]string{
 	"python": "python:python", "cpython": "python:python", "openssl": "openssl:openssl",
-	"node": "nodejs:node.js", "nodejs": "nodejs:node.js", "php": "php:php", "ruby": "ruby:ruby",
+	"node": "nodejs:node.js", "nodejs": "nodejs:node.js", "php": "php:php", "ruby": "ruby-lang:ruby",
 }
 
-func subjectCPE(s Subject) ([]string, bool) {
+func subjectCPE(s Subject) ([]vulndb.CPEAttribute, bool) {
 	raw := s.CPE
 	if raw == "" && s.PURL.Type == "generic" && s.PURL.Namespace == "" {
 		if pair := cpeAliases[strings.ToLower(s.PURL.Name)]; pair != "" {
 			raw = "cpe:2.3:a:" + pair + ":*:*:*:*:*:*:*:*"
 		}
 	}
-	attrs, ok := vulndb.CPEAttributes(raw)
-	if !ok || !concreteCPE(attrs[1]) || !concreteCPE(attrs[2]) {
+	attrs, ok := vulndb.ParseCPE(raw)
+	if !ok || attrs[1].Kind != vulndb.CPELiteral || attrs[2].Kind != vulndb.CPELiteral {
 		return nil, false
 	}
 	return attrs, true
@@ -33,6 +33,7 @@ func concreteCPE(value string) bool {
 }
 
 func compareCPE(a, b string) int {
+	a, b = strings.ToLower(a), strings.ToLower(b)
 	// Semver handles prereleases correctly when both inputs parse; vendor versions
 	// such as OpenSSL 1.0.2u retain the generic numeric/text ordering.
 	if c, err := version.CompareSemver(a, b); err == nil {
@@ -41,27 +42,31 @@ func compareCPE(a, b string) int {
 	return version.CompareGeneric(a, b)
 }
 
-func cpeVersionMatch(s Subject, subject, criteria []string, a vulndb.Affected) (bool, bool, []string) {
-	v := s.Version
-	if v == "" && concreteCPE(subject[3]) {
-		v = subject[3]
-	}
-	if !concreteCPE(v) {
+func cpeVersionMatch(s Subject, subject, criteria []vulndb.CPEAttribute, a vulndb.Affected) (bool, bool, []string) {
+	v := strings.ToLower(s.Version)
+	if v == "" && subject[3].Kind == vulndb.CPELiteral {
+		v = subject[3].Value
+	} else if !concreteCPE(v) && !(subject[3].Kind == vulndb.CPELiteral && v == subject[3].Value) {
 		return false, false, nil
 	}
-	if concreteCPE(subject[3]) && compareCPE(v, subject[3]) != 0 {
+	if subject[3].Kind == vulndb.CPELiteral && compareCPE(v, subject[3].Value) != 0 {
 		return false, false, nil
 	}
-	exact := concreteCPE(criteria[3])
-	if criteria[3] != "*" && (!exact || v != criteria[3]) {
+	exact := criteria[3].Kind == vulndb.CPELiteral
+	if criteria[3].Kind != vulndb.CPEAny && (!exact || v != criteria[3].Value) {
 		return false, false, nil
 	}
 	if lower, _ := a.Database["versionStartExcluding"].(string); lower != "" && compareCPE(v, lower) <= 0 {
 		return false, false, nil
 	}
 	if len(a.Ranges) == 0 {
+		// Exact criteria are authoritative, including records cached before
+		// ingestion began unescaping Versions and recognizing escaped wildcards.
+		if exact {
+			return true, true, nil
+		}
 		for _, candidate := range a.Versions {
-			if v == candidate {
+			if v == strings.ToLower(candidate) {
 				return true, exact, nil
 			}
 		}
@@ -102,23 +107,25 @@ func cpeVersionMatch(s Subject, subject, criteria []string, a vulndb.Affected) (
 	return false, false, nil
 }
 
-func cpeAttributesMatch(s Subject, subject, criteria []string) bool {
-	if subject[0] != criteria[0] || subject[1] != criteria[1] || subject[2] != criteria[2] {
-		return false
-	}
-	for i := 4; i < len(criteria); i++ {
-		if criteria[i] == "*" {
-			continue
-		}
-		if strings.ContainsAny(criteria[i], "*?") {
+func cpeAttributesMatch(s Subject, subject, criteria []vulndb.CPEAttribute) bool {
+	for i := 0; i < 3; i++ {
+		if subject[i].Kind != criteria[i].Kind || subject[i].Value != criteria[i].Value {
 			return false
 		}
-		if criteria[i] == subject[i] {
+	}
+	for i := 4; i < len(criteria); i++ {
+		if criteria[i].Kind == vulndb.CPEAny {
+			continue
+		}
+		if criteria[i].Kind == vulndb.CPEPattern {
+			return false
+		}
+		if criteria[i].Kind == subject[i].Kind && criteria[i].Value == subject[i].Value {
 			continue
 		}
 		// target_sw may describe a known ecosystem even when the inventory CPE
 		// omitted it. Never infer hardware, edition, language, or update attributes.
-		if i == 8 && concreteCPE(criteria[i]) && (strings.EqualFold(criteria[i], s.Ecosystem) || strings.EqualFold(criteria[i], s.PURL.Type)) {
+		if i == 8 && subject[i].Kind == vulndb.CPEAny && criteria[i].Kind == vulndb.CPELiteral && (strings.EqualFold(criteria[i].Value, s.Ecosystem) || strings.EqualFold(criteria[i].Value, s.PURL.Type)) {
 			continue
 		}
 		return false
@@ -150,12 +157,12 @@ func matchCPE(ctx context.Context, store vulndb.Store, subjects []Subject, opts 
 		if contextual, ok := reader.(interface {
 			LookupCPEContext(context.Context, string, string) ([]vulndb.Record, error)
 		}); ok {
-			records, err = contextual.LookupCPEContext(ctx, attrs[1], attrs[2])
+			records, err = contextual.LookupCPEContext(ctx, attrs[1].Formatted(), attrs[2].Formatted())
 		} else {
-			records, err = reader.LookupCPE(attrs[1], attrs[2])
+			records, err = reader.LookupCPE(attrs[1].Formatted(), attrs[2].Formatted())
 		}
 		if err != nil {
-			return fmt.Errorf("CPE lookup %s:%s: %w", attrs[1], attrs[2], err)
+			return fmt.Errorf("CPE lookup %s:%s: %w", attrs[1].Formatted(), attrs[2].Formatted(), err)
 		}
 		for _, r := range records {
 			if err := ctx.Err(); err != nil {
@@ -174,7 +181,7 @@ func matchCPE(ctx context.Context, store vulndb.Store, subjects []Subject, opts 
 			}
 			var best *Finding
 			for _, a := range r.Affected {
-				if a.Ecosystem != "CPE" || a.Package != attrs[1]+":"+attrs[2] {
+				if a.Ecosystem != "CPE" {
 					continue
 				}
 				if a.Database["requires_and"] == true || a.Database["operator"] == "AND" {
@@ -188,8 +195,8 @@ func matchCPE(ctx context.Context, store vulndb.Store, subjects []Subject, opts 
 					continue
 				}
 				raw, _ := a.Database["cpe"].(string)
-				criteria, ok := vulndb.CPEAttributes(raw)
-				if !ok || !concreteCPE(criteria[1]) || !concreteCPE(criteria[2]) || !cpeAttributesMatch(s, attrs, criteria) {
+				criteria, ok := vulndb.ParseCPE(raw)
+				if !ok || criteria[1].Kind != vulndb.CPELiteral || criteria[2].Kind != vulndb.CPELiteral || !cpeAttributesMatch(s, attrs, criteria) {
 					continue
 				}
 				hit, exact, fixed := cpeVersionMatch(s, attrs, criteria, a)

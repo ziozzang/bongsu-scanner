@@ -487,8 +487,13 @@ func (s *sqliteStore) LookupCPEContext(ctx context.Context, vendor, product stri
 			err = errors.Join(err, changed)
 		}
 	}()
+	vendorAttr, vendorOK := ParseCPEAttribute(vendor)
+	productAttr, productOK := ParseCPEAttribute(product)
+	if !vendorOK || !productOK || vendorAttr.Kind != CPELiteral || productAttr.Kind != CPELiteral {
+		return nil, nil
+	}
 	rows, err := s.conn.QueryContext(ctx, `SELECT json FROM records WHERE id IN
- (SELECT record_id FROM cpe_matches WHERE vendor=? AND product=?) ORDER BY id`, vendor, product)
+ (SELECT record_id FROM cpe_matches WHERE vendor=? AND product=?) ORDER BY id`, vendorAttr.Value, productAttr.Value)
 	if err != nil {
 		return nil, err
 	}

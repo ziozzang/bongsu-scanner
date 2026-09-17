@@ -82,7 +82,14 @@ type cataloger struct {
 	includeDeclared   bool
 	npmBundlePrefixes []string
 	opts              Options
-	pending           []Package
+	pending           map[string][]*Package
+	pendingOrder      []pendingIdentity
+	pendingIndex      map[pendingIdentity]struct{}
+	pendingCounts     map[pendingIdentity]int
+	orderedPending    bool
+	sources           []string
+	shortStrings      map[string]string
+	skippedSources    map[string]int
 	sourceOrder       map[string]int
 	npmDirs           map[string]bool
 	npmPackages       map[string]bool
@@ -90,6 +97,14 @@ type cataloger struct {
 	gemPackages       map[string]bool
 	installed         map[string][]installedLocation
 	hasDir            func(string) bool
+}
+
+// Deferred packages share their immutable body across discovery locations.
+// Only provenance and multiplicity are retained per distinct body/source pair;
+// the latter preserves policy exclusion counts without retaining duplicates.
+type pendingIdentity struct {
+	pkg    *Package
+	source int
 }
 
 type installedLocation struct {
@@ -146,15 +161,71 @@ func (c *cataloger) addPackage(p Package) {
 	if p.Evidence == "" && p.Type == "rpm" {
 		p.Evidence = "installed"
 	}
-	c.observePath(p.Source)
 	if c.sourceOrder == nil {
 		c.sourceOrder = map[string]int{}
 	}
-	if _, ok := c.sourceOrder[p.Source]; !ok {
-		c.sourceOrder[strings.Clone(p.Source)] = len(c.sourceOrder)
+	source, ok := c.sourceOrder[p.Source]
+	if !ok {
+		c.observePath(p.Source)
+		p.Source = strings.Clone(p.Source)
+		source = len(c.sources)
+		c.sourceOrder[p.Source] = source
+		c.sources = append(c.sources, p.Source)
+	} else {
+		p.Source = c.sources[source]
 	}
 	if p.Evidence == "lockfile" && strings.TrimSpace(p.Name) != "" {
-		c.pending = append(c.pending, clonePackage(p))
+		// These two locations are declarations regardless of later metadata.
+		// All observation-dependent decisions still run in finish.
+		location := "/" + policyPath(p.Source)
+		if !c.includeDeclared && (strings.Contains(location, "/vendor/bundle/") || strings.Contains(location, "/go/pkg/mod/")) {
+			if c.skippedSources == nil {
+				c.skippedSources = make(map[string]int)
+			}
+			c.skippedSources[p.Source]++
+			c.declaredSkipped++
+			return
+		}
+		key := packageKey(p)
+		p.Source = ""
+		var body *Package
+		for _, candidate := range c.pending[key] {
+			if *candidate == p {
+				body = candidate
+				break
+			}
+		}
+		if body == nil {
+			if c.pending == nil {
+				c.pending = make(map[string][]*Package)
+				c.pendingIndex = make(map[pendingIdentity]struct{})
+			}
+			stored := c.retainPackage(p)
+			body = &stored
+			c.pending[key] = append(c.pending[key], body)
+		}
+		id := pendingIdentity{pkg: body, source: source}
+		// A composite source can displace earlier paths from the display cap,
+		// making later repeats significant. Preserve subsequent ordering
+		// events as compact references in this uncommon case.
+		c.orderedPending = c.orderedPending || strings.Contains(c.sources[source], ";")
+		deduplicate := c.sources[source] != "" && !c.orderedPending
+		if _, ok := c.pendingIndex[id]; ok && deduplicate {
+			// Most body/source pairs occur once. Keep extra counts only for
+			// duplicates instead of an integer alongside every occurrence.
+			if c.pendingCounts == nil {
+				c.pendingCounts = make(map[pendingIdentity]int)
+			}
+			c.pendingCounts[id]++
+		} else {
+			// Empty sources are never inserted into the displayed source list.
+			// Replaying one can therefore take precedence again after another
+			// discovery; preserve those ordering events as compact references.
+			if deduplicate {
+				c.pendingIndex[id] = struct{}{}
+			}
+			c.pendingOrder = append(c.pendingOrder, id)
+		}
 		return
 	}
 	if p.Evidence == "installed" {
@@ -164,7 +235,7 @@ func (c *cataloger) addPackage(p Package) {
 		key := packageNameKey(p)
 		// Keep every installation location until declarations are resolved;
 		// merged inventory sources are capped and can span projects.
-		c.installed[key] = append(c.installed[key], installedLocation{version: strings.Clone(p.Version), source: strings.Clone(p.Source)})
+		c.installed[key] = append(c.installed[key], installedLocation{version: strings.Clone(p.Version), source: p.Source})
 	}
 	c.addInventoryPackage(p)
 }
@@ -207,9 +278,6 @@ func (c *cataloger) addInventoryPackage(p Package) {
 		// debian/alpine namespace when os-release arrives later.
 		key += "\x00os-default"
 	}
-	// Text parsers return substrings of a whole-file string. Copy every
-	// stored field so even a tiny package cannot pin a large metadata buffer.
-	p = clonePackage(p)
 	if c.seen == nil {
 		c.seen = make(map[string]Package)
 	}
@@ -241,52 +309,114 @@ func (c *cataloger) addInventoryPackage(p Package) {
 		if pendingPURL {
 			prev.PURL = "" // mergePackage may have generated it before OS resolution.
 		}
-		c.seen[key] = prev
+		if prev != c.seen[key] {
+			c.seen[key] = c.retainPackage(prev)
+		}
 		return
 	}
-	c.seen[key] = p
+	c.seen[key] = c.retainPackage(p)
 	c.order = append(c.order, key)
 }
 
-func clonePackage(p Package) Package {
-	p.Name = strings.Clone(p.Name)
-	p.Version = strings.Clone(p.Version)
-	p.Type = strings.Clone(p.Type)
-	p.Namespace = strings.Clone(p.Namespace)
-	p.PURL = strings.Clone(p.PURL)
-	p.CPE = strings.Clone(p.CPE)
-	p.License = strings.Clone(p.License)
-	p.Source = strings.Clone(p.Source)
-	p.Arch = strings.Clone(p.Arch)
-	p.Distro = strings.Clone(p.Distro)
-	p.SourceName = strings.Clone(p.SourceName)
-	p.SourceVersion = strings.Clone(p.SourceVersion)
-	p.Layer = strings.Clone(p.Layer)
-	p.Evidence = strings.Clone(p.Evidence)
-	p.VersionOriginal = strings.Clone(p.VersionOriginal)
+// retainPackage detaches parser substrings only when data is actually retained.
+// One compact backing string avoids per-field allocations and metadata-buffer
+// pinning. Interning is bounded and restricted to short categorical values.
+func (c *cataloger) retainPackage(p Package) Package {
+	intern := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		if v, ok := c.shortStrings[s]; ok {
+			return v
+		}
+		v := strings.Clone(s)
+		if len(s) <= 64 && len(c.shortStrings) < 1024 {
+			if c.shortStrings == nil {
+				c.shortStrings = make(map[string]string)
+			}
+			c.shortStrings[v] = v
+		}
+		return v
+	}
+	p.Type, p.Namespace = intern(p.Type), intern(p.Namespace)
+	p.Arch, p.Evidence = intern(p.Arch), intern(p.Evidence)
+	fields := []*string{&p.Name, &p.Version, &p.PURL, &p.CPE, &p.License,
+		&p.Distro, &p.SourceName, &p.SourceVersion, &p.Layer, &p.VersionOriginal}
+	// Individual sources already have a scan-local canonical copy. Merged
+	// source lists own their allocation; neither can pin a metadata buffer.
+	if i, ok := c.sourceOrder[p.Source]; ok && i < len(c.sources) {
+		p.Source = c.sources[i]
+	} else {
+		fields = append(fields, &p.Source)
+	}
+	var b strings.Builder
+	size := 0
+	for _, f := range fields {
+		size += len(*f)
+	}
+	b.Grow(size)
+	for _, f := range fields {
+		b.WriteString(*f)
+	}
+	data := b.String()
+	for _, f := range fields {
+		n := len(*f)
+		if n > 0 {
+			*f = data[:n]
+		}
+		data = data[n:]
+	}
 	return p
 }
 
 func (c *cataloger) finish() ([]Package, *OSRelease) {
-	skipped := map[string]int{}
-	for _, p := range c.pending {
-		declared := c.internalDeclaration(p.Source)
+	skipped := c.skippedSources
+	if skipped == nil {
+		skipped = make(map[string]int)
+	}
+	// Lookups are no longer needed. Release them before replay, whose merges
+	// allocate the final inventory, and consume provenance as we go.
+	c.pending = nil
+	c.pendingIndex = nil
+	declarations := make([]uint8, len(c.sources))
+	for i := range c.pendingOrder {
+		occurrence := c.pendingOrder[i]
+		c.pendingOrder[i] = pendingIdentity{}
+		count := 1 + c.pendingCounts[occurrence]
+		delete(c.pendingCounts, occurrence)
+		p := *occurrence.pkg
+		p.Source = c.sources[occurrence.source]
+		if declarations[occurrence.source] == 0 {
+			declarations[occurrence.source] = 1
+			if c.internalDeclaration(p.Source) {
+				declarations[occurrence.source] = 2
+			}
+		}
+		declared := declarations[occurrence.source] == 2
 		if declared {
 			if !c.includeDeclared {
-				c.declaredSkipped++
-				skipped[p.Source]++
+				c.declaredSkipped += count
+				skipped[p.Source] += count
 				continue
 			}
 			p.Evidence = "declared"
 		}
 		if !c.includeDeclared && p.Evidence == "lockfile" && c.replacedByInstallation(p) {
-			c.declaredSkipped++
-			report(c.opts, "catalog", fmt.Sprintf("dropped lockfile version %s@%s from %s: installed version takes precedence in the same project", p.Name, p.Version, p.Source), true)
+			c.declaredSkipped += count
+			message := fmt.Sprintf("dropped lockfile version %s@%s from %s: installed version takes precedence in the same project", p.Name, p.Version, p.Source)
+			for range count {
+				report(c.opts, "catalog", message, true)
+			}
 			continue
 		}
 		c.addInventoryPackage(p)
 	}
 	c.pending = nil
+	c.pendingOrder = nil
+	c.pendingIndex = nil
+	c.pendingCounts = nil
+	c.orderedPending = false
+	c.skippedSources = nil
 	c.installed = nil
 	sources := make([]string, 0, len(skipped))
 	for source := range skipped {
@@ -1343,7 +1473,7 @@ func policyPath(p string) string {
 }
 
 func pathWithin(p, dir string) bool {
-	return dir == "." || p == dir || strings.HasPrefix(p, dir+"/")
+	return dir == "." || p == dir || (len(p) > len(dir) && p[len(dir)] == '/' && strings.HasPrefix(p, dir))
 }
 
 func (c *cataloger) replacedByInstallation(p Package) bool {

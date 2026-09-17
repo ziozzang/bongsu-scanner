@@ -49,7 +49,7 @@ func TestBinaryClassifierSignatures(t *testing.T) {
 		{"bash", "GNU bash, version 5.2.32", "bash", "5.2.32", "gnu:bash"},
 	} {
 		t.Run(tc.file+"/"+tc.version, func(t *testing.T) {
-			data := []byte("\x7fELF\x00" + tc.text + "\x00")
+			data := []byte("\x7fELF\x00" + tc.text + "\x00" + binaryReviewMarker(tc.name) + "\x00")
 			pkgs := binaryPackages(bytes.NewReader(data), int64(len(data)), "usr/bin/"+tc.file, "layer")
 			if len(pkgs) != 1 {
 				t.Fatalf("packages = %+v", pkgs)
@@ -88,7 +88,7 @@ func TestBinaryClassifierRejectsWeakEvidence(t *testing.T) {
 
 func TestBinaryClassifierNativeFormats(t *testing.T) {
 	for _, magic := range []string{"\x7fELF", "MZ\x90\x00", "\xcf\xfa\xed\xfe", "\xfe\xed\xfa\xcf", "\xce\xfa\xed\xfe", "\xfe\xed\xfa\xce"} {
-		data := magic + "\x00curl 8.9.1\x00"
+		data := magic + "\x00curl_easy_init\x00curl 8.9.1\x00"
 		if got := binaryPackages(strings.NewReader(data), int64(len(data)), "curl", ""); len(got) != 1 {
 			t.Errorf("magic %x: %+v", magic, got)
 		}
@@ -108,12 +108,12 @@ func (r *binaryCountingReader) ReadAt(b []byte, off int64) (int, error) {
 func TestBinaryClassifierReadBounds(t *testing.T) {
 	data := make([]byte, maxBinaryScanBytes+256)
 	copy(data, "\x7fELF")
-	copy(data[maxBinaryScanBytes:], "curl 8.9.1\x00")
+	copy(data[maxBinaryScanBytes:], "curl_easy_init\x00curl 8.9.1\x00")
 	r := &binaryCountingReader{ReaderAt: bytes.NewReader(data)}
 	if got := binaryPackages(r, int64(len(data)), "curl", ""); len(got) != 0 {
 		t.Fatal("read outside prefix", got)
 	}
-	if r.read > maxBinaryScanBytes+68 {
+	if r.read > maxBinaryScanBytes {
 		t.Fatalf("read %d bytes", r.read)
 	}
 	r.read = 0
@@ -159,13 +159,13 @@ func TestBinaryClassifierRodata(t *testing.T) {
 			setSection(1, 400, 9)
 			setSection(2, maxBinaryScanBytes+128, 128)
 			order.PutUint32(data[128+2*stride:], 1)
-			copy(data[maxBinaryScanBytes+128:], "curl 8.9.1\x00")
+			copy(data[maxBinaryScanBytes+128:], "curl_easy_init\x00curl 8.9.1\x00")
 			r := &binaryCountingReader{ReaderAt: bytes.NewReader(data)}
 			got := binaryPackages(r, int64(len(data)), "curl", "")
 			if len(got) != 1 || got[0].Version != "8.9.1" {
 				t.Fatalf("class=%d, order=%v: %+v", class, order, got)
 			}
-			if r.read > maxBinaryScanBytes+4096 {
+			if r.read > maxBinaryScanBytes {
 				t.Fatalf("read %d", r.read)
 			}
 			// A malicious section offset must not wrap into a valid range.

@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"os"
@@ -12,9 +13,9 @@ import (
 func TestBinaryClassificationDirectory(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
-		"bin/python3":         "\x7fELF\x00Python 3.12.14\x00",
-		"opt/python3":         "\x7fELF\x00Python 3.12.14\x00",
-		"lib/libcrypto.so.3":  "\x7fELF\x00OpenSSL 3.0.13 30 Jan 2024\x00",
+		"bin/python3":         "\x7fELF\x00Py_InitializeEx\x00Python 3.12.14\x00",
+		"opt/python3":         "\x7fELF\x00Py_InitializeEx\x00Python 3.12.14\x00",
+		"lib/libcrypto.so.3":  "\x7fELF\x00OPENSSLDIR\x00OpenSSL 3.0.13 30 Jan 2024\x00",
 		"opt/jre/release":     "JAVA_VERSION=\"21.0.4\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n",
 		"var/lib/dpkg/status": "Package: python\nStatus: install ok installed\nVersion: 3.12.14\nArchitecture: amd64\n\n",
 	})
@@ -61,8 +62,8 @@ func TestBinaryClassificationArchive(t *testing.T) {
 	u := newUnpacker(context.Background(), Options{})
 	defer u.Close()
 	layer := buildTar(t, []tarEntry{
-		{name: "bin/busybox", data: []byte("\x7fELF\x00BusyBox v1.36.1\x00"), mode: 0o755},
-		{name: "lib/libcrypto.so.3", data: []byte("\x7fELF\x00OpenSSL 3.0.13 30 Jan 2024\x00"), mode: 0o644},
+		{name: "bin/busybox", data: []byte("\x7fELF\x00multi-call binary\x00BusyBox v1.36.1\x00"), mode: 0o755},
+		{name: "lib/libcrypto.so.3", data: []byte("\x7fELF\x00OPENSSLDIR\x00OpenSSL 3.0.13 30 Jan 2024\x00"), mode: 0o644},
 	})
 	if err := u.applyTar(bytes.NewReader(layer), "base"); err != nil {
 		t.Fatal(err)
@@ -108,7 +109,10 @@ func TestBinaryClassificationBudgetHooks(t *testing.T) {
 	u := newUnpacker(context.Background(), Options{})
 	defer u.Close()
 	u.binaryBudget.count.Store(maxClassifiedBinaries)
-	u.recordBinary("curl", "", data)
+	_, err = u.readEntry("curl", bytes.NewReader(data), &tar.Header{Size: int64(len(data)), Mode: 0755}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(u.binaries) != 0 {
 		t.Fatal("archive ignored binary cap")
 	}

@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -90,8 +91,8 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 			fmt.Fprintf(w, `{"%s":"fixture-secret-token"}`, key)
 			return
 		}
-		if r.Header.Get("Authorization") != "Bearer fixture-secret-token" {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="`+f.server.URL+`/token",service="fixture",scope="repository:org/image:pull"`)
+		if r.TLS != nil && r.Header.Get("Authorization") != "Bearer fixture-secret-token" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="https://`+r.Host+`/token",service="fixture",scope="repository:org/image:pull"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -107,6 +108,13 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 				raw = f.root
 			}
 			if raw != nil {
+				var probe struct {
+					MediaType string `json:"mediaType"`
+				}
+				if err := json.Unmarshal(raw, &probe); err != nil {
+					t.Error(err)
+				}
+				w.Header().Set("Content-Type", probe.MediaType)
 				w.Header().Set("Docker-Content-Digest", digestOf(raw))
 				w.Write(raw)
 				return
@@ -169,6 +177,19 @@ func TestRegistryImage(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(dir, "config.json"), cfg, 0600); err != nil {
 						t.Fatal(err)
 					}
+				}
+			}
+			if tc.auth != "" {
+				c := f.tlsClient(t)
+				// Resolve credentials against the original fixture host for the Docker config case.
+				var err error
+				c.user, c.password, err = registryCredentials(strings.TrimPrefix(f.server.URL, "http://"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, _ := parsePlatform(tc.platform)
+				if _, _, err := c.selectManifest(context.Background(), "latest", nil, want, 0); err != nil {
+					t.Fatal(err)
 				}
 			}
 			target := f.target()
@@ -406,7 +427,8 @@ func TestRegistryTransientRecovery(t *testing.T) {
 		}
 		return false
 	}
-	if _, err := Target(context.Background(), f.target(), Options{InsecureRegistry: true, Platform: "linux/amd64"}); err != nil {
+	c := f.tlsClient(t)
+	if _, _, err := c.manifest(context.Background(), "latest", nil); err != nil {
 		t.Fatal(err)
 	}
 	if attempts.Load() != 3 {
@@ -471,7 +493,8 @@ func TestRegistryTokenAndBackoffCancellation(t *testing.T) {
 				<-r.Context().Done()
 				return true
 			}
-			_, err := Target(ctx, f.target(), Options{InsecureRegistry: true})
+			c := f.tlsClient(t)
+			_, _, err := c.manifest(ctx, "latest", nil)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation lost: %v", err)
 			}
@@ -533,4 +556,21 @@ func TestRegistryCredentialsDockerHubAndPrecedence(t *testing.T) {
 	if err != nil || u != "env-user" || p != "env-password" {
 		t.Fatal("environment credentials did not take precedence")
 	}
+}
+
+func (f *registryFixture) tlsClient(t *testing.T) *registryClient {
+	t.Helper()
+	server := httptest.NewTLSServer(f.server.Config.Handler)
+	t.Cleanup(server.Close)
+	layout := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(layout, "blobs", "sha256"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c, err := newRegistryClient(registryReference{host: strings.TrimPrefix(server.URL, "https://"), repository: "org/image"}, Options{}, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.http.HTTP.Transport = server.Client().Transport
+	t.Cleanup(c.http.HTTP.CloseIdleConnections)
+	return c
 }

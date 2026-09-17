@@ -748,6 +748,7 @@ func archiveContext(ctx context.Context, file string, opts Options) (Result, err
 	}
 	report(opts, "archive", fmt.Sprintf("%s ready: %d files, %d layers", kind, len(u.fs), len(layers)), false)
 	r := assembleRPMResult(filepath.Base(file), file, kind, u.fs, layers, image, u.extraPackages(), opts.Now, opts, u.rpmFiles, u.kinds)
+	u.applyBinaryMetadata(&r)
 	r.SourceHash = digest
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -782,6 +783,7 @@ func rootfsArchive(ctx context.Context, file string, opts Options) (Result, erro
 	}
 	report(opts, "archive", fmt.Sprintf("root filesystem ready: %d files", len(u.fs)), false)
 	r := assembleRPMResult(filepath.Base(file), file, "archive", u.fs, nil, nil, u.extraPackages(), opts.Now, opts, u.rpmFiles, u.kinds)
+	u.applyBinaryMetadata(&r)
 	r.SourceHash = digest
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -1181,7 +1183,9 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 	sum := sha256.New()
 	diskLimit := diskMetadataLimit(name)
 	keep := size <= maxFileMetadata && interestingPackageMetadata(name) && diskLimit == 0
-	probe := goBinaryCandidate(name, h.Mode, size)
+	// Larger archive binaries are only hashed: retaining their full contents
+	// would exceed the per-file 8 MiB probing budget.
+	probe := !u.opts.SkipBinaries && size <= maxBinaryScanBytes && goBinaryCandidate(name, h.Mode, size)
 	var data []byte
 	switch {
 	case diskLimit != 0 && size <= diskLimit:
@@ -1196,7 +1200,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 			return File{}, err
 		}
 		sum.Write(data)
-		if probe && isNativeBinary(data) {
+		if probe && isNativeBinary(data) && u.binaryBudget.take() {
 			u.recordBinary(name, layer, data)
 		}
 	case probe:
@@ -1206,7 +1210,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 			return File{}, err
 		}
 		sum.Write(head[:n])
-		if isNativeBinary(head) {
+		if isNativeBinary(head) && u.binaryBudget.take() {
 			buf := make([]byte, size)
 			copy(buf, head)
 			if _, err := io.ReadFull(r, buf[4:]); err != nil {
@@ -1228,12 +1232,24 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 	return File{Path: name, Size: size, SHA256: hex.EncodeToString(sum.Sum(nil)), Data: data, Layer: layer}, nil
 }
 
-func (u *unpacker) recordBinary(name, layer string, data []byte) {
-	if !u.binaryBudget.take() {
+// applyBinaryMetadata preserves catalog completeness information while adding
+// the same probe-limit signal used by directory scans.
+func (u *unpacker) applyBinaryMetadata(r *Result) {
+	if u.binaryBudget.count.Load() <= maxClassifiedBinaries {
 		return
 	}
-	pkgs := extractGoBinary(bytes.NewReader(data), int64(len(data)), name, layer)
-	pkgs = append(pkgs, binaryPackages(bytes.NewReader(data), int64(len(data)), name, layer)...)
+	if r.Scan == nil {
+		r.Scan = &ScanMetadata{}
+	}
+	r.Scan.Partial = true
+	r.Scan.LimitReached = joinLimit(r.Scan.LimitReached, "max-binaries")
+}
+
+// The caller reserves a probe before allocating the binary buffer.
+func (u *unpacker) recordBinary(name, layer string, data []byte) {
+	r := boundedBinaryReader(bytes.NewReader(data))
+	pkgs := extractGoBinary(r, int64(len(data)), name, layer)
+	pkgs = append(pkgs, binaryPackages(r, int64(len(data)), name, layer, u.opts)...)
 	if len(pkgs) == 0 {
 		return
 	}

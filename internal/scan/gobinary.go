@@ -2,6 +2,7 @@ package scan
 
 import (
 	"debug/buildinfo"
+	"encoding/binary"
 	"io"
 	"strings"
 )
@@ -26,6 +27,10 @@ func goBinaryPackages(r io.ReaderAt, size int64, source, layer string) (pkgs []P
 			pkgs = nil
 		}
 	}()
+	r = boundedBinaryReader(r)
+	if !binaryHeaderWithinLimits(r) {
+		return nil
+	}
 	info, err := buildinfo.Read(r)
 	if err != nil || info == nil {
 		return nil
@@ -71,4 +76,75 @@ func goVersionNumber(v string) string {
 		return ""
 	}
 	return v
+}
+
+// binaryReadBudget caps total classification and build-info I/O, including
+// repeated reads and ELF headers. Callers share one instance for both probes.
+// Files whose required reads exceed 8 MiB are only hashed beyond that budget.
+type binaryReadBudget struct {
+	io.ReaderAt
+	remaining int64
+}
+
+func boundedBinaryReader(r io.ReaderAt) io.ReaderAt {
+	if _, ok := r.(*binaryReadBudget); ok {
+		return r
+	}
+	return &binaryReadBudget{ReaderAt: r, remaining: maxBinaryScanBytes}
+}
+
+func (r *binaryReadBudget) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, io.EOF
+	}
+	requested := len(p)
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	if len(p) == 0 && requested != 0 {
+		return 0, io.EOF
+	}
+	n, err := r.ReaderAt.ReadAt(p, off)
+	r.remaining -= int64(n)
+	if n < requested && err == nil {
+		err = io.EOF
+	}
+	return n, err
+}
+
+// debug/elf also supports extended counts in section zero. Reject those
+// before the general parser allocates tables from untrusted header counts.
+func binaryHeaderWithinLimits(r io.ReaderAt) bool {
+	var h [64]byte
+	n, err := r.ReadAt(h[:], 0)
+	if n < 4 || !isELF(h[:n]) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	var order binary.ByteOrder
+	switch h[5] {
+	case 1:
+		order = binary.LittleEndian
+	case 2:
+		order = binary.BigEndian
+	default:
+		return false
+	}
+	var count, programs uint16
+	var table uint64
+	switch h[4] {
+	case 1:
+		table = uint64(order.Uint32(h[32:36]))
+		count = order.Uint16(h[48:50])
+		programs = order.Uint16(h[44:46])
+	case 2:
+		table = order.Uint64(h[40:48])
+		count = order.Uint16(h[60:62])
+		programs = order.Uint16(h[56:58])
+	default:
+		return false
+	}
+	return count <= 4096 && programs <= 4096 && (count != 0 || table == 0)
 }

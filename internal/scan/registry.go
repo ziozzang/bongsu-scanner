@@ -11,17 +11,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/httpx"
 )
+
+const maxRegistryManifests = 256
 
 const registryAccept = mediaTypeOCIIndex + ", " + mediaTypeOCIManifest + ", " + mediaTypeDockerList + ", " + mediaTypeDockerManifest
 
@@ -72,14 +76,14 @@ func parseRegistryReference(target string) (registryReference, error) {
 	if hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost") {
 		r.host, r.repository = strings.ToLower(first), rest
 	}
-	if !registryHost.MatchString(r.host) || !registryRepository.MatchString(r.repository) || len(r.repository) > 255 {
-		return registryReference{}, bad
-	}
 	if r.host == "docker.io" || r.host == "index.docker.io" || r.host == "registry-1.docker.io" {
 		r.host = "registry-1.docker.io"
 		if !strings.Contains(r.repository, "/") {
 			r.repository = "library/" + r.repository
 		}
+	}
+	if !registryHost.MatchString(r.host) || !registryRepository.MatchString(r.repository) || len(r.repository) > 255 {
+		return registryReference{}, bad
 	}
 	nameHost := r.host
 	if nameHost == "registry-1.docker.io" {
@@ -94,20 +98,59 @@ func parseRegistryReference(target string) (registryReference, error) {
 	return r, nil
 }
 
+// ValidateRegistryReference validates registry targets without echoing their contents.
+// Other target types are left to their respective scanners.
+func ValidateRegistryReference(target string) error {
+	if !strings.HasPrefix(target, "registry://") && !strings.HasPrefix(target, "oci://") {
+		return nil
+	}
+	_, err := parseRegistryReference(target)
+	return err
+}
+
+// RegistryReferenceForLog removes credentials and queries even from rejected references.
+func RegistryReferenceForLog(target string) string {
+	if !strings.HasPrefix(target, "registry://") && !strings.HasPrefix(target, "oci://") {
+		return target
+	}
+	// Preserve valid shorthand digest references: their '@' is not userinfo.
+	if _, err := parseRegistryReference(target); err == nil {
+		return target
+	}
+	scheme, ref, _ := strings.Cut(target, "://")
+	ref, _, _ = strings.Cut(ref, "?")
+	ref, _, _ = strings.Cut(ref, "#")
+	authority, path, slash := strings.Cut(ref, "/")
+	if i := strings.LastIndexByte(authority, '@'); i >= 0 {
+		authority = authority[i+1:]
+	}
+	ref = authority
+	if slash {
+		ref += "/" + path
+	}
+	safe := scheme + "://" + ref
+	if _, err := parseRegistryReference(safe); err != nil {
+		return scheme + "://<invalid>"
+	}
+	return safe
+}
+
 type registryClient struct {
-	http                 *httpx.Client
-	ref                  registryReference
-	base, user, password string
-	authorization        string
-	insecure             bool
-	remaining, maxBlob   int64
-	layout               string
-	downloaded           map[string]int64
+	http                          *httpx.Client
+	ref                           registryReference
+	base, user, password          string
+	authorization                 string
+	insecure                      bool
+	remaining, maxBlob            int64
+	layout                        string
+	downloaded                    map[string]int64
+	manifests                     map[string]ociDescriptor
+	manifestRequests, descriptors int
 }
 
 func newRegistryClient(ref registryReference, opts Options, layout string) (*registryClient, error) {
 	c := &registryClient{http: httpx.New(5 * time.Minute), ref: ref, insecure: opts.InsecureRegistry,
-		remaining: opts.MaxRegistryBytes, maxBlob: opts.MaxRegistryBlobBytes, layout: layout, downloaded: make(map[string]int64)}
+		remaining: opts.MaxRegistryBytes, maxBlob: opts.MaxRegistryBlobBytes, layout: layout, downloaded: make(map[string]int64), manifests: make(map[string]ociDescriptor)}
 	if c.remaining < 0 || c.maxBlob < 0 {
 		return nil, errors.New("registry download limits must not be negative")
 	}
@@ -127,6 +170,9 @@ func newRegistryClient(ref registryReference, opts Options, layout string) (*reg
 	c.http.HTTP.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) > httpx.MaxRedirects {
 			return httpx.ErrTooManyRedirects
+		}
+		if req.URL.Scheme != "https" {
+			return httpx.ErrInsecureURL
 		}
 		if err := c.checkURL(req.URL); err != nil {
 			return err
@@ -207,6 +253,9 @@ func (c *registryClient) request(ctx context.Context, rawURL, accept, authorizat
 	if err := c.checkURL(u); err != nil {
 		return nil, err
 	}
+	if authorization != "" && u.Scheme != "https" {
+		return nil, errors.New("registry credentials require HTTPS; HTTP loopback allows anonymous access only")
+	}
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
@@ -220,17 +269,14 @@ func (c *registryClient) request(ctx context.Context, rawURL, accept, authorizat
 		}
 		resp, err := c.http.HTTP.Do(req)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			// Avoid url.Error's URL, which can contain a signed redirect query.
-			return nil, errors.New("registry HTTP request failed (connection, timeout, or URL policy)")
+			return nil, registryNetworkError(ctx, err, "registry HTTP request failed (connection, timeout, or URL policy)")
 		}
 		if attempt >= 3 || (resp.StatusCode != 429 && (resp.StatusCode < 500 || resp.StatusCode > 599)) {
 			return resp, nil
 		}
+		delay := registryRetryDelay(resp.Header.Get("Retry-After"), attempt, time.Now())
 		resp.Body.Close()
-		timer := time.NewTimer((200 * time.Millisecond) << attempt)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -240,42 +286,175 @@ func (c *registryClient) request(ctx context.Context, rawURL, accept, authorizat
 	}
 }
 
-func registryChallenge(h http.Header) (string, map[string]string, error) {
-	for _, value := range h.Values("WWW-Authenticate") {
-		scheme, rest, _ := strings.Cut(strings.TrimSpace(value), " ")
-		if !strings.EqualFold(scheme, "Bearer") && !strings.EqualFold(scheme, "Basic") {
-			continue
+// Never retain an untrusted transport error, including in an unwrap chain.
+func registryNetworkError(ctx context.Context, err error, message string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", message, ctx.Err())
+	}
+	for _, kind := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, kind) {
+			return fmt.Errorf("%s: %w", message, kind)
 		}
-		// Auth parameters use commas; MIME parameters use semicolons. Preserve
-		// delimiters and escapes within quoted values (notably multi-action scope).
-		var b strings.Builder
-		b.WriteString(strings.ToLower(scheme))
-		b.WriteByte(';')
-		quoted, escaped := false, false
-		for _, r := range rest {
+	}
+	return errors.New(message)
+}
+
+func registryRetryDelay(value string, attempt int, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value != "" && strings.Trim(value, "0123456789") == "" {
+		seconds, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || seconds > 60 {
+			return 60 * time.Second
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if date, err := http.ParseTime(value); err == nil {
+		return min(max(date.Sub(now), 0), 60*time.Second)
+	}
+	base := (200 * time.Millisecond) << min(attempt, 8)
+	return base/2 + time.Duration(rand.Int64N(int64(base/2)+1))
+}
+
+// Split challenge lists only at unquoted commas (RFC 9110 section 11.3).
+// A token followed by '=' continues auth-params; any other token starts a challenge.
+func registryChallenge(h http.Header) (string, map[string]string, error) {
+	type challenge struct{ scheme, params string }
+	var challenges []challenge
+	for _, value := range h.Values("WWW-Authenticate") {
+		start, quoted, escaped := 0, false, false
+		var parts []string
+		for i := 0; i < len(value); i++ {
+			ch := value[i]
 			if escaped {
 				escaped = false
-			} else if quoted && r == '\\' {
+			} else if quoted && ch == '\\' {
 				escaped = true
-			} else if r == '"' {
+			} else if ch == '"' {
 				quoted = !quoted
-			} else if r == ',' && !quoted {
-				r = ';'
+			} else if ch == ',' && !quoted {
+				parts = append(parts, value[start:i])
+				start = i + 1
 			}
-			b.WriteRune(r)
 		}
-		kind, params, err := mime.ParseMediaType(b.String())
-		if err == nil {
-			return kind, params, nil
+		if quoted || escaped {
+			continue
+		}
+		parts = append(parts, value[start:])
+		current := -1
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			token, rest := registryAuthToken(part)
+			if token == "" {
+				current = -1
+				continue
+			}
+			rest = strings.TrimLeft(rest, " \t")
+			if strings.HasPrefix(rest, "=") {
+				if current >= 0 {
+					challenges[current].params += "," + part
+				}
+				continue
+			}
+			challenges = append(challenges, challenge{strings.ToLower(token), rest})
+			current = len(challenges) - 1
+		}
+	}
+	// Prefer Bearer if both are offered, avoiding an unnecessary Basic exchange.
+	for _, kind := range []string{"bearer", "basic"} {
+		for _, ch := range challenges {
+			if ch.scheme != kind {
+				continue
+			}
+			if params, ok := registryAuthParams(ch.params); ok {
+				return kind, params, nil
+			}
 		}
 	}
 	return "", nil, errors.New("registry returned no supported authentication challenge")
+}
+
+func registryAuthToken(s string) (string, string) {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))) {
+			break
+		}
+		i++
+	}
+	return s[:i], s[i:]
+}
+
+func registryAuthParams(s string) (map[string]string, bool) {
+	params := make(map[string]string)
+	for s = strings.TrimSpace(s); s != ""; {
+		key, rest := registryAuthToken(s)
+		rest = strings.TrimLeft(rest, " \t")
+		if key == "" || !strings.HasPrefix(rest, "=") {
+			return nil, false
+		}
+		s = strings.TrimLeft(rest[1:], " \t")
+		var value string
+		if strings.HasPrefix(s, "\"") {
+			var b strings.Builder
+			s = s[1:]
+			closed := false
+			for len(s) > 0 {
+				c := s[0]
+				s = s[1:]
+				if c == '"' {
+					closed = true
+					break
+				}
+				if c == '\\' {
+					if s == "" {
+						return nil, false
+					}
+					c = s[0]
+					s = s[1:]
+				}
+				if c < 0x20 && c != '\t' || c == 0x7f {
+					return nil, false
+				}
+				b.WriteByte(c)
+			}
+			if !closed {
+				return nil, false
+			}
+			value = b.String()
+		} else {
+			value, s = registryAuthToken(s)
+			if value == "" {
+				return nil, false
+			}
+		}
+		key = strings.ToLower(key)
+		if _, exists := params[key]; exists {
+			return nil, false
+		}
+		params[key] = value
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
+			break
+		}
+		if s[0] != ',' {
+			return nil, false
+		}
+		s = strings.TrimSpace(s[1:])
+	}
+	return params, true
 }
 
 func (c *registryClient) authenticate(ctx context.Context, h http.Header) error {
 	kind, params, err := registryChallenge(h)
 	if err != nil {
 		return err
+	}
+	if !strings.HasPrefix(c.base, "https://") {
+		return errors.New("registry authentication requires HTTPS; HTTP loopback allows anonymous access only")
 	}
 	basic := ""
 	if c.user != "" || c.password != "" {
@@ -292,6 +471,9 @@ func (c *registryClient) authenticate(ctx context.Context, h http.Header) error 
 	if err != nil || u == nil {
 		return errors.New("invalid registry token realm")
 	}
+	if u.Scheme != "https" {
+		return errors.New("registry token realm requires HTTPS")
+	}
 	if err := c.checkURL(u); err != nil {
 		return err
 	}
@@ -299,14 +481,7 @@ func (c *registryClient) authenticate(ctx context.Context, h http.Header) error 
 	if service := params["service"]; service != "" {
 		q.Set("service", service)
 	}
-	scope := params["scope"]
-	if scope == "" {
-		scope = "repository:" + c.ref.repository + ":pull"
-	}
-	q.Del("scope")
-	for _, s := range strings.Fields(scope) {
-		q.Add("scope", s)
-	}
+	q.Set("scope", "repository:"+c.ref.repository+":pull")
 	u.RawQuery = q.Encode()
 	resp, err := c.request(ctx, u.String(), "application/json", basic)
 	if err != nil {
@@ -318,10 +493,7 @@ func (c *registryClient) authenticate(ctx context.Context, h http.Header) error 
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return errors.New("cannot read registry token response")
+		return registryNetworkError(ctx, err, "cannot read registry token response")
 	}
 	var token struct {
 		Token       string `json:"token"`
@@ -366,6 +538,20 @@ func (c *registryClient) get(ctx context.Context, resource, accept string) (*htt
 }
 
 func (c *registryClient) manifest(ctx context.Context, ref string, expected *ociDescriptor) (ociDescriptor, []byte, error) {
+	if expected != nil && !isIndexType(expected.MediaType) && !isManifestType(expected.MediaType) {
+		return ociDescriptor{}, nil, errors.New("unsupported registry manifest descriptor media type")
+	}
+	if d, ok := c.manifests[ref]; ok {
+		if expected != nil && (expected.Digest != d.Digest || expected.Size != d.Size || expected.MediaType != d.MediaType) {
+			return d, nil, errors.New("registry cached manifest descriptor mismatch")
+		}
+		raw, err := os.ReadFile(filepath.Join(c.layout, digestPath(d.Digest)))
+		return d, raw, err
+	}
+	if c.manifestRequests >= maxRegistryManifests {
+		return ociDescriptor{}, nil, errors.New("registry manifest request budget exceeded")
+	}
+	c.manifestRequests++
 	limit := min(int64(maxMetadata), c.maxBlob, c.remaining)
 	if expected != nil && (!validRegistryDigest(expected.Digest) || expected.Size < 0 || expected.Size > limit) {
 		return ociDescriptor{}, nil, errors.New("invalid or oversized registry manifest descriptor")
@@ -375,12 +561,16 @@ func (c *registryClient) manifest(ctx context.Context, ref string, expected *oci
 		return ociDescriptor{}, nil, err
 	}
 	defer resp.Body.Close()
+	contentType, _, typeErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if typeErr != nil || (!isIndexType(contentType) && !isManifestType(contentType)) {
+		return ociDescriptor{}, nil, errors.New("unsupported registry manifest Content-Type")
+	}
 	if resp.ContentLength > limit {
 		return ociDescriptor{}, nil, httpx.ErrTooLarge
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return ociDescriptor{}, nil, err
+		return ociDescriptor{}, nil, registryNetworkError(ctx, err, "cannot read registry manifest response")
 	}
 	if int64(len(raw)) > limit {
 		return ociDescriptor{}, nil, httpx.ErrTooLarge
@@ -406,15 +596,19 @@ func (c *registryClient) manifest(ctx context.Context, ref string, expected *oci
 	}
 	d.MediaType = probe.MediaType
 	if d.MediaType == "" {
-		d.MediaType, _, _ = mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		d.MediaType = contentType
 	}
 	if !isIndexType(d.MediaType) && !isManifestType(d.MediaType) {
 		return d, nil, errors.New("unsupported registry manifest media type")
+	}
+	if d.MediaType != contentType || expected != nil && expected.MediaType != d.MediaType {
+		return d, nil, errors.New("registry manifest media type mismatch")
 	}
 	if err := os.WriteFile(filepath.Join(c.layout, digestPath(d.Digest)), raw, 0600); err != nil {
 		return d, nil, err
 	}
 	c.downloaded[d.Digest] = d.Size
+	c.manifests[d.Digest] = d
 	return d, raw, nil
 }
 
@@ -456,18 +650,18 @@ func (c *registryClient) blob(ctx context.Context, d ociDescriptor, metadata boo
 	closeErr := f.Close()
 	c.remaining -= n
 	if copyErr != nil {
-		return copyErr
+		return registryNetworkError(ctx, copyErr, "cannot read registry blob response")
 	}
 	if closeErr != nil {
 		return closeErr
 	}
 	var extra [1]byte
 	more, readErr := io.ReadFull(resp.Body, extra[:])
+	if readErr != nil && readErr != io.EOF {
+		return registryNetworkError(ctx, readErr, "cannot read registry blob response")
+	}
 	if n != d.Size || more != 0 {
 		return errors.New("registry blob size mismatch")
-	}
-	if readErr != io.EOF {
-		return readErr
 	}
 	if "sha256:"+hex.EncodeToString(h.Sum(nil)) != d.Digest {
 		return errors.New("registry blob digest mismatch")
@@ -491,6 +685,15 @@ func (c *registryClient) selectManifest(ctx context.Context, ref string, expecte
 		if json.Unmarshal(raw, &index) != nil || len(index.Manifests) > maxIndexManifests {
 			return d, ociManifest{}, errors.New("invalid or oversized registry index")
 		}
+		if len(index.Manifests) > maxRegistryManifests-c.descriptors {
+			return d, ociManifest{}, errors.New("registry manifest descriptor budget exceeded")
+		}
+		c.descriptors += len(index.Manifests)
+		for _, child := range index.Manifests {
+			if !isIndexType(child.MediaType) && !isManifestType(child.MediaType) {
+				return d, ociManifest{}, errors.New("unsupported registry index descriptor media type")
+			}
+		}
 		// Prefer an advertised match, then inspect descriptors without platform.
 		for _, exact := range []bool{true, false} {
 			for _, child := range index.Manifests {
@@ -509,6 +712,18 @@ func (c *registryClient) selectManifest(ctx context.Context, ref string, expecte
 	var m ociManifest
 	if json.Unmarshal(raw, &m) != nil || len(m.Layers) > maxImageLayers {
 		return d, m, errors.New("invalid or oversized registry image manifest")
+	}
+	if m.Config.MediaType != "application/vnd.oci.image.config.v1+json" && m.Config.MediaType != "application/vnd.docker.container.image.v1+json" {
+		return d, m, errors.New("unsupported registry image config media type")
+	}
+	for _, layer := range m.Layers {
+		switch layer.MediaType {
+		case mediaTypeOCILayer, mediaTypeOCILayerGzip, mediaTypeOCILayerZstd,
+			"application/vnd.oci.image.layer.nondistributable.v1.tar", "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip", "application/vnd.oci.image.layer.nondistributable.v1.tar+zstd",
+			"application/vnd.docker.image.rootfs.diff.tar.gzip", "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip":
+		default:
+			return d, m, errors.New("unsupported registry layer media type")
+		}
 	}
 	if err := c.blob(ctx, m.Config, true); err != nil {
 		return d, m, err

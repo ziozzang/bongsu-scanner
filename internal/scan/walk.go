@@ -920,7 +920,7 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 // probeBinary extracts Go build info and runtime versions. The file is
 // read through io.ReaderAt, so it does not matter that hashing consumed it.
 func (w *walkState) probeBinary(f *os.File, rel string, size int64) {
-	r := walkContextReaderAt{w.ctx, f}
+	r := boundedBinaryReader(walkContextReaderAt{w.ctx, f})
 	if w.binaryBudget == nil {
 		w.binaryBudget = &binaryProbeBudget{}
 	}
@@ -936,7 +936,7 @@ func (w *walkState) probeBinary(f *os.File, rel string, size int64) {
 			return
 		}
 		pkgs = goBinaryPackages(r, size, rel, "")
-		pkgs = append(pkgs, binaryPackages(r, size, rel, "")...)
+		pkgs = append(pkgs, binaryPackages(r, size, rel, "", w.opts)...)
 	}
 	if len(pkgs) == 0 {
 		return

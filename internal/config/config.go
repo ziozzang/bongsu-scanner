@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -428,6 +429,49 @@ func render(cfg Config) []byte {
 
 // Marshal returns the effective configuration in the supported YAML subset.
 func Marshal(cfg Config) []byte { return render(cfg) }
+
+// MarshalDisplay masks mirror credentials in a copy, leaving persistence exact.
+func MarshalDisplay(cfg Config) []byte {
+	if cfg.DB.Mirror != "" {
+		cfg.DB.Mirror = displayMirror(cfg.DB.Mirror)
+	}
+	return render(cfg)
+}
+
+func displayMirror(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" {
+		return "[REDACTED]"
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "[REDACTED]"
+	}
+	changed := false
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword("REDACTED", "REDACTED")
+		} else {
+			u.User = url.User("REDACTED")
+		}
+		changed = true
+	}
+	queryChanged := false
+	for key := range query {
+		switch strings.ToLower(key) {
+		case "token", "key", "sig", "signature", "password":
+			query.Set(key, "REDACTED")
+			queryChanged = true
+		}
+	}
+	if queryChanged {
+		u.RawQuery = query.Encode()
+	}
+	if changed || queryChanged {
+		return u.String()
+	}
+	return raw
+}
 
 // InitTemplate creates a commented default configuration without replacing an
 // existing file or generating a signing identity.

@@ -336,10 +336,84 @@ func CPEAttributes(raw string) ([]string, bool) {
 	for len(parts) < 11 {
 		parts = append(parts, "*")
 	}
-	if parts[0] != "a" && parts[0] != "o" && parts[0] != "h" {
+	if part := strings.ToLower(parts[0]); part != "a" && part != "o" && part != "h" {
 		return nil, false
 	}
 	return parts, true
+}
+
+// CPEAttributeKind distinguishes logical values and patterns from escaped literals.
+type CPEAttributeKind uint8
+
+const (
+	CPEAny CPEAttributeKind = iota
+	CPENA
+	CPELiteral
+	CPEPattern
+)
+
+// CPEAttribute is a case-normalized, unescaped CPE 2.3 attribute.
+type CPEAttribute struct {
+	Kind      CPEAttributeKind
+	Value     string
+	formatted string
+}
+
+// Formatted returns a normalized attribute preserving literal escapes. It can
+// safely be passed to LookupCPE or joined into a formatted vendor:product pair.
+func (a CPEAttribute) Formatted() string { return a.formatted }
+
+// ParseCPEAttribute classifies before unescaping so \? and \* remain literals.
+func ParseCPEAttribute(raw string) (CPEAttribute, bool) {
+	if raw == "" || strings.ContainsAny(raw, " \t\r\n") {
+		return CPEAttribute{}, false
+	}
+	a := CPEAttribute{Kind: CPELiteral}
+	if raw == "*" {
+		a.Kind = CPEAny
+	} else if raw == "-" {
+		a.Kind = CPENA
+	}
+	var value, formatted strings.Builder
+	raw = strings.ToLower(raw)
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		escaped := c == '\\'
+		if escaped {
+			i++
+			if i == len(raw) {
+				return CPEAttribute{}, false
+			}
+			c = raw[i]
+		} else if c == ':' {
+			return CPEAttribute{}, false
+		} else if (c == '*' || c == '?') && a.Kind != CPEAny {
+			a.Kind = CPEPattern
+		}
+		value.WriteByte(c)
+		if c == '\\' || c == ':' || escaped && (c == '*' || c == '?' || c == '-' && len(raw) == 2) {
+			formatted.WriteByte('\\')
+		}
+		formatted.WriteByte(c)
+	}
+	a.Value, a.formatted = value.String(), formatted.String()
+	return a, true
+}
+
+// ParseCPE parses the eleven attributes, padding omitted inventory fields with ANY.
+func ParseCPE(raw string) ([]CPEAttribute, bool) {
+	parts, ok := CPEAttributes(raw)
+	if !ok {
+		return nil, false
+	}
+	attrs := make([]CPEAttribute, len(parts))
+	for i, part := range parts {
+		attrs[i], ok = ParseCPEAttribute(part)
+		if !ok {
+			return nil, false
+		}
+	}
+	return attrs, true
 }
 
 func appendNVDCPE(r *Record, node nvdNode, requiresAND, negated, configuration bool) {
@@ -351,11 +425,11 @@ func appendNVDCPE(r *Record, node nvdNode, requiresAND, negated, configuration b
 		if !m.Vulnerable {
 			continue
 		}
-		attrs, ok := CPEAttributes(m.Criteria)
+		attrs, ok := ParseCPE(m.Criteria)
 		if !ok {
 			continue
 		}
-		a := Affected{Ecosystem: "CPE", Package: attrs[1] + ":" + attrs[2], Database: map[string]any{
+		a := Affected{Ecosystem: "CPE", Package: attrs[1].Formatted() + ":" + attrs[2].Formatted(), Database: map[string]any{
 			"cpe": m.Criteria, "operator": node.Operator, "negate": negated, "node_children": len(node.Children) > 0 || len(node.Nodes) > 0,
 		}}
 		if requiresAND || unsupported {
@@ -381,9 +455,9 @@ func appendNVDCPE(r *Record, node nvdNode, requiresAND, negated, configuration b
 				events = append(events, Event{LastAffected: m.EndIncluding})
 			}
 			a.Ranges = []Range{{Type: "ECOSYSTEM", Events: events}}
-		} else if attrs[3] != "-" && !strings.ContainsAny(attrs[3], "*?") {
-			a.Versions = []string{attrs[3]}
-		} else if attrs[3] == "*" {
+		} else if attrs[3].Kind == CPELiteral {
+			a.Versions = []string{attrs[3].Value}
+		} else if attrs[3].Kind == CPEAny {
 			a.Ranges = []Range{{Type: "ECOSYSTEM", Events: []Event{{Introduced: "0"}}}}
 		}
 		r.Affected = append(r.Affected, a)

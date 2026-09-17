@@ -12,17 +12,19 @@ import (
 
 func TestClassifiedBinarySBOMIdentifiers(t *testing.T) {
 	root := t.TempDir()
+	// Each fixture carries the version string plus the product-specific
+	// secondary marker the classifier requires (see internal/scan/binaryclass.go).
 	fixtures := []struct{ file, signature, name, version, vendorProduct string }{
-		{"python3", "Python 3.12.14", "python", "3.12.14", "python:python"},
-		{"node", "node/v22.12.0", "node", "22.12.0", "nodejs:node.js"},
-		{"ruby", "ruby 3.3.5p100", "ruby", "3.3.5", "ruby-lang:ruby"},
-		{"openssl", "OpenSSL 3.0.13 30 Jan 2024", "openssl", "3.0.13", "openssl:openssl"},
-		{"busybox", "BusyBox v1.36.1", "busybox", "1.36.1", "busybox:busybox"},
-		{"nginx", "nginx/1.27.0", "nginx", "1.27.0", "f5:nginx"},
-		{"httpd", "Apache/2.4.62", "httpd", "2.4.62", "apache:http_server"},
-		{"redis-server", "redis_version:7.2.4", "redis", "7.2.4", "redis:redis"},
-		{"postgres", "PostgreSQL 16.4", "postgres", "16.4", "postgresql:postgresql"},
-		{"curl", "curl 8.9.1", "curl", "8.9.1", "haxx:curl"},
+		{"python3", "Python 3.12.14\x00Py_InitializeEx", "python", "3.12.14", "python:python"},
+		{"node", "node/v22.12.0\x00node_module_register", "node", "22.12.0", "nodejs:node.js"},
+		{"ruby", "ruby 3.3.5p100\x00ruby_init", "ruby", "3.3.5", "ruby-lang:ruby"},
+		{"openssl", "OpenSSL 3.0.13 30 Jan 2024\x00OPENSSLDIR", "openssl", "3.0.13", "openssl:openssl"},
+		{"busybox", "BusyBox v1.36.1\x00BusyBox multi-call", "busybox", "1.36.1", "busybox:busybox"},
+		{"nginx", "nginx/1.27.0\x00ngx_http", "nginx", "1.27.0", "f5:nginx"},
+		{"httpd", "Apache/2.4.62\x00ap_server_root", "httpd", "2.4.62", "apache:http_server"},
+		{"redis-server", "redis_version:7.2.4\x00redis-server", "redis", "7.2.4", "redis:redis"},
+		{"postgres", "PostgreSQL 16.4\x00PGDATA", "postgres", "16.4", "postgresql:postgresql"},
+		{"curl", "curl 8.9.1\x00curl_easy_init", "curl", "8.9.1", "haxx:curl"},
 	}
 	for _, f := range fixtures {
 		if err := os.WriteFile(filepath.Join(root, f.file), []byte("\x7fELF\x00"+f.signature+"\x00"), 0o755); err != nil {

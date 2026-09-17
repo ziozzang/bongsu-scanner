@@ -3,6 +3,7 @@ package scan
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"path"
 	"regexp"
@@ -27,12 +28,15 @@ func (b *binaryProbeBudget) take() bool {
 type binaryClassifier struct {
 	name, vendor, product string
 	file                  *regexp.Regexp
-	marker                []byte
+	markers               [][]byte
 	versions              []*regexp.Regexp
 }
 
 func binaryRule(name, vendor, product, file, marker string, versions ...string) binaryClassifier {
-	r := binaryClassifier{name: name, vendor: vendor, product: product, file: regexp.MustCompile(file), marker: []byte(marker)}
+	r := binaryClassifier{name: name, vendor: vendor, product: product, file: regexp.MustCompile(file)}
+	for _, m := range strings.Split(marker, "|") {
+		r.markers = append(r.markers, []byte(m))
+	}
 	for _, v := range versions {
 		r.versions = append(r.versions, regexp.MustCompile(v))
 	}
@@ -44,27 +48,27 @@ func binaryRule(name, vendor, product, file, marker string, versions ...string) 
 // CPEs are attached here, before matching; both SBOM writers already preserve
 // Package.CPE. Keeping the mapping here avoids a scan -> sbom import cycle.
 var binaryClassifiers = []binaryClassifier{
-	binaryRule("python", "python", "python", `^(lib)?python([0-9.]|$)`, "",
+	binaryRule("python", "python", "python", `^(?:python(?:[23](?:\.[0-9]+)?)?(?:\.exe)?|libpython[23]\.[0-9]+(?:m|d)?\.so(?:\.[0-9]+)*)$`, "Py_InitializeEx|PYTHONPATH",
 		`Python ([23]\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`, `([23]\.[0-9]+\.[0-9]+) \((?:main|default|tags/)`,
 		`\x00([23]\.[0-9]+\.[0-9]+)\x00`),
-	binaryRule("node", "nodejs", "node.js", `^(?:node(?:js)?(?:\.exe)?$|libnode[.-])`, "node/v", `node/v([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("ruby", "ruby-lang", "ruby", `^(?:ruby|libruby)(?:[0-9.-]|$)`, "", `ruby ([0-9]+\.[0-9]+\.[0-9]+)(?:p[0-9]*|[^0-9.]|$)`, `RUBY_VERSION[\x00 ="\t]+([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("openssl", "openssl", "openssl", `^(?:openssl(?:\.exe)?$|lib(?:ssl|crypto)[.-])`, "OpenSSL ", `OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]?)(?:[^0-9.a-z]|$)`),
-	binaryRule("busybox", "busybox", "busybox", `^busybox(?:[.-]|$)`, "BusyBox v", `BusyBox v([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("php", "php", "php", `^(?:php|libphp)(?:[0-9.-]|$)`, "", `(?:X-Powered-By: PHP/|PHP Version )([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("perl", "perl", "perl", `^(?:perl|libperl)(?:[0-9.-]|$)`, "", `/(?:lib/)?perl5/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`, `This is perl 5, version ([0-9]+)(?:, subversion ([0-9]+))?`),
-	binaryRule("nginx", "f5", "nginx", `^nginx(?:[.-]|$)`, "nginx/", `nginx/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("httpd", "apache", "http_server", `^(?:httpd|apache2?)(?:[.-]|$)`, "Apache/", `Apache/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("redis", "redis", "redis", `^redis(?:[.-]|$)`, "", `(?:Redis version |redis_version:)([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("postgres", "postgresql", "postgresql", `^(?:postgres|postmaster|libpq)(?:[.-]|$)`, "PostgreSQL ", `PostgreSQL ([0-9]+\.[0-9]+(?:\.[0-9]+)?)(?:[^0-9.]|$)`),
-	binaryRule("mariadb", "mariadb", "mariadb", `^(?:mysql|mysqld|mariadb|mariadbd)(?:[.-]|$)`, "MariaDB", `([0-9]+\.[0-9]+\.[0-9]+)-MariaDB`, `MariaDB ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("mysql", "oracle", "mysql", `^(?:mysql|mysqld|libmysqlclient)(?:[.-]|$)`, "", `(?:MySQL |mysql  Ver |mysqld  Ver )([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("curl", "haxx", "curl", `^curl(?:\.exe)?$`, "curl ", `curl ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("sqlite", "sqlite", "sqlite", `^(?:libsqlite3|sqlite3)(?:[.-]|$)`, "sqlite3_libversion", `\x00(3\.[0-9]+\.[0-9]+)\x00`),
-	binaryRule("zlib", "zlib", "zlib", `^libz(?:[.-]|$)`, "deflate", `\x00(1\.[0-9]+(?:\.[0-9]+)?)\x00`),
-	binaryRule("glibc", "gnu", "glibc", `^(?:libc[.-]|ld-linux)`, "GNU C Library", `GNU C Library [^\x00\n]{0,160}stable release version ([0-9]+\.[0-9]+)(?:\.[^0-9]|[^0-9.]|$)`),
-	binaryRule("musl", "musl-libc", "musl", `^(?:libc[.-]|ld-musl)`, "musl libc", `musl libc[^\x00]{0,100}\nVersion ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
-	binaryRule("bash", "gnu", "bash", `^bash(?:[.-]|$)`, "GNU bash, version ", `GNU bash, version ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`, `\x00([0-9]+\.[0-9]+\.[0-9]+)\([0-9]+\)-release\x00`),
+	binaryRule("node", "nodejs", "node.js", `^(?:node(?:js)?(?:\.exe)?|libnode\.so(?:\.[0-9]+)*)$`, "node_module_register|NODE_OPTIONS", `node/v([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("ruby", "ruby-lang", "ruby", `^(?:ruby(?:[0-9]+\.[0-9]+)?(?:\.exe)?|libruby(?:-[0-9]+\.[0-9]+)?\.so(?:\.[0-9]+)*)$`, "ruby_init|RUBYLIB", `ruby ([0-9]+\.[0-9]+\.[0-9]+)(?:p[0-9]*|[^0-9.]|$)`, `RUBY_VERSION[\x00 ="\t]+([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("openssl", "openssl", "openssl", `^(?:openssl(?:\.exe)?|lib(?:ssl|crypto)\.so(?:\.[0-9]+)*)$`, "OPENSSLDIR|OpenSSL_version|SSL_CTX_new", `OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]?)(?:[^0-9.a-z]|$)`),
+	binaryRule("busybox", "busybox", "busybox", `^busybox(?:\.exe)?$`, "BusyBox multi-call|multi-call binary", `BusyBox v([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("php", "php", "php", `^(?:php(?:[0-9]+(?:\.[0-9]+)?)?(?:\.exe)?|libphp[0-9]*\.so(?:\.[0-9]+)*)$`, "php_version|PHP_INI_SCAN_DIR", `(?:X-Powered-By: PHP/|PHP Version )([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("perl", "perl", "perl", `^(?:perl(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?|libperl\.so(?:\.[0-9]+)*)$`, "Perl_runops|PERL5LIB", `/(?:lib/)?perl5/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`, `This is perl 5, version ([0-9]+)(?:, subversion ([0-9]+))?`),
+	binaryRule("nginx", "f5", "nginx", `^nginx(?:\.exe)?$`, "ngx_", `nginx/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("httpd", "apache", "http_server", `^(?:httpd|apache2?)(?:\.exe)?$`, "ap_server_root|APACHE_RUN_DIR", `Apache/([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("redis", "redis", "redis", `^redis-server(?:\.exe)?$`, "redis-server", `(?:Redis version |redis_version:)([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("postgres", "postgresql", "postgresql", `^(?:(?:postgres|postmaster)(?:\.exe)?|libpq\.so(?:\.[0-9]+)*)$`, "PGDATA|PQconnectdb", `PostgreSQL ([0-9]+\.[0-9]+(?:\.[0-9]+)?)(?:[^0-9.]|$)`),
+	binaryRule("mariadb", "mariadb", "mariadb", `^(?:mysql|mysqld|mariadb|mariadbd)(?:\.exe)?$`, "mysql_real_connect|MYSQL_HOME", `([0-9]+\.[0-9]+\.[0-9]+)-MariaDB`, `MariaDB ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("mysql", "oracle", "mysql", `^(?:(?:mysql|mysqld)(?:\.exe)?|libmysqlclient\.so(?:\.[0-9]+)*)$`, "mysql_real_connect|MYSQL_HOME", `(?:MySQL |mysql  Ver |mysqld  Ver )([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("curl", "haxx", "curl", `^(?:curl(?:\.exe)?|libcurl\.so(?:\.[0-9]+)*)$`, "curl_easy_init", `(?:curl |libcurl/)([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("sqlite", "sqlite", "sqlite", `^(?:sqlite3(?:\.exe)?|libsqlite3\.so(?:\.[0-9]+)*)$`, "sqlite3_libversion", `\x00(3\.[0-9]+\.[0-9]+)\x00`),
+	binaryRule("zlib", "zlib", "zlib", `^libz\.so(?:\.[0-9]+)*$`, "deflate", `\x00(1\.[0-9]+(?:\.[0-9]+)?)\x00`),
+	binaryRule("glibc", "gnu", "glibc", `^(?:libc\.so(?:\.[0-9]+)*|libc-[0-9]+\.[0-9]+\.so|ld-linux(?:-[a-z0-9_-]+)?\.so(?:\.[0-9]+)*)$`, "GNU C Library", `GNU C Library [^\x00\n]{0,160}stable release version ([0-9]+\.[0-9]+)(?:\.[^0-9]|[^0-9.]|$)`),
+	binaryRule("musl", "musl-libc", "musl", `^(?:libc\.so(?:\.[0-9]+)*|libc\.musl-[a-z0-9_-]+\.so(?:\.[0-9]+)*|ld-musl-[a-z0-9_-]+\.so(?:\.[0-9]+)*)$`, "musl libc", `musl libc[^\x00]{0,100}\nVersion ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`),
+	binaryRule("bash", "gnu", "bash", `^bash(?:\.exe)?$`, "BASH_VERSION|BASHOPTS", `GNU bash, version ([0-9]+\.[0-9]+\.[0-9]+)(?:[^0-9.]|$)`, `\x00([0-9]+\.[0-9]+\.[0-9]+)\([0-9]+\)-release\x00`),
 }
 
 func binaryRules(source string) []binaryClassifier {
@@ -107,36 +111,9 @@ func binaryPackage(name, version, vendor, product, source, layer string) Package
 
 var binaryPythonFileVersion = regexp.MustCompile(`^(?:lib)?python([23](?:\.[0-9]+)?)`)
 
-// Bare strings can belong to statically linked dependencies. Require one
-// unambiguous version, constrained by the Python ABI in the filename when
-// available. Limit candidate matches as well as bytes on malicious inputs.
-func uniqueBinaryVersion(re *regexp.Regexp, data []byte, name, source string) string {
-	prefix := ""
-	if name == "python" {
-		if m := binaryPythonFileVersion.FindStringSubmatch(path.Base(source)); len(m) == 2 {
-			prefix = m[1] + "."
-		}
-	}
-	version := ""
-	for attempts := 0; attempts < 32; attempts++ {
-		m := re.FindSubmatchIndex(data)
-		if len(m) < 4 {
-			return version
-		}
-		candidate := string(data[m[2]:m[3]])
-		if strings.HasPrefix(candidate, prefix) {
-			if version != "" && version != candidate {
-				return ""
-			}
-			version = candidate
-		}
-		// Keep the terminating NUL: it may begin the next string's match.
-		data = data[m[1]-1:]
-	}
-	return ""
-}
-
-func binaryPackages(r io.ReaderAt, size int64, source, layer string) []Package {
+// Collect candidates across all signatures; conflicting versions are ambiguous.
+// Bare Python versions are constrained by the filename's ABI.
+func binaryPackages(r io.ReaderAt, size int64, source, layer string, options ...Options) []Package {
 	if r == nil || size < 4 || size > maxGoBinary {
 		return nil
 	}
@@ -144,6 +121,7 @@ func binaryPackages(r io.ReaderAt, size int64, source, layer string) []Package {
 	if len(rules) == 0 {
 		return nil
 	}
+	r = boundedBinaryReader(r)
 	var head [4]byte
 	if _, err := r.ReadAt(head[:], 0); err != nil || !isNativeBinary(head[:]) {
 		return nil
@@ -151,44 +129,62 @@ func binaryPackages(r io.ReaderAt, size int64, source, layer string) []Package {
 	data := binaryScanData(r, size, isELF(head[:]))
 	var pkgs []Package
 	for _, rule := range rules {
-		if len(rule.marker) != 0 && !bytes.Contains(data, rule.marker) {
+		marked := false
+		for _, marker := range rule.markers {
+			marked = marked || bytes.Contains(data, marker)
+		}
+		if !marked || rule.name == "mysql" && bytes.Contains(data, []byte("MariaDB")) {
 			continue
 		}
-		if rule.name == "mysql" && bytes.Contains(data, []byte("MariaDB")) {
-			continue
-		}
+		versions := map[string]bool{}
+		ambiguous := false
 		for i, re := range rule.versions {
-			// Most Python builds format the version at runtime. Avoid an
-			// unanchored numeric regex over megabytes when no banner exists.
+			// Avoid scanning for formatted Python versions when their marker is absent.
 			if rule.name == "python" && i == 1 && !bytes.Contains(data, []byte(" (main")) && !bytes.Contains(data, []byte(" (default")) && !bytes.Contains(data, []byte(" (tags/")) {
 				continue
 			}
-			// A bare Python version needs an independent Python API marker.
-			if rule.name == "python" && i == 2 && !bytes.Contains(data, []byte("Py_GetVersion")) {
-				continue
-			}
-			var version string
-			if rule.name == "python" && i == 2 || rule.name == "sqlite" || rule.name == "zlib" {
-				version = uniqueBinaryVersion(re, data, rule.name, source)
-			} else {
-				m := re.FindSubmatch(data)
-				if len(m) < 2 {
+			prefix := ""
+			if rule.name == "python" && i == 2 {
+				if !bytes.Contains(data, []byte("Py_GetVersion")) {
 					continue
 				}
-				version = string(m[1])
+				if m := binaryPythonFileVersion.FindStringSubmatch(path.Base(source)); len(m) == 2 {
+					prefix = m[1] + "."
+				}
+			}
+			remaining := data
+			for attempts := 0; ; attempts++ {
+				m := re.FindSubmatchIndex(remaining)
+				if len(m) < 4 {
+					break
+				}
+				if attempts == 32 {
+					ambiguous = true
+					break
+				}
+				version := string(remaining[m[2]:m[3]])
 				if rule.name == "perl" && i == 1 {
 					patch := "0"
-					if len(m[2]) != 0 {
-						patch = string(m[2])
+					if len(m) >= 6 && m[4] >= 0 {
+						patch = string(remaining[m[4]:m[5]])
 					}
 					version = "5." + version + "." + patch
 				}
+				if strings.HasPrefix(version, prefix) {
+					versions[version] = true
+				}
+				// Keep a delimiter which may also start the next match.
+				remaining = remaining[max(m[3], m[1]-1):]
 			}
-			if version == "" {
-				continue
+		}
+		if ambiguous || len(versions) > 1 {
+			for _, opts := range options {
+				report(opts, "binary", fmt.Sprintf("%s: ambiguous %s version (%d distinct candidates)", source, rule.name, len(versions)), true)
 			}
+			continue
+		}
+		for version := range versions {
 			pkgs = append(pkgs, binaryPackage(rule.name, version, rule.vendor, rule.product, source, layer))
-			break
 		}
 	}
 	return pkgs
@@ -196,9 +192,12 @@ func binaryPackages(r io.ReaderAt, size int64, source, layer string) []Package {
 
 // Limit content scans to 8 MiB total. For large ELF files, reserve half of
 // that budget for .rodata when it lies beyond the prefix. Section headers
-// and the string table are separately bounded to 4096 entries / 64 KiB.
+// and the string table are bounded to 4096 entries / 64 KiB, and their
+// reads also count against the shared classification/build-info budget.
 func binaryScanData(r io.ReaderAt, size int64, elf bool) []byte {
-	prefix := min(size, int64(maxBinaryScanBytes))
+	r = boundedBinaryReader(r)
+	budget := r.(*binaryReadBudget)
+	prefix := min(size, budget.remaining)
 	var off, length int64
 	if elf && size > maxBinaryScanBytes {
 		off, length = binaryRodata(r, size)
@@ -212,6 +211,8 @@ func binaryScanData(r io.ReaderAt, size int64, elf bool) []byte {
 			length = 0
 		}
 	}
+	length = min(length, budget.remaining)
+	prefix = min(prefix, budget.remaining-length)
 	data := make([]byte, prefix)
 	n, _ := r.ReadAt(data, 0)
 	data = data[:n]

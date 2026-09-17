@@ -26,11 +26,11 @@ const SQLiteFileName = "advisories.sqlite"
 
 // SQLiteSchemaVersion tracks the SQLite layout independently of the outer
 // catalog envelope (SchemaVersion), which also governs feed caches and updates.
-const SQLiteSchemaVersion = 6
+const SQLiteSchemaVersion = 7
 const sqliteRecordEncoding = "zlib-json-v1"
 
 const sqliteSchema = `
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 CREATE TABLE records (
  id TEXT PRIMARY KEY NOT NULL,
  summary TEXT NOT NULL,
@@ -326,9 +326,10 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 		for ordinal, a := range r.Affected {
 			if a.Ecosystem == "CPE" {
 				raw, _ := a.Database["cpe"].(string)
-				attrs, ok := CPEAttributes(raw)
-				if ok && attrs[1] != "-" && attrs[2] != "-" && !strings.ContainsAny(attrs[1]+attrs[2], "*?") && a.Package == attrs[1]+":"+attrs[2] {
-					if _, err = insert("cpe", attrs[1], attrs[2], id); err != nil {
+				attrs, ok := ParseCPE(raw)
+				// The raw criteria also normalize records from older feed caches.
+				if ok && attrs[1].Kind == CPELiteral && attrs[2].Kind == CPELiteral {
+					if _, err = insert("cpe", attrs[1].Value, attrs[2].Value, id); err != nil {
 						return err
 					}
 				}

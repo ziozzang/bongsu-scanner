@@ -210,7 +210,7 @@ func cmdConfig(args []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = os.Stdout.Write(config.Marshal(cfg))
+		_, err = os.Stdout.Write(config.MarshalDisplay(cfg))
 		return err
 	case "init":
 		path, err := config.InitTemplate()
@@ -506,6 +506,9 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 }
 
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
+	if err := scan.ValidateRegistryReference(target); err != nil {
+		return nil, err
+	}
 	if f.format != "both" && f.format != "spdx" && f.format != "cyclonedx" {
 		return nil, fmt.Errorf("unsupported format %q", f.format)
 	}
@@ -541,7 +544,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		logf("scan:"+event.Stage, "%s\n", event.Message)
 	}
 	logf("scan:start", "target=%s format=%s output=%s file-hashes=%t sign=%t\n",
-		target, f.format, f.output, f.files, f.sign)
+		scan.RegistryReferenceForLog(target), f.format, f.output, f.files, f.sign)
 	switch {
 	case f.noSign:
 		logf("scan:sign", "%s\n", "signing explicitly disabled (--no-sign)")
@@ -1049,6 +1052,11 @@ func cmdBatch(ctx context.Context, args []string) error {
 	if fs.NArg() == 0 {
 		return errors.New("batch requires targets")
 	}
+	for _, target := range fs.Args() {
+		if err := scan.ValidateRegistryReference(target); err != nil {
+			return fmt.Errorf("%s: %w", scan.RegistryReferenceForLog(target), err)
+		}
+	}
 	bases, err := batchOutputBases(fs.Args())
 	if err != nil {
 		return err
@@ -1078,7 +1086,7 @@ func cmdBatch(ctx context.Context, args []string) error {
 				flags := *f
 				flags.batchOutputBase = bases[i]
 				if _, err := scanOne(ctx, target, flags); err != nil {
-					errs <- fmt.Errorf("%s: %w", target, err)
+					errs <- fmt.Errorf("%s: %w", scan.RegistryReferenceForLog(target), err)
 				}
 			}
 		}()
