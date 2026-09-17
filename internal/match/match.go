@@ -156,7 +156,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		}
 		queries := subjectQueries(s)
 		queryRecords := make([][]preparedRecord, len(queries))
-		var canonicalKey string
+		canonicalKey := s.Release + "\x00"
 		for qi, q := range queries {
 			queries[qi].name = vulndb.NormalizeName(s.Ecosystem, q.name)
 			key := s.Ecosystem + "\x00" + queries[qi].name
@@ -195,7 +195,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 			var identities []advisoryIdentity
 			for _, records := range queryRecords {
 				for _, rec := range records {
-					identities = append(identities, advisoryIdentity{rec.ID, rec.Aliases})
+					identities = append(identities, advisoryIdentity{rec.ID, rec.aliasesForRelease(s.Release)})
 				}
 			}
 			canonical = aliasIdentityIDs(identities)
@@ -231,7 +231,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 				}
 				id := canonical[rec.ID]
 				skip := ignored[id] || ignored[rec.ID]
-				for _, a := range rec.Aliases {
+				for _, a := range rec.aliasesForRelease(s.Release) {
 					skip = skip || ignored[a]
 				}
 				if skip {
@@ -280,6 +280,10 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						continue
 					}
 					f := Finding{ID: id, RelatedIDs: rec.related, Subject: s, Record: *rec.summary, Affected: a, MatchedBy: q.by, FixedIn: fixed, Severity: sev, Score: score, Vector: vector, Confidence: "high", DistroSeverity: urgency}
+					if prepared.detail.related != nil {
+						f.RelatedIDs = prepared.detail.related
+						f.Record.Aliases = prepared.detail.aliases
+					}
 					f.distroSeverityScope = rating.scope
 					f.Record.DistroSeverity = urgency
 					f.DistroStatus = status

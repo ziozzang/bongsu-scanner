@@ -21,7 +21,7 @@ import (
 
 // conversionCacheVersion must change whenever feed conversion semantics change.
 // Stored per feed in SourceMeta so a 304 cannot reuse stale converted records.
-const conversionCacheVersion = 5
+const conversionCacheVersion = 6
 
 // Update builds a complete replacement beside dir. Any failed feed leaves the
 // current database intact; the returned metadata still describes every attempt.

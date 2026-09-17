@@ -215,6 +215,9 @@ func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
 		}
 	}
 	if vulndb.BaseEcosystem(a.Ecosystem) == "Ubuntu" {
+		if rating := ubuntuCVESeverity(a); rating != "" {
+			return rating
+		}
 		// Ubuntu publishes package priority in exports and record priority in
 		// API responses. Both are more specific than generic urgency metadata.
 		for _, key := range []string{"ubuntu_priority", "priority"} {
@@ -264,6 +267,28 @@ func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
 		}
 	}
 	return ""
+}
+
+// A multi-CVE USN remains one advisory finding. Use the highest Ubuntu rating
+// among its release-local CVEs; a single-CVE map retains that CVE's own rating.
+func ubuntuCVESeverity(a vulndb.Affected) string {
+	cves, _ := affectedCVEs(a)
+	best := ""
+	for _, raw := range cves {
+		cve, _ := raw.(map[string]any)
+		ratings, _ := cve["severity"].([]any)
+		for _, raw := range ratings {
+			rating, _ := raw.(map[string]any)
+			if rating["type"] != "Ubuntu" {
+				continue
+			}
+			score, _ := rating["score"].(string)
+			if level := normalizeSeverity(score); level != "UNKNOWN" && (best == "" || SeverityRank(level) > SeverityRank(normalizeSeverity(best))) {
+				best = strings.ToLower(strings.TrimSpace(score))
+			}
+		}
+	}
+	return best
 }
 
 // Scope ranks record fallbacks below affected-entry ratings, and direct binary

@@ -106,6 +106,24 @@ string `repo`, and array `events`. Each event has one string field: `introduced`
 their internal keys/values are feed-defined. Optional `severity` is an array of
 objects with string `type` and `score` (a vector or textual rating, not a number).
 
+Ubuntu `affected.database_specific.cves_map` contains an `ecosystem` string and
+`cves` array of `{id, severity}` objects. Conversion keeps at most 256 CVEs and
+16 severity entries per CVE (type at most 128 bytes, score at most 1024 bytes).
+For that hit, `related_ids` contains the advisory ID plus only these CVE IDs;
+`record.aliases` uses this same release-local CVE list, including an empty list.
+Alias grouping also uses the subject's release, not the advisory-wide CVE union.
+Each CVE's `type: Ubuntu` severity is its vendor rating; a multi-CVE finding uses
+the highest ranked rating in the list. Merged findings can also include the IDs
+of equivalent companion records.
+
+Catalog entries with `database_specific.debian_status: not-affected` or
+`redhat_status: not-affected` and nonempty `versions` exclude only those exact
+versions under the ecosystem's version normalization, even if ranges coexist.
+Unversioned markers retain their package/advisory/release scope. Red Hat VEX
+binary NEVRA exclusions retain the binary name and EVR in `versions`; source
+package fixed ranges remain independent. Exclusion markers suppress candidates
+and do not appear as findings.
+
 `assessment` has string `status` (`likely_affected`, `likely_not_affected`,
 `needs_review`, `not_assessed`), string `reason`, string-array `evidence`,
 `preconditions`, `checks`, string `model`, string `input_sha256`, and boolean

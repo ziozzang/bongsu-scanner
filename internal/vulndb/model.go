@@ -45,9 +45,9 @@ type Affected struct {
 	Package   string         `json:"package"`   // OSV package name
 	PURL      string         `json:"purl,omitempty"`
 	Ranges    []Range        `json:"ranges,omitempty"`
-	Versions  []string       `json:"versions,omitempty"` // explicit affected versions
+	Versions  []string       `json:"versions,omitempty"` // explicit versions; not-affected markers exclude only these versions
 	Specific  map[string]any `json:"ecosystem_specific,omitempty"`
-	Database  map[string]any `json:"database_specific,omitempty"`
+	Database  map[string]any `json:"database_specific,omitempty"` // includes bounded release-local Ubuntu cves_map IDs and ratings
 	// Severity is the OSV affected[].severity (package-specific severity).
 	// When present it takes precedence over Record.Severity for this entry.
 	Severity []Severity `json:"severity,omitempty"`

@@ -6,7 +6,12 @@ rating is available. `--severity-source cvss` retains CVSS selection, and
 `--severity-source max` selects the higher vendor or CVSS rating. The numerical
 CVSS score and vector remain available independently of the selected severity.
 
-For Ubuntu affected entries, `ecosystem_specific.ubuntu_priority` takes
+For Ubuntu affected entries, ranked `type: Ubuntu` scores in the release-local
+`database_specific.cves_map.cves[].severity` take precedence. A single-CVE list
+uses that CVE's rating; a multi-CVE advisory remains one finding and uses the
+highest ranked Ubuntu rating in that list. This affected-entry rating also
+outranks record-wide fallback ratings when equivalent findings merge. Without
+a usable mapped rating, `ecosystem_specific.ubuntu_priority` takes
 precedence over `ecosystem_specific.priority`, then a record-level severity
 entry with `type: Ubuntu`, then generic urgency metadata. The original priority
 is shown in the distro severity field in lowercase. Ubuntu `negligible` and
@@ -20,6 +25,9 @@ Ubuntu `UBUNTU-CVE-YYYY-NNNN` identifiers are associated with their embedded
 CVE for grouping and CVSS enrichment. Other CVEs listed only in `related` are
 separate vulnerabilities and are not promoted to aliases. Updating the catalog
 is necessary to apply this alias derivation to previously ingested exports.
+When an affected entry supplies `cves_map`, its CVE list replaces the global
+aliases for that hit and for grouping in that release. CVEs present only in
+another release cannot join its finding or supply a suppressing status.
 
 For `RLSA-`, `ALSA-`, `RHSA-`, `USN-`, `DSA-`, and `DLA-` advisories without an
 explicit vendor rating, a summary starting with `Critical:`, `Important:`,
@@ -43,3 +51,10 @@ same package, advisory and release, like Debian markers. Unfixed findings carry
 normal range confidence. These statuses describe vendor disposition, not a
 change to the CVSS score or proof of exploitability. Structured product status
 is used; exclusions in free-text statements are not interpreted as version ranges.
+For both `redhat_status` and `debian_status`, a not-affected marker with explicit
+`versions` suppresses only equal versions (using ecosystem normalization), even
+when the entry also has ranges. A binary NEVRA marker therefore cannot suppress
+older versions covered by a source package's fixed range. Markers without
+versions keep their existing behavior. Existing catalogs need re-ingestion of
+the VEX source (`bscan db update --force`) to restore EVRs discarded by earlier
+conversion; the conversion-cache version is unchanged.

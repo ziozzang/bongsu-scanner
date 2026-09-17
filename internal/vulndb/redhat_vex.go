@@ -484,7 +484,9 @@ func convertRedHatVEXBounded(ctx context.Context, doc *vexDocument, maxAffected,
 				status = statuses[id]
 			}
 			a.Database["redhat_status"] = status
-			if status != "not-affected" {
+			if status == "not-affected" && evr != "" {
+				a.Versions = []string{evr}
+			} else if status != "not-affected" {
 				a.Ranges = []Range{{Type: "ECOSYSTEM", Events: []Event{{Introduced: "0"}}}}
 			}
 		}

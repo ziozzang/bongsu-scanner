@@ -46,6 +46,8 @@ type preparedRecord struct {
 	summary   *RecordSummary
 	related   []string
 	affected  []evaluatedAffected
+	// Nil preserves record-wide aliases for feeds without release-local CVEs.
+	aliasesByRelease map[string][]string
 }
 
 // Only evaluated outcomes survive the visitor; parsed version ranges and maps
@@ -63,6 +65,7 @@ type evaluatedAffected struct {
 }
 type findingAffected struct {
 	affected         vulndb.Affected
+	aliases, related []string
 	severity, vector string
 	score            float64
 }
@@ -217,6 +220,12 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 	if r.Withdrawn != "" {
 		return rec
 	}
+	for _, a := range r.Affected {
+		if _, ok := affectedCVEs(a); ok {
+			rec.aliasesByRelease = make(map[string][]string)
+			break
+		}
+	}
 	anyHit := false
 	for _, a := range r.Affected {
 		if vulndb.BaseEcosystem(a.Ecosystem) != eco {
@@ -237,10 +246,27 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		modular := moduleAffected(a)
 		moduleStream, _ := a.Database["modularity"].(string)
 		moduleStream = strings.TrimSpace(moduleStream)
-		prepared := cache.prepareAffected(eco, a)
 		release := vulndb.EcosystemRelease(a.Ecosystem)
+		aliases := r.Aliases
+		cves, scoped := affectedCVEs(a)
+		if scoped {
+			aliases = nil
+			for _, raw := range cves {
+				cve, _ := raw.(map[string]any)
+				if id, ok := cve["id"].(string); ok && strings.HasPrefix(id, "CVE-") {
+					aliases = append(aliases, id)
+				}
+			}
+			aliases = unique(aliases)
+		}
+		if rec.aliasesByRelease != nil {
+			rec.aliasesByRelease[release] = unique(append(rec.aliasesByRelease[release], aliases...))
+		}
 		urgency := distroSeverity(r, a)
 		var severityScope uint8
+		if ubuntuCVESeverity(a) != "" {
+			severityScope = 1
+		}
 		if eco == "Red Hat" {
 			if label, _ := a.Database["severity"].(string); normalizeSeverity(label) != "UNKNOWN" {
 				severityScope = 1 // Explicit affected-entry impact, rather than record fallback.
@@ -251,6 +277,12 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 			status, _ = a.Database["redhat_status"].(string)
 		}
 		status = strings.ToLower(strings.TrimSpace(status))
+		prepared := cache.prepareAffected(eco, a)
+		// A version-qualified exclusion is exact even if a merged feed entry
+		// also carries a range. Never broaden it to every version in that range.
+		if status == "not-affected" && len(a.Versions) > 0 {
+			prepared.ranges = nil
+		}
 		marker := len(a.Ranges) == 0 && len(a.Versions) == 0
 		// Older native not-affected markers used the empty [0,0) range.
 		// Keep that exact representation equivalent to a range-free marker.
@@ -272,6 +304,10 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				a.Versions = nil
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
+				if scoped {
+					detail.aliases = aliases
+					detail.related = unique(append([]string{r.ID}, aliases...))
+				}
 			}
 			result := evaluatedAffected{modular: modular, moduleStream: moduleStream, distroSeverityScope: severityScope, version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
 			// A range-free unimportant/negligible marker can be counted as
@@ -319,6 +355,26 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 
 	}
 	return rec
+}
+
+func affectedCVEs(a vulndb.Affected) ([]any, bool) {
+	if vulndb.BaseEcosystem(a.Ecosystem) != "Ubuntu" {
+		return nil, false
+	}
+	raw, present := a.Database["cves_map"]
+	m, _ := raw.(map[string]any)
+	cves, _ := m["cves"].([]any)
+	return cves, present
+}
+
+func (r preparedRecord) aliasesForRelease(release string) []string {
+	if r.aliasesByRelease == nil {
+		return r.Aliases
+	}
+	if release == "" || len(r.aliasesByRelease[""]) == 0 {
+		return r.aliasesByRelease[release]
+	}
+	return unique(append(append([]string(nil), r.aliasesByRelease[""]...), r.aliasesByRelease[release]...))
 }
 
 // Plans normally contain one version and release. Slices avoid two hash tables
@@ -441,11 +497,18 @@ func preparedBytes(records []preparedRecord) int64 {
 	n := int64(cap(records)) * int64(unsafe.Sizeof(preparedRecord{}))
 	for _, r := range records {
 		n += int64(len(r.ID)+len(r.Withdrawn)) + stringBytes(r.Aliases) + stringBytes(r.related)
+		if r.aliasesByRelease != nil {
+			n += 64
+		}
+		for release, aliases := range r.aliasesByRelease {
+			n += 96 + int64(len(release)) + stringBytes(aliases)
+		}
 		n += int64(cap(r.affected)) * int64(unsafe.Sizeof(evaluatedAffected{}))
 		for _, a := range r.affected {
 			n += int64(len(a.version)+len(a.release)+len(a.reason)+len(a.distroStatus)+len(a.distroSeverity)+len(a.moduleStream)) + stringBytes(a.fixed)
 			if a.detail != nil {
-				n += affectedBytes(a.detail.affected) + 40 + int64(len(a.detail.severity)+len(a.detail.vector))
+				n += affectedBytes(a.detail.affected) + 88 + int64(len(a.detail.severity)+len(a.detail.vector))
+				n += stringBytes(a.detail.aliases) + stringBytes(a.detail.related)
 			}
 		}
 		if s := r.summary; s != nil {

@@ -84,6 +84,9 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Fixed
 
+- Scope Ubuntu USN CVE aliases and vendor ratings to each release, and preserve
+  Red Hat VEX not-affected EVRs so exclusions do not suppress older versions.
+
 - Separate modular/non-modular RPM advisory matching and retain distro-owned
   language inventory with SBOM ownership while skipping upstream matching.
 

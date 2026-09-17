@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"regexp"
 	"strings"
@@ -23,6 +24,8 @@ const (
 	osvMaxSummary                  = 1 << 10
 	osvMaxAliases                  = 100
 	osvMaxReferences               = 100
+	osvMaxCVEs                     = 256
+	osvMaxCVESeverities            = 16
 )
 
 // Injectable so aggregate version bounds can be exercised with small fixtures.
@@ -139,6 +142,10 @@ func ConvertOSV(v *osvVuln, source string) (*Record, bool) {
 		}
 		if len(a.Database) > 0 {
 			out.Database = a.Database
+			if raw, ok := a.Database["cves_map"]; ok {
+				out.Database = maps.Clone(a.Database)
+				out.Database["cves_map"] = boundedOSVCVEMap(raw)
+			}
 		}
 		if BaseEcosystem(eco) == "Debian" {
 			if urgency, ok := a.Specific["urgency"]; ok {
@@ -152,6 +159,49 @@ func ConvertOSV(v *osvVuln, source string) (*Record, bool) {
 		return nil, false
 	}
 	return r, true
+}
+
+// Preserve the release-local CVE list without retaining arbitrary nested feed
+// data. Even an empty list is authoritative; it must not restore global aliases.
+func boundedOSVCVEMap(raw any) map[string]any {
+	m, _ := raw.(map[string]any)
+	out := map[string]any{}
+	if eco, ok := m["ecosystem"].(string); ok && len(eco) <= 128 {
+		out["ecosystem"] = strings.Clone(eco)
+	}
+	entries, _ := m["cves"].([]any)
+	cves := make([]any, 0)
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		id, _ := entry["id"].(string)
+		if len(id) > 128 || !vexCVE.MatchString(id) {
+			continue
+		}
+		cve := map[string]any{"id": strings.Clone(id)}
+		ratings, _ := entry["severity"].([]any)
+		var severity []any
+		for _, raw := range ratings {
+			rating, _ := raw.(map[string]any)
+			typ, _ := rating["type"].(string)
+			score, _ := rating["score"].(string)
+			if typ == "" || score == "" || len(typ) > 128 || len(score) > 1024 {
+				continue
+			}
+			severity = append(severity, map[string]any{"type": strings.Clone(typ), "score": strings.Clone(score)})
+			if len(severity) == osvMaxCVESeverities {
+				break
+			}
+		}
+		if len(severity) > 0 {
+			cve["severity"] = severity
+		}
+		cves = append(cves, cve)
+		if len(cves) == osvMaxCVEs {
+			break
+		}
+	}
+	out["cves"] = cves
+	return out
 }
 
 // Copy only bounded strings into new slices; slicing the input would retain
