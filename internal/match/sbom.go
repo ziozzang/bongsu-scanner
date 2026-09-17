@@ -325,7 +325,7 @@ func release(eco, v string) string {
 	default:
 		return ""
 	}
-	v = strings.TrimPrefix(v, strings.ToLower(eco)+"-")
+	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), strings.ToLower(eco)+"-"))
 	if eco == "Debian" {
 		if numeric := map[string]string{"buster": "10", "bullseye": "11", "bookworm": "12", "trixie": "13", "forky": "14", "sid": "sid", "unstable": "sid"}[v]; numeric != "" {
 			v = numeric
@@ -334,12 +334,16 @@ func release(eco, v string) string {
 	if eco == "Alpine" {
 		v = strings.TrimPrefix(v, "v")
 		p := strings.Split(v, ".")
-		if len(p) >= 2 {
+		if len(p) >= 2 && isDigits(p[0]) && isDigits(p[1]) {
 			return "v" + p[0] + "." + p[1]
 		}
 		return ""
 	}
 	return v
+}
+
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
 // Retain the large component array as raw JSON after extracting subjects.

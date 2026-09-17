@@ -57,10 +57,20 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [linux]
         arch: [amd64, arm64]
+        include:
+          - os: darwin
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: windows
+            arch: amd64
+          - os: freebsd
+            arch: amd64
     env:
       CGO_ENABLED: '0'
-      GOOS: linux
+      GOOS: ${{ matrix.os }}
       GOARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v6
@@ -68,12 +78,26 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go build -trimpath -o dist/bscan_linux_${GOARCH} ./cmd/bscan
+      - run: |
+          go build ./...
+          suffix=''
+          if [ "$GOOS" = windows ]; then suffix=.exe; fi
+          go build -trimpath -o "dist/bscan_${GOOS}_${GOARCH}${suffix}" ./cmd/bscan
       - uses: actions/upload-artifact@v4
         with:
-          name: bscan-linux-${{ matrix.arch }}
-          path: dist/bscan_linux_${{ matrix.arch }}
+          name: bscan-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/bscan_${{ matrix.os }}_${{ matrix.arch }}*
           if-no-files-found: error
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build static image and smoke test
+        run: |
+          docker build --platform linux/amd64 --build-arg VERSION=ci -t bscan:ci .
+          sh deploy/container-smoke.sh bscan:ci ci
 
   govulncheck:
     runs-on: ubuntu-latest

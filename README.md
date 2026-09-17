@@ -11,6 +11,15 @@ Author: ziozzang@gmail.com
 
 Project: https://github.com/ziozzang/bongsu-scanner
 
+## Command reference
+
+See [the generated command reference](docs/commands.md) for all commands,
+flags, defaults, environment variables, configuration keys and exit codes.
+Place global logging flags before the command: `bscan --quiet scan .` suppresses
+migrated progress logs; `bscan --log-format=json scan .` emits structured progress
+and scan summaries on stderr. Errors remain visible. These flags currently cover
+main.go scan/batch logging; the reference lists the remaining migration scope.
+
 ## Build and initialize
 
 Building requires Go 1.25 or newer. SQLite is embedded through the pure-Go
@@ -91,6 +100,83 @@ as pinned. Missing or invalid signatures then fail the update. Without a pinned
 key, updates warn that the signature is unverified and use checksum validation;
 `--require-signature` also rejects this unpinned case. `bscan update --check`
 only checks the available version and does not verify release artifacts.
+
+## Install and deploy
+
+Download the archive for your OS and architecture from
+[GitHub Releases](https://github.com/ziozzang/bongsu-scanner/releases).
+Archives use `bscan_<ver>_<os>_<arch>.tar.gz`, with `amd64` or `arm64`, and
+contain the executable, `LICENSE` and `THIRD_PARTY_NOTICES.txt`.
+Linux and macOS archives contain `bscan`; Windows archives contain `bscan.exe`.
+Host scanning is Linux-specific; directory/archive scans and `db`, `match`,
+and `report` are intended for other platforms too. The current Windows build
+is blocked by Unix-only helpers in `internal/scan/walk.go`; see the
+[deployment notes](deploy/README.md) before building all release archives.
+
+Example for Linux amd64 (select an existing release version):
+
+```sh
+set -eu
+version=0.5.0
+asset="bscan_${version}_linux_amd64.tar.gz"
+base="https://github.com/ziozzang/bongsu-scanner/releases/download/v${version}"
+curl -fLO "$base/$asset"
+curl -fLO "$base/SHA256SUMS"
+# If this release publishes a signature, fetch and verify it first.
+curl -fLO "$base/SHA256SUMS.sig"
+# Use an already trusted bscan and a publisher key obtained independently.
+bscan verify --pubkey /path/to/publisher.pub SHA256SUMS.sig
+awk -v asset="$asset" '$2 == asset { print; found=1 } END { if (!found) exit 1 }' \
+  SHA256SUMS > selected.SHA256SUMS
+sha256sum --check selected.SHA256SUMS
+tar -xzf "$asset"
+sudo install -m 0755 bscan /usr/local/bin/bscan
+bscan init --signer host-scanner
+```
+
+`SHA256SUMS.sig` is a bscan Ed25519 signature record, not a GPG signature.
+For initial signature verification, build a verifier from trusted source or use
+an existing trusted installation; do not run the downloaded binary to verify
+itself. Signatures are optional on releases unless a publisher key is configured.
+If no signature is published, checksums provide transfer integrity only; do not
+silently skip a signature required by your deployment policy. On macOS use
+`shasum -a 256 -c selected.SHA256SUMS`; on Windows compare
+`Get-FileHash -Algorithm SHA256 .\bscan_<ver>_windows_amd64.tar.gz` with the exact
+entry in `SHA256SUMS`, then extract with `tar -xzf`.
+
+Build containers with `make image VERSION=0.5.0`, or use the tag image
+`ghcr.io/ziozzang/bongsu-scanner:v0.5.0`. The image runs as non-root and accepts
+the usual CLI arguments, for example `docker run --rm IMAGE version`.
+See [container examples](deploy/README.md#container) for writable report mounts,
+read-only host mounts at `/host`, and Docker socket access. `scan /host` treats
+the target as a directory: explicitly set `--files=false`, `--one-file-system`,
+`--exclude` and `--workers`; it does not enable host policy automatically.
+
+[systemd deployment](deploy/README.md#systemd-linux) provides a daily host scan
+with HTML findings in `/var/lib/bscan/reports` and a weekly catalog update,
+using a dedicated `bscan` account. A cron example is also provided.
+`make dist VERSION=0.5.0` builds the five portable archives; the tag-release
+workflow uploads them and publishes a multi-architecture container image.
+
+For an air-gapped catalog, initialize the connected publisher once, then export
+the signed database and transfer the archive and separately trusted public key:
+
+```sh
+# Connected publisher; retain its initialized signing identity.
+bscan init --signer catalog-publisher
+bscan db update
+bscan db export --pubkey "$HOME/.bongsu/signing.pub" catalog.tar.gz
+
+# Offline machine; publisher.pub comes from a trusted channel.
+export BONGSU_OFFLINE=1
+bscan db import --pubkey /path/to/publisher.pub catalog.tar.gz
+bscan db verify --pubkey /path/to/publisher.pub
+bscan scan --match --report html --output ./scan-results /path/to/rootfs
+```
+
+If `BONGSU_HOME` is set, use that identity's `signing.pub` on the publisher.
+For the systemd deployment, import as user `bscan` with
+`BONGSU_HOME=/var/lib/bscan` and enable only `bscan-scan.timer` offline.
 
 ## Local scan
 

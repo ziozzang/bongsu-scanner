@@ -272,7 +272,11 @@ func normalizeMaven(v string) string {
 	if strings.TrimSpace(v) == "" {
 		return v
 	}
-	if n := parseMaven(v).String(); n != "" {
+	// The canonical form must parse back to itself: parseMaven trims
+	// surrounding whitespace, and a trailing string item written with '.'
+	// ("1.x.0" -> "1.x") would re-parse as a nested list ("1-x"), as it does
+	// in Maven itself. Keep such inputs unchanged rather than drift.
+	if n := parseMaven(v).String(); n != "" && strings.TrimSpace(n) == n && parseMaven(n).String() == n {
 		return n
 	}
 	return v

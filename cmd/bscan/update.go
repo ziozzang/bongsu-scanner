@@ -78,19 +78,22 @@ func releaseKey(cfg config.Config) (ed25519.PublicKey, string, error) {
 	return nil, "", nil
 }
 
+// releaseHTTPClient keeps explicit update requests testable without network access.
+var releaseHTTPClient = newHTTPClient
+
 func newReleaseUpdater(cfg config.Config, repo string, requireSignature bool) (*selfupdate.Updater, string, error) {
 	key, source, err := releaseKey(cfg)
 	if err != nil {
 		return nil, "", err
 	}
 	return &selfupdate.Updater{
-		Client:              newHTTPClient(updateTimeout),
+		Client:              releaseHTTPClient(updateTimeout),
 		Repo:                repo,
 		Token:               os.Getenv("GITHUB_TOKEN"), // explicit command only; never in background checks
 		ReleaseKey:          key,
 		RequireSignature:    requireSignature || cfg.UpdateRequireSignature || key != nil,
 		SignatureMinVersion: cfg.SignatureMinVersion,
-		Warn:                os.Stderr,
+		Warn:                logWriter{stage: "update", warning: true},
 	}, source, nil
 }
 
@@ -100,7 +103,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	force := fs.Bool("force", false, "install even if current")
 	repo := fs.String("repo", updateRepo, "GitHub owner/repository")
 	requireSig := fs.Bool("require-signature", false, "fail unless SHA256SUMS.sig verifies against a trusted 'release' key")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	cfg, _, err := config.LoadForCLI()
@@ -121,11 +124,15 @@ func cmdUpdate(ctx context.Context, args []string) error {
 		return err
 	}
 	latest := httpx.Sanitize(rel.Version())
-	fmt.Printf("current: %s\nlatest:  %s\n", httpx.Sanitize(version), latest)
+	if *check {
+		fmt.Printf("current: %s\nlatest:  %s\n", httpx.Sanitize(version), latest)
+	} else {
+		logf("update", "current: %s; latest: %s", httpx.Sanitize(version), latest)
+	}
 	upToDate := !selfupdate.IsDevBuild(version) && selfupdate.Compare(latest, version) <= 0
 	if *check || (upToDate && !*force) {
 		if upToDate {
-			fmt.Println("bscan is up to date")
+			logf("update", "bscan is up to date")
 		}
 		return nil
 	}
@@ -144,7 +151,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	if sums.Entries[name] == "" {
 		return fmt.Errorf("SHA256SUMS has no entry for %s", name)
 	}
-	printUpdateSignature(os.Stderr, keySource, sums)
+	printUpdateSignature(logWriter{stage: "update"}, keySource, sums)
 	exe, err := selfupdate.Executable()
 	if err != nil {
 		return err
@@ -209,7 +216,7 @@ func refreshUpdateCache(args []string) {
 	}
 	if c, ok := readUpdateCache(path); ok && !updateCacheStale(c, time.Now()) {
 		if c.Latest != "" && selfupdate.Compare(c.Latest, version) > 0 {
-			fmt.Fprintf(os.Stderr, "bscan %s is available; run 'bscan update'\n", c.Latest)
+			logf("update", "bscan %s is available; run 'bscan update'\n", c.Latest)
 		}
 		return
 	}

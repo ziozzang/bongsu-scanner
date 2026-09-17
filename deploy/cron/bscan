@@ -1,0 +1,10 @@
+# /etc/cron.d/bscan; create the bscan user and state directories first.
+# Use either these schedules or the systemd timers, not both.
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+BONGSU_HOME=/var/lib/bscan
+# Weekly catalog refresh as the unprivileged state owner.
+0 1 * * 0 bscan umask 077; /usr/local/bin/bscan db update
+# Cron cannot grant ambient capabilities: run the host scan as root, then
+# return generated state ownership to bscan even when scanning fails.
+0 3 * * * root umask 077; BONGSU_OFFLINE=1 /usr/local/bin/bscan scan --match --report html --output /var/lib/bscan/reports --one-file-system --exclude /var/lib/bscan --workers 2 host; result=$?; chown -R bscan:bscan /var/lib/bscan; exit "$result"

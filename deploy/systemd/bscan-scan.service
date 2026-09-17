@@ -1,0 +1,30 @@
+[Unit]
+Description=Daily bscan host inventory and vulnerability report
+After=local-fs.target bscan-db-update.service
+ConditionPathExists=/var/lib/bscan/db/manifest.sha256
+
+[Service]
+Type=oneshot
+User=bscan
+Group=bscan
+DynamicUser=no
+Environment=BONGSU_HOME=/var/lib/bscan
+Environment=BONGSU_OFFLINE=1
+StateDirectory=bscan bscan/reports
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bscan
+ExecStart=/usr/local/bin/bscan scan --match --report html --output /var/lib/bscan/reports --one-file-system --exclude /var/lib/bscan --workers 2 host
+UMask=0077
+ProtectSystem=strict
+ReadOnlyPaths=/
+ReadWritePaths=/var/lib/bscan /var/lib/bscan/reports
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+TimeoutStartSec=2h

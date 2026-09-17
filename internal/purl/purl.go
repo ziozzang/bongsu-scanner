@@ -61,12 +61,18 @@ func Parse(s string) (PURL, error) {
 	}
 	rest = strings.TrimLeft(rest, "/")
 
-	// Type: everything up to the first '/'.
+	// Type: everything up to the first '/'. String trims the type, so
+	// trim here as well to keep the round trip exact.
 	i := strings.IndexByte(rest, '/')
 	if i <= 0 {
 		return p, fmt.Errorf("purl: missing type or name in %q", s)
 	}
-	p.Type = strings.ToLower(rest[:i])
+	p.Type = strings.ToLower(strings.TrimSpace(rest[:i]))
+	if p.Type == "" || strings.ContainsAny(p.Type, "#?") {
+		// A delimiter inside the type could only come from an input whose
+		// subpath/qualifier split disagrees with the canonical rendering.
+		return p, fmt.Errorf("purl: missing type or name in %q", s)
+	}
 	rest = strings.TrimLeft(rest[i+1:], "/")
 
 	// Version: split once from the right on '@'. A leading '@' belongs to a
@@ -94,7 +100,10 @@ func Parse(s string) (PURL, error) {
 			name = extra[len(extra)-1]
 		}
 	}
-	p.Namespace = strings.Join(ns, "/")
+	// A decoded segment may itself contain '/' ("%2F"); String re-splits
+	// namespaces and subpaths on '/', so normalize the same way here to keep
+	// Parse(p.String()) == p.
+	p.Namespace = strings.Join(splitNonEmpty(strings.Join(ns, "/"), '/'), "/")
 	p.Name = name
 	if p.Name == "" {
 		return p, fmt.Errorf("purl: missing name in %q", s)
@@ -154,7 +163,10 @@ func parseQualifiers(s string) map[string]string {
 		k, v, _ := strings.Cut(kv, "=")
 		k = strings.ToLower(strings.TrimSpace(k))
 		v = decode(v)
-		if k == "" || v == "" {
+		// Keys are written verbatim by String, so a key holding a purl
+		// delimiter could never be read back; the spec restricts keys to
+		// [A-Za-z0-9._-] anyway.
+		if k == "" || strings.TrimSpace(v) == "" || strings.ContainsAny(k, "#?") {
 			continue
 		}
 		out[k] = v
@@ -167,12 +179,15 @@ func parseQualifiers(s string) map[string]string {
 
 func parseSubpath(s string) string {
 	var out []string
-	for _, seg := range strings.Split(s, "/") {
-		seg = decode(seg)
-		if seg == "" || seg == "." || seg == ".." {
-			continue
+	for _, raw := range strings.Split(s, "/") {
+		// Decoding may reveal further separators ("a%2F.."); filter the
+		// decoded segments so the result renders and parses back unchanged.
+		for _, seg := range strings.Split(decode(raw), "/") {
+			if seg == "" || seg == "." || seg == ".." {
+				continue
+			}
+			out = append(out, seg)
 		}
-		out = append(out, seg)
 	}
 	return strings.Join(out, "/")
 }

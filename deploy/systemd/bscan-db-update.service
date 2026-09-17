@@ -1,0 +1,28 @@
+[Unit]
+Description=Refresh bscan vulnerability catalog
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bscan
+Group=bscan
+DynamicUser=no
+Environment=BONGSU_HOME=/var/lib/bscan
+StateDirectory=bscan
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bscan
+ExecStart=/usr/local/bin/bscan db update
+UMask=0077
+ProtectSystem=strict
+ReadOnlyPaths=/
+ReadWritePaths=/var/lib/bscan
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+TimeoutStartSec=4h

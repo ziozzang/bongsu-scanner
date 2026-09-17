@@ -42,3 +42,24 @@ release-sign: dist/SHA256SUMS
 
 clean:
 	rm -f dist/bscan dist/bscan_* dist/bongsu dist/bongsu_* dist/SHA256SUMS dist/SHA256SUMS.sig
+
+# Portable archives supplement the existing Linux self-update assets.
+.PHONY: image dist
+IMAGE ?= ghcr.io/ziozzang/bongsu-scanner
+image:
+	docker build --platform linux/amd64 --build-arg VERSION="$(VERSION)" -t "$(IMAGE):$(VERSION)" .
+
+dist:
+	sh deploy/dist.sh "$(VERSION)"
+
+# Runs every Go fuzz target (*_fuzz_test.go) briefly as a parser robustness
+# smoke test. FUZZ_SMOKE_TIME sets the per-target budget.
+.PHONY: fuzz-smoke
+FUZZ_SMOKE_TIME ?= 5s
+fuzz-smoke:
+	@set -e; for pkg in $$(go list ./internal/...); do \
+	  for target in $$(go test -list '^Fuzz' "$$pkg" 2>/dev/null | grep '^Fuzz'); do \
+	    echo "fuzz-smoke: $$pkg $$target"; \
+	    go test -run '^$$' -fuzz "^$$target\$$" -fuzztime "$(FUZZ_SMOKE_TIME)" -fuzzminimizetime 100x "$$pkg"; \
+	  done; \
+	done

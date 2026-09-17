@@ -62,10 +62,21 @@ func parseRPMHeader(b []byte) (rpmHeader, error) {
 		return bad()
 	}
 	data := b[start : start+size]
+	// A header never repeats a tag. Rejecting duplicates also bounds the
+	// string scans below to one pass over the store per interpreted tag, so
+	// 65536 index entries cannot each rescan a 16 MiB store.
+	seen := map[uint32]bool{}
 	for i := uint64(0); i < n; i++ {
 		e := b[8+i*16 : 8+(i+1)*16]
 		tag, typ, off, count := be.Uint32(e), be.Uint32(e[4:]), uint64(be.Uint32(e[8:])), uint64(be.Uint32(e[12:]))
 		var dst *string
+		switch tag {
+		case 1000, 1001, 1002, 1022, 1044, 1014, 1004, 1011, 1003, 1009:
+			if seen[tag] {
+				return bad()
+			}
+			seen[tag] = true
+		}
 		switch tag {
 		case 1000:
 			dst = &h.Name
@@ -101,6 +112,9 @@ func parseRPMHeader(b []byte) (rpmHeader, error) {
 			return bad()
 		}
 		remaining := data[off:]
+		if count > uint64(len(remaining)) { // every string needs at least its NUL
+			return bad()
+		}
 		for j := uint64(0); j < count; j++ {
 			end := bytes.IndexByte(remaining, 0)
 			if end < 0 {

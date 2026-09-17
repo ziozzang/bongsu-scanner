@@ -125,7 +125,7 @@ func (m *scanMatcher) write(ctx context.Context, sboms []string, reserved *scanO
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", input, err)
 	}
-	fmt.Fprintf(os.Stderr, "[scan:match] %d subjects, %d findings (critical=%d high=%d)\n",
+	logf("scan:match", "%d subjects, %d findings (critical=%d high=%d)\n",
 		r.Subjects, len(r.Findings), r.BySeverity["CRITICAL"], r.BySeverity["HIGH"])
 	paths := []string{base + ".findings.json"}
 	for _, format := range m.formats {

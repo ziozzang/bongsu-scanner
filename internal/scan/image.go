@@ -27,6 +27,15 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// maxImageLayers and maxIndexManifests bound how many layer or manifest
+// references one image may declare. Docker itself stops at 127 layers; a
+// manifest that repeats one blob hundreds of thousands of times would
+// otherwise multiply the decompression work by the reference count.
+const (
+	maxImageLayers    = 1024
+	maxIndexManifests = 1024
+)
+
 // maxGoBinary bounds how large an ELF executable may be before it is skipped
 // for Go build-info extraction (the file is still hashed).
 var maxGoBinary int64 = 64 << 20
@@ -873,6 +882,10 @@ type unpacker struct {
 	symlinks map[string]symlinkRec
 	binaries map[string][]Package // Go build-info packages keyed by binary path
 	kinds    map[string]byte
+	// children indexes kinds by parent directory ("" for the root) so
+	// whiteouts remove a subtree in time proportional to its size rather
+	// than to the whole merged filesystem.
+	children map[string]map[string]struct{}
 	contents map[string]archiveContent
 	sources  []archiveSource
 	rpmFiles map[string]string // final filesystem paths to disk-backed RPM/Java archive contents
@@ -890,7 +903,27 @@ type symlinkRec struct {
 }
 
 func newUnpacker(ctx context.Context, opts Options) *unpacker {
-	return &unpacker{ctx: ctx, opts: opts, fs: store{}, kinds: map[string]byte{}, symlinks: map[string]symlinkRec{}, binaries: map[string][]Package{}, contents: map[string]archiveContent{}, rpmFiles: map[string]string{}}
+	return &unpacker{ctx: ctx, opts: opts, fs: store{}, kinds: map[string]byte{}, children: map[string]map[string]struct{}{}, symlinks: map[string]symlinkRec{}, binaries: map[string][]Package{}, contents: map[string]archiveContent{}, rpmFiles: map[string]string{}}
+}
+
+// parentDir is path.Dir with the root spelled "" like every other root-relative name.
+func parentDir(name string) string {
+	if dir := path.Dir(name); dir != "." && dir != "/" {
+		return dir
+	}
+	return ""
+}
+
+// setKind records name in kinds and in its parent's child index.
+func (u *unpacker) setKind(name string, kind byte) {
+	u.kinds[name] = kind
+	dir := parentDir(name)
+	set := u.children[dir]
+	if set == nil {
+		set = map[string]struct{}{}
+		u.children[dir] = set
+	}
+	set[name] = struct{}{}
 }
 
 // Close releases RPM/Java archive contents on success, error, and cancellation.
@@ -945,34 +978,31 @@ func (u *unpacker) remove(name string, added map[string]bool) {
 		}
 	}
 	delete(u.kinds, name)
+	if dir := parentDir(name); u.children[dir] != nil {
+		delete(u.children[dir], name)
+		if len(u.children[dir]) == 0 {
+			delete(u.children, dir)
+		}
+	}
 	delete(u.fs, name)
 	delete(u.contents, name)
 	delete(u.symlinks, name)
 	delete(u.binaries, name)
 }
 
-// removeUnder hides everything below prefix ("" means the whole tree).
+// removeUnder hides everything below prefix ("" means the whole tree). Every
+// retained path is registered in kinds together with its implicit parents,
+// so the child index reaches the entire subtree; entries added by the
+// current layer are kept but still descended into.
 func (u *unpacker) removeUnder(prefix string, added map[string]bool) {
-	for p := range u.kinds {
-		if strings.HasPrefix(p, prefix) {
-			u.remove(p, added)
+	var walk func(dir string)
+	walk = func(dir string) {
+		for child := range u.children[dir] {
+			walk(child)
+			u.remove(child, added)
 		}
 	}
-	for p := range u.fs {
-		if strings.HasPrefix(p, prefix) {
-			u.remove(p, added)
-		}
-	}
-	for p := range u.symlinks {
-		if strings.HasPrefix(p, prefix) {
-			u.remove(p, added)
-		}
-	}
-	for p := range u.binaries {
-		if strings.HasPrefix(p, prefix) {
-			u.remove(p, added)
-		}
-	}
+	walk(strings.TrimSuffix(prefix, "/"))
 }
 
 func (u *unpacker) applyTar(rd io.Reader, layer string) error {
@@ -1024,7 +1054,7 @@ func (u *unpacker) applyTarSource(rd io.Reader, layer string, reopen archiveSour
 				break
 			}
 			u.remove(parent, nil)
-			u.kinds[parent] = tar.TypeDir
+			u.setKind(parent, tar.TypeDir)
 			added[parent] = true
 		}
 		// A non-directory entry replaces an entire directory tree.
@@ -1032,14 +1062,14 @@ func (u *unpacker) applyTarSource(rd io.Reader, layer string, reopen archiveSour
 			if u.kinds[name] != tar.TypeDir {
 				u.remove(name, nil)
 			}
-			u.kinds[name] = tar.TypeDir
+			u.setKind(name, tar.TypeDir)
 			added[name] = true
 		} else {
 			if u.kinds[name] == tar.TypeDir {
 				u.removeUnder(name+"/", nil)
 			}
 			u.remove(name, nil)
-			u.kinds[name] = h.Typeflag
+			u.setKind(name, h.Typeflag)
 			added[name] = true
 		}
 		switch {
@@ -1557,6 +1587,9 @@ func (u *unpacker) unpackDockerArchive(a *outerArchive) ([]File, *ImageMetadata,
 	if len(manifests) > 1 {
 		report(u.opts, "archive", fmt.Sprintf("manifest.json lists %d images; scanning only the first (%s)", len(manifests), strings.Join(m.RepoTags, ",")), false)
 	}
+	if len(m.Layers) > maxImageLayers {
+		return nil, nil, fmt.Errorf("Docker manifest declares %d layers (limit %d)", len(m.Layers), maxImageLayers)
+	}
 	image := &ImageMetadata{Tags: appendUnique(nil, m.RepoTags...)}
 	var cfg imageConfig
 	if m.Config != "" {
@@ -1784,6 +1817,9 @@ func (u *unpacker) collectManifests(a *outerArchive, manifests []ociDescriptor, 
 	if depth > 4 {
 		return errors.New("OCI index nesting too deep")
 	}
+	if len(manifests) > maxIndexManifests || len(*out)+len(manifests) > maxIndexManifests {
+		return fmt.Errorf("OCI index declares more than %d manifests", maxIndexManifests)
+	}
 	for _, d := range manifests {
 		if isAttestation(d) {
 			report(u.opts, "manifest", "skipping attestation manifest "+d.Digest, true)
@@ -1955,6 +1991,9 @@ func (u *unpacker) unpackOCIArchive(a *outerArchive) ([]File, *ImageMetadata, er
 			return nil, nil, fmt.Errorf("OCI config %s: %w", manifest.Config.Digest, err)
 		}
 		image.applyConfig(cfg, cfgRaw)
+	}
+	if len(manifest.Layers) > maxImageLayers {
+		return nil, nil, fmt.Errorf("OCI manifest declares %d layers (limit %d)", len(manifest.Layers), maxImageLayers)
 	}
 	if n := len(cfg.RootFS.DiffIDs); n > 0 && n != len(manifest.Layers) {
 		return nil, nil, fmt.Errorf("OCI config declares %d diff_ids but manifest lists %d layers", n, len(manifest.Layers))

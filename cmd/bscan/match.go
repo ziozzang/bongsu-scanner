@@ -23,6 +23,26 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
 
+// FlagSet otherwise prints errors and usage before returning the same error to
+// main. Buffer diagnostics so only explicit help is a primary stdout result.
+func parseCommandFlags(fs *flag.FlagSet, args []string) error {
+	var diagnostics bytes.Buffer
+	previous := fs.Output()
+	fs.SetOutput(&diagnostics)
+	err := fs.Parse(args)
+	fs.SetOutput(previous)
+	if errors.Is(err, flag.ErrHelp) {
+		output := previous
+		if output == os.Stderr {
+			output = os.Stdout
+		}
+		if _, writeErr := output.Write(diagnostics.Bytes()); writeErr != nil {
+			return writeErr
+		}
+	}
+	return err
+}
+
 type findingsError struct{ threshold string }
 
 func (e *findingsError) Error() string { return "vulnerabilities meet --fail-on " + e.threshold }
@@ -30,9 +50,16 @@ func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
+	if errors.Is(err, context.Canceled) {
+		return 130
+	}
 	var found *findingsError
 	if errors.As(err, &found) {
 		return 2
+	}
+	var partial *partialScanError
+	if errors.As(err, &partial) {
+		return 3
 	}
 	return 1
 }
@@ -115,7 +142,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		facts[key] = val
 		return nil
 	})
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
@@ -215,13 +242,16 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		if err != nil {
 			return fmt.Errorf("%s: %w", input, err)
 		}
-		fmt.Fprintf(os.Stderr, "[match] %s: db updated %s; %d subjects; %d findings\n", httpx.Sanitize(input), matchReport.DB.UpdatedAt.UTC().Format(time.RFC3339), matchReport.Subjects, len(matchReport.Findings))
+		logf("match", "%s: db updated %s; %d subjects; %d findings\n", httpx.Sanitize(input), matchReport.DB.UpdatedAt.UTC().Format(time.RFC3339), matchReport.Subjects, len(matchReport.Findings))
 		if len(matchReport.Skipped) > 0 {
-			fmt.Fprintf(os.Stderr, "[match] skipped: %v\n", matchReport.Skipped)
+			warnf("match", "skipped: %v\n", matchReport.Skipped)
 		}
 		if analyzer != nil {
-			fmt.Fprintf(os.Stderr, "[match:llm] reviewing up to %d distinct findings with %s\n", *llmMax, httpx.Sanitize(*llmModel))
+			logf("match:llm", "reviewing up to %d distinct findings with %s\n", *llmMax, httpx.Sanitize(*llmModel))
 			err := matcher.Enrich(ctx, &matchReport, doc, analyzer, assessment.Environment{OS: *targetOS, Arch: *targetArch, Facts: facts}, *llmMax)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err != nil {
 				analysisErrors = append(analysisErrors, fmt.Errorf("LLM review of %s: %w", httpx.Sanitize(input), err))
 			}
@@ -260,6 +290,9 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 		if err := enc.Encode(reports); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := writeCommandOutput(*out, output.Bytes()); err != nil {
 		return err
@@ -305,12 +338,12 @@ type loggedAnalyzer struct {
 
 func (a *loggedAnalyzer) Analyze(ctx context.Context, input assessment.Input) (assessment.Result, error) {
 	a.count++
-	fmt.Fprintf(os.Stderr, "[match:llm] %d: %s (%s %s)\n", a.count, httpx.Sanitize(input.AdvisoryID), httpx.Sanitize(input.Package), httpx.Sanitize(input.Version))
+	logf("match:llm", "%d: %s (%s %s)\n", a.count, httpx.Sanitize(input.AdvisoryID), httpx.Sanitize(input.Package), httpx.Sanitize(input.Version))
 	result, err := a.inner.Analyze(ctx, input)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "[match:llm] analysis unavailable; original finding retained")
+		warnf("match:llm", "analysis unavailable; original finding retained")
 	} else {
-		fmt.Fprintf(os.Stderr, "[match:llm] %s (cached=%t)\n", result.Status, result.Cached)
+		logf("match:llm", "%s (cached=%t)\n", result.Status, result.Cached)
 	}
 	return result, err
 }

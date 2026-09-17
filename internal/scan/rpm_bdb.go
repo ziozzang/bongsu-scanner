@@ -125,7 +125,9 @@ func rpmBDBOverflow(r io.ReaderAt, order binary.ByteOrder, pageSize, pages int64
 	if length <= 0 || length > maxRPMHeader {
 		return bad()
 	}
-	b := make([]byte, 0, int(length))
+	// The declared length is untrusted: size the buffer by what the chain
+	// can actually deliver from the remaining pages and read budget.
+	b := make([]byte, 0, int(min(length, (pages-1)*(pageSize-26), max(*readsLeft, 0)*(pageSize-26))))
 	page := make([]byte, pageSize)
 	seen := make(map[uint32]bool)
 	for pg != 0 {

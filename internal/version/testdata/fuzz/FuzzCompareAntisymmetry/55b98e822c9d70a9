@@ -1,0 +1,4 @@
+go test fuzz v1
+string("maven")
+string("1.x.0")
+string("1.0.1")

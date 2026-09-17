@@ -32,7 +32,7 @@ func NormalizeDebianRelease(release string) string {
 func NormalizeUbuntuRelease(release string) string {
 	release = strings.TrimSpace(release)
 	release = strings.TrimPrefix(release, "Ubuntu:")
-	release = strings.TrimPrefix(release, "ubuntu-")
+	release = strings.TrimSpace(strings.TrimPrefix(release, "ubuntu-"))
 	switch release {
 	case "bionic":
 		return "18.04"

@@ -301,7 +301,8 @@ func TestRunSubcommandHelpSucceeds(t *testing.T) {
 		t.Run(strings.Join(command, " "), func(t *testing.T) {
 			for _, help := range []string{"--help", "-h"} {
 				args := append(append([]string(nil), command...), help)
-				output, err := captureBatchStderr(t, func() error { return run(context.Background(), args) })
+				stdout, stderr, err := captureCommandStreams(t, func() error { return run(context.Background(), args) })
+				output := stdout + stderr
 				if err != nil || exitCode(err) != 0 {
 					t.Fatalf("%v: error = %v, exit = %d", args, err, exitCode(err))
 				}

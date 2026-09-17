@@ -38,7 +38,7 @@ func osReleaseRank(p string) int {
 // parseOSRelease parses os-release key=value content.
 func parseOSRelease(b []byte) OSRelease {
 	vals := keyValues(b, "=")
-	get := func(k string) string { return strings.Clone(trimQuotes(strings.TrimSpace(vals[k]))) }
+	get := func(k string) string { return strings.Clone(strings.TrimSpace(trimQuotes(strings.TrimSpace(vals[k])))) }
 	return OSRelease{
 		ID:         strings.ToLower(get("ID")),
 		IDLike:     get("ID_LIKE"),
@@ -139,6 +139,11 @@ func (c *cataloger) addPackage(p Package) {
 		if p.Name == "stdlib" && p.CPE == "" && p.Version != "" {
 			p.CPE = "cpe:2.3:a:golang:go:" + p.Version + ":*:*:*:*:*:*:*"
 		}
+	}
+	// A trailing separator ("@scope/", "github.com/x/") leaves no name once
+	// the namespace is split off; such an entry has no identity to report.
+	if p.Name == "" {
+		return
 	}
 	isOS := p.Type == "deb" || p.Type == "apk" || p.Type == "rpm"
 	if !isOS && p.PURL == "" {
@@ -373,7 +378,8 @@ func scanDpkgStatus(b []byte, src, layer string, add func(Package)) {
 			}
 		}
 		name, arch := e["Package"], e["Architecture"]
-		if i := strings.IndexByte(name, ':'); i > 0 {
+		if i := strings.IndexByte(name, ':'); i >= 0 {
+			// "name:arch"; a leading ':' leaves no package name at all.
 			if arch == "" {
 				arch = name[i+1:]
 			}
@@ -1114,7 +1120,9 @@ func keyValues(b []byte, sep string) map[string]string {
 	out := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		if i := strings.Index(line, sep); i > 0 {
-			out[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+len(sep):])
+			if key := strings.TrimSpace(line[:i]); key != "" {
+				out[key] = strings.TrimSpace(line[i+len(sep):])
+			}
 		}
 	}
 	return out

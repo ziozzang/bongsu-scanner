@@ -19,7 +19,7 @@ func cmdReport(ctx context.Context, args []string) error {
 	format := fs.String("format", "html", "html, markdown (md), json, csv, or sarif")
 	output := fs.String("o", "", "output file (default stdout)")
 	title := fs.String("title", "", "report target/title override")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if *from == "" {

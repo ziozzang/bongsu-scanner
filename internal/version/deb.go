@@ -156,9 +156,14 @@ func normalizeDeb(v string) string {
 	if i < 0 {
 		return v
 	}
-	epoch := strings.TrimLeft(v[:i], "0")
+	epoch, rest := strings.TrimLeft(v[:i], "0"), v[i+1:]
 	if epoch == "" {
-		return v[i+1:]
+		if strings.Contains(rest, ":") {
+			// dpkg only permits ':' in the upstream version when an epoch is
+			// present; dropping the epoch would move the split point.
+			return "0:" + rest
+		}
+		return rest
 	}
 	return epoch + v[i:]
 }

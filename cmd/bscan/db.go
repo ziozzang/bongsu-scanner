@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,7 @@ func cmdDB(ctx context.Context, args []string) error {
 	if args[0] == "convert" {
 		fs.BoolVar(&noRaw, "no-keep-raw", false, "omit original downloads from converted database")
 	}
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseCommandFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	*db = filepath.Clean(*db)
@@ -75,7 +76,7 @@ func cmdDB(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Printf("SQLite database: %s\n", filepath.Join(fs.Arg(0), vulndb.SQLiteFileName))
-		return printDBMeta(meta)
+		return printDBMetaTo(logWriter{stage: "db"}, meta)
 	case "import":
 		if fs.NArg() != 1 {
 			return errors.New("db import requires one tar.gz archive")
@@ -87,7 +88,8 @@ func cmdDB(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printDBMeta(meta)
+		fmt.Println(*db)
+		return printDBMetaTo(logWriter{stage: "db"}, meta)
 	case "export":
 		if fs.NArg() != 1 {
 			return errors.New("db export requires one tar.gz output path")
@@ -218,11 +220,15 @@ func filterDBLookupRelease(records []vulndb.Record, ecosystem, name string) []vu
 }
 
 func printDBMeta(meta vulndb.Meta) error {
+	return printDBMetaTo(os.Stdout, meta)
+}
+
+func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 	ecosystems := make([]string, len(meta.Ecosystems))
 	for i, ecosystem := range meta.Ecosystems {
 		ecosystems[i] = httpx.Sanitize(ecosystem)
 	}
-	fmt.Printf("Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", "))
+	fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", "))
 	for _, source := range meta.Sources {
 		name := httpx.Sanitize(source.Name)
 		feed := strings.Join(source.Ecosystems, ", ")
@@ -232,13 +238,16 @@ func printDBMeta(meta vulndb.Meta) error {
 		if feed != "" {
 			name += " [" + httpx.Sanitize(feed) + "]"
 		}
-		fmt.Printf("%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag))
+		fmt.Fprintf(w, "%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag))
 		if source.Error != "" {
-			fmt.Fprintf(os.Stderr, "[db:error] %s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
+			warnf("db:error", "%s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
 		}
 	}
 	return nil
 }
+
+// dbHTTPClient allows command tests to serve feeds without external networking.
+var dbHTTPClient = httpx.New
 
 func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []string) error {
 	sources := fs.String("source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in)")
@@ -250,7 +259,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	noRaw := fs.Bool("no-keep-raw", false, "omit original feeds from installed database")
 	maxBytes := fs.Int64("max-feed-bytes", vulndb.DefaultMaxFeedBytes, "maximum bytes per downloaded feed")
 	timeout := fs.Duration("timeout", 30*time.Minute, "overall update timeout")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -269,8 +278,8 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	opts := vulndb.Options{
 		Sources: splitCSV(*sources), Ecosystems: splitCSV(*ecosystems), AlpineReleases: splitCSV(*releases),
 		OSVBaseURL: *mirror, Force: *force, NoKeepRaw: *noRaw, MaxFeedBytes: *maxBytes,
-		Client:   httpx.New(*timeout),
-		Progress: func(message string) { fmt.Fprintf(os.Stderr, "[db] %s\n", httpx.Sanitize(message)) },
+		Client:   dbHTTPClient(*timeout),
+		Progress: func(message string) { logf("db", "%s\n", httpx.Sanitize(message)) },
 	}
 	opts.Client.UserAgent = "bscan/" + version
 	if err := setDBSigning(cfg, &opts); err != nil {
@@ -281,11 +290,12 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	meta, err := vulndb.Update(ctx, filepath.Clean(*db), opts, vulndb.NVDOptions{Years: *nvdYears})
 	if err != nil {
 		if len(meta.Sources) > 0 {
-			_ = printDBMeta(meta)
+			_ = printDBMetaTo(logWriter{stage: "db"}, meta)
 		}
 		return err
 	}
-	return printDBMeta(meta)
+	fmt.Println(filepath.Clean(*db))
+	return printDBMetaTo(logWriter{stage: "db"}, meta)
 }
 
 func setDBSigning(cfg config.Config, opts *vulndb.Options) error {

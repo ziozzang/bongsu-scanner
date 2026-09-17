@@ -1,3 +1,7 @@
+// CLI output contract: stdout contains primary results (including scan complete
+// lines and artifact paths). Progress, warnings and operational summaries use
+// the stderr logging shim; quiet suppresses logs and JSON changes only logs.
+// Terminating errors are returned to the single top-level stderr printer.
 package main
 
 import (
@@ -11,6 +15,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -26,7 +32,11 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/sign"
 )
 
-var version = "dev"
+var (
+	version   = "dev"
+	commit    string
+	buildDate string
+)
 
 const (
 	author     = "ziozzang@gmail.com"
@@ -34,7 +44,6 @@ const (
 )
 
 func main() {
-	refreshUpdateCache(os.Args[1:])
 	// SIGINT/SIGTERM cancel the context so docker child processes are killed
 	// and temporary docker save/export tars are removed by their defers. A
 	// second signal after cancellation falls back to the default handler.
@@ -46,9 +55,27 @@ func main() {
 	err := run(ctx, os.Args[1:])
 	stop()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "bscan:", err)
+		if errors.Is(err, context.Canceled) {
+			// One line, no stack of wrapped causes: the operator pressed Ctrl-C.
+			fmt.Fprintln(os.Stderr, "bscan: interrupted")
+		} else {
+			fmt.Fprintln(os.Stderr, "bscan:", err)
+		}
 		os.Exit(exitCode(err))
 	}
+}
+
+// partialScanError is returned by --fail-on-partial; it maps to exit code 3
+// so CI can distinguish an incomplete inventory from a hard failure (1) and
+// from findings above the --fail-on threshold (2).
+type partialScanError struct {
+	target                  string
+	denied, errors, skipped int
+	limit                   string
+}
+
+func (e *partialScanError) Error() string {
+	return fmt.Sprintf("partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q): --fail-on-partial", e.target, e.denied, e.errors, e.skipped, e.limit)
 }
 
 func run(ctx context.Context, args []string) (err error) {
@@ -57,6 +84,25 @@ func run(ctx context.Context, args []string) (err error) {
 			err = nil
 		}
 	}()
+	options, rest, err := parseGlobalFlags(args)
+	if err != nil {
+		return err
+	}
+	restore, err := applyGlobalFlags(options)
+	if err != nil {
+		return err
+	}
+	defer restore()
+	args = rest
+	if err := validateConfigOverride(); err != nil {
+		return err
+	}
+	if !options.quiet && options.logFormat == "text" && len(args) > 0 && args[0] != "completion" {
+		refreshUpdateCache(args)
+	}
+	if printCommandHelp(args) {
+		return nil
+	}
 	if len(args) == 0 {
 		usage()
 		return nil
@@ -88,11 +134,14 @@ func run(ctx context.Context, args []string) (err error) {
 		return cmdBatch(ctx, args[1:])
 	case "update", "self-update":
 		return cmdUpdate(ctx, args[1:])
+	case "completion":
+		return cmdCompletion(args[1:])
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		printVersion()
 		return nil
 	case "about":
-		fmt.Printf("bscan %s\nAuthor: %s\nGitHub: %s\n", version, author, projectURL)
+		printVersion()
+		fmt.Printf("Author: %s\nGitHub: %s\nLicense: MIT (LICENSE)\nThird-party notices: THIRD_PARTY_NOTICES.txt\n", author, projectURL)
 		return nil
 	case "help", "-h", "--help":
 		usage()
@@ -106,6 +155,16 @@ func usage() {
 	fmt.Print(`bscan - embedded host/container SBOM scanner and artifact signer
 
 Usage:
+  bscan [global flags] COMMAND [command flags] [arguments]
+
+Global flags (before COMMAND):
+  -q, --quiet          suppress progress logs on stderr
+  --log-format FORMAT text (default) or json
+  --no-color          compatibility placeholder (no color is emitted)
+  --config PATH       override BONGSU_CONFIG and the default config path
+  --version, -v       show build information
+
+Commands:
   bscan init [--signer NAME]
   bscan key show|generate|trust NAME PUBLIC_KEY
   bscan scan [--format both|spdx|cyclonedx] [--output DIR] [--sign|--no-sign] [--verbose]
@@ -123,7 +182,9 @@ Usage:
   bscan match [--db DIR] [--format table|json|cyclonedx|html|markdown|csv|sarif] [--fail-on LEVEL] [--llm] SBOM...
   bscan report --from MATCH.json [--sbom SBOM.json] [--format html|markdown|json|csv|sarif] [-o FILE] [--title TEXT]
   bscan update [--check] [--force] [--require-signature]
-  bscan about
+  bscan version|about
+  bscan completion bash|zsh|fish
+  bscan help [COMMAND [SUBCOMMAND]]
 
 Targets: host, docker://IMAGE, container://CONTAINER, directory, tar, tar.gz, tgz
 
@@ -400,19 +461,19 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		if event.Detail && !f.verbose {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "[scan:%s] %s\n", event.Stage, event.Message)
+		logf("scan:"+event.Stage, "%s\n", event.Message)
 	}
-	fmt.Fprintf(os.Stderr, "[scan:start] target=%s format=%s output=%s file-hashes=%t sign=%t\n",
+	logf("scan:start", "target=%s format=%s output=%s file-hashes=%t sign=%t\n",
 		target, f.format, f.output, f.files, f.sign)
 	switch {
 	case f.noSign:
-		fmt.Fprintln(os.Stderr, "[scan:sign] signing explicitly disabled (--no-sign)")
+		logf("scan:sign", "%s\n", "signing explicitly disabled (--no-sign)")
 	case f.autoSigner != "":
-		fmt.Fprintf(os.Stderr, "[scan:sign] auto-sign enabled: signer=%s\n", f.autoSigner)
+		logf("scan:sign", "auto-sign enabled: signer=%s\n", f.autoSigner)
 	case f.sign:
-		fmt.Fprintln(os.Stderr, "[scan:sign] signing explicitly enabled (--sign)")
+		logf("scan:sign", "%s\n", "signing explicitly enabled (--sign)")
 	default:
-		fmt.Fprintln(os.Stderr, "[scan:sign] unsigned scan: configured signer/private key not available")
+		logf("scan:sign", "%s\n", "unsigned scan: configured signer/private key not available")
 	}
 	opts := f.options()
 	opts.Progress = logProgress
@@ -430,16 +491,16 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		return nil, scanErr
 	}
 	if scanErr != nil {
-		fmt.Fprintf(os.Stderr, "[scan:policy] warning: %v\n", scanErr)
+		logf("scan:policy", "warning: %v\n", scanErr)
 	}
 	for _, r := range results {
 		if r.Scan == nil || !r.Scan.Partial {
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "[scan:policy] partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
+		logf("scan:policy", "partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
 			r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
 		if f.failOnPartial {
-			return nil, fmt.Errorf("partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q): --fail-on-partial", r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
+			return nil, &partialScanError{target: r.Name, denied: r.Scan.PermissionDenied, errors: r.Scan.SkippedErrors, skipped: r.Scan.MetadataSkipped, limit: r.Scan.LimitReached}
 		}
 	}
 	if err := os.MkdirAll(f.output, 0o755); err != nil {
@@ -464,7 +525,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 			}
 			failed = failed || meetsThreshold
 		}
-		fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", r.Name, len(r.Packages), len(r.Files), len(r.Layers))
+		scanSummaryf("scan complete: %s (%d packages, %d files, %d layers)\n", r.Name, len(r.Packages), len(r.Files), len(r.Layers))
 	}
 	for _, out := range outputs {
 		fmt.Println(out)
@@ -516,17 +577,17 @@ func writeScanOutputs(r scan.Result, f scanFlags) ([]string, error) {
 	}
 	for i, format := range formats {
 		out := sbomPaths[i]
-		fmt.Fprintf(os.Stderr, "[scan:sbom] writing %s -> %s\n", format, out)
+		logf("scan:sbom", "writing %s -> %s\n", format, out)
 		if err := sbom.Write(out, format, r); err != nil {
 			return nil, err
 		}
 		outputs = append(outputs, out)
 	}
 	if archive {
-		fmt.Fprintln(os.Stderr, "[scan:policy] local archive: generating source/SBOM SHA-256 manifest")
+		logf("scan:policy", "%s\n", "local archive: generating source/SBOM SHA-256 manifest")
 		if len(r.Layers) > 0 {
 			layerPath := filepath.Join(f.output, base+".layers.sha256")
-			fmt.Fprintf(os.Stderr, "[scan:hash] writing %d layer digests -> %s\n", len(r.Layers), layerPath)
+			logf("scan:hash", "writing %d layer digests -> %s\n", len(r.Layers), layerPath)
 			var entries []hashutil.Entry
 			for _, l := range r.Layers {
 				entries = append(entries, hashutil.Entry{Digest: l.SHA256, Path: l.Path})
@@ -537,7 +598,7 @@ func writeScanOutputs(r scan.Result, f scanFlags) ([]string, error) {
 			outputs = append(outputs, layerPath)
 		}
 		manifest := filepath.Join(f.output, base+".sha256")
-		fmt.Fprintf(os.Stderr, "[scan:hash] writing artifact manifest -> %s\n", manifest)
+		logf("scan:hash", "writing artifact manifest -> %s\n", manifest)
 		var entries []hashutil.Entry
 		for _, out := range outputs {
 			d, err := hashutil.File(out)
@@ -556,7 +617,7 @@ func writeScanOutputs(r scan.Result, f scanFlags) ([]string, error) {
 		}
 		outputs = append(outputs, manifest)
 		if f.sign {
-			fmt.Fprintf(os.Stderr, "[scan:sign] signing archive manifest %s\n", manifest)
+			logf("scan:sign", "signing archive manifest %s\n", manifest)
 			sig, err := signPath(manifest, "")
 			if err != nil {
 				return nil, err
@@ -564,11 +625,11 @@ func writeScanOutputs(r scan.Result, f scanFlags) ([]string, error) {
 			outputs = append(outputs, sig)
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "[scan:policy] non-archive target: SBOM only; no SHA manifest")
+		logf("scan:policy", "%s\n", "non-archive target: SBOM only; no SHA manifest")
 		if f.sign {
 			sbomOutputs := append([]string(nil), outputs...)
 			for _, out := range sbomOutputs {
-				fmt.Fprintf(os.Stderr, "[scan:sign] signing SBOM %s\n", out)
+				logf("scan:sign", "signing SBOM %s\n", out)
 				sig, err := signPath(out, "")
 				if err != nil {
 					return nil, err
@@ -1006,7 +1067,7 @@ func batchOutputBases(targets []string) ([]string, error) {
 			}
 			bases[i] = candidate
 			used[candidate] = true
-			fmt.Fprintf(os.Stderr, "[batch:collision] target=%s output base %s -> %s\n", targets[i], base, candidate)
+			logf("batch:collision", "target=%s output base %s -> %s\n", targets[i], base, candidate)
 			break
 		}
 	}
@@ -1127,3 +1188,207 @@ func atomicOutput(path string, fn func(*os.File) error) error {
 
 // Keep JSON linked into the binary for future machine-readable batch records.
 var _ = json.Valid
+
+// Linker overrides remain compatible with make build's -X main.version.
+func buildIdentity(info *debug.BuildInfo) (string, string, string, string, string) {
+	v, revision, date, goVersion, module := version, commit, buildDate, runtime.Version(), "github.com/ziozzang/bongsu-scanner"
+	modified := false
+	if info != nil {
+		if info.GoVersion != "" {
+			goVersion = info.GoVersion
+		}
+		if info.Main.Path != "" {
+			module = info.Main.Path
+		}
+		if (v == "" || v == "dev") && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			v = info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				if commit == "" {
+					revision = setting.Value
+				}
+			case "vcs.time":
+				if buildDate == "" {
+					date = setting.Value
+				}
+			case "vcs.modified":
+				modified = setting.Value == "true"
+			}
+		}
+	}
+	if v == "" {
+		v = "dev"
+	}
+	if revision == "" {
+		revision = "unknown"
+	}
+	if modified && commit == "" {
+		revision += " (modified)"
+	}
+	if date == "" {
+		date = "unknown"
+	}
+	return v, revision, date, goVersion, module
+}
+
+func printVersion() {
+	info, _ := debug.ReadBuildInfo()
+	v, revision, date, goVersion, module := buildIdentity(info)
+	fmt.Printf("bscan %s\nCommit: %s\nBuild date: %s\nGo: %s\nPlatform: %s/%s\nModule: %s\n",
+		v, revision, date, goVersion, runtime.GOOS, runtime.GOARCH, module)
+}
+
+type globalFlags struct {
+	quiet, noColor, showVersion bool
+	logFormat, configPath       string
+}
+
+func globalFlagSet(options *globalFlags) *flag.FlagSet {
+	fs := flag.NewFlagSet("bscan", flag.ContinueOnError)
+	fs.BoolVar(&options.quiet, "q", false, "suppress progress logs on stderr")
+	fs.BoolVar(&options.quiet, "quiet", false, "suppress progress logs on stderr")
+	fs.StringVar(&options.logFormat, "log-format", "text", "progress/summary log format: text or json")
+	fs.BoolVar(&options.noColor, "no-color", false, "compatibility placeholder; output never uses color")
+	fs.StringVar(&options.configPath, "config", "", "configuration path (overrides BONGSU_CONFIG)")
+	fs.BoolVar(&options.showVersion, "version", false, "show build information")
+	fs.BoolVar(&options.showVersion, "v", false, "show build information")
+	fs.Usage = usage
+	return fs
+}
+
+func parseGlobalFlags(args []string) (globalFlags, []string, error) {
+	var options globalFlags
+	fs := globalFlagSet(&options)
+	if err := fs.Parse(args); err != nil {
+		return options, nil, err
+	}
+	if options.logFormat != "text" && options.logFormat != "json" {
+		return options, nil, fmt.Errorf("--log-format must be text or json, got %q", options.logFormat)
+	}
+	var emptyConfig bool
+	fs.Visit(func(f *flag.Flag) {
+		emptyConfig = emptyConfig || (f.Name == "config" && strings.TrimSpace(f.Value.String()) == "")
+	})
+	if emptyConfig {
+		return options, nil, errors.New("--config requires a nonempty path")
+	}
+	if options.showVersion {
+		return options, []string{"version"}, nil
+	}
+	return options, fs.Args(), nil
+}
+
+var progressLog struct {
+	sync.Mutex
+	quiet bool
+	json  bool
+}
+
+// applyGlobalFlags runs before config consumers, including background updates.
+// Restoring the environment also makes repeated in-process invocations safe.
+func applyGlobalFlags(options globalFlags) (func(), error) {
+	previousConfig, hadConfig := os.LookupEnv("BONGSU_CONFIG")
+	if options.configPath != "" {
+		if err := os.Setenv("BONGSU_CONFIG", options.configPath); err != nil {
+			return nil, err
+		}
+	}
+	progressLog.Lock()
+	previousQuiet, previousJSON := progressLog.quiet, progressLog.json
+	progressLog.quiet, progressLog.json = options.quiet, options.logFormat == "json"
+	progressLog.Unlock()
+	return func() {
+		progressLog.Lock()
+		progressLog.quiet, progressLog.json = previousQuiet, previousJSON
+		progressLog.Unlock()
+		if options.configPath != "" {
+			if hadConfig {
+				_ = os.Setenv("BONGSU_CONFIG", previousConfig)
+			} else {
+				_ = os.Unsetenv("BONGSU_CONFIG")
+			}
+		}
+	}, nil
+}
+
+// logf is shared by commands. Keep each event atomic across batch workers.
+// Errors returned by commands are reported separately and never suppressed.
+func logf(stage, format string, args ...any) {
+	writeLogf("info", stage, format, args...)
+}
+
+func warnf(stage, format string, args ...any) {
+	writeLogf("warn", stage, format, args...)
+}
+
+// logWriter adapts helpers that emit complete diagnostic lines to the shim.
+type logWriter struct {
+	stage   string
+	warning bool
+}
+
+func (w logWriter) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimSuffix(string(p), "\n"), "\n") {
+		line = strings.TrimPrefix(line, "["+w.stage+"] ")
+		if w.warning {
+			warnf(w.stage, "%s", line)
+		} else {
+			logf(w.stage, "%s", line)
+		}
+	}
+	return len(p), nil
+}
+
+func writeLogf(level, stage, format string, args ...any) {
+	progressLog.Lock()
+	defer progressLog.Unlock()
+	if progressLog.quiet {
+		return
+	}
+	message := fmt.Sprintf(format, args...)
+	if progressLog.json {
+		_ = json.NewEncoder(os.Stderr).Encode(struct {
+			TS    string `json:"ts"`
+			Level string `json:"level"`
+			Stage string `json:"stage"`
+			Msg   string `json:"msg"`
+		}{time.Now().UTC().Format(time.RFC3339Nano), level, stage, strings.TrimSuffix(message, "\n")})
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] %s", stage, message)
+	if !strings.HasSuffix(message, "\n") {
+		fmt.Fprintln(os.Stderr)
+	}
+}
+
+func scanSummaryf(format string, args ...any) {
+	fmt.Printf(format, args...)
+}
+
+// Config path resolution belongs to internal/config. Until that package honors
+// BONGSU_CONFIG, reject an unmatched override rather than silently using another
+// file (which could bypass a requested offline or signature policy).
+func validateConfigOverride() error {
+	requested := strings.TrimSpace(os.Getenv("BONGSU_CONFIG"))
+	if requested == "" {
+		return nil
+	}
+	actual, err := config.Path()
+	if err != nil {
+		return err
+	}
+	requested, err = filepath.Abs(requested)
+	if err != nil {
+		return err
+	}
+	actual, err = filepath.Abs(actual)
+	if err != nil {
+		return err
+	}
+	if actual != requested {
+		return errors.New("configuration override unavailable: internal/config must support BONGSU_CONFIG before --config can select a different file")
+	}
+	return nil
+}

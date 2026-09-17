@@ -1,0 +1,11 @@
+[Unit]
+Description=Run bscan host scan daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=bscan-scan.service
+
+[Install]
+WantedBy=timers.target

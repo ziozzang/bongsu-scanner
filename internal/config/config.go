@@ -123,13 +123,22 @@ func LoadWithWarnings() (Config, string, []string, error) {
 	if err != nil {
 		return cfg, path, warnings, err
 	}
+	cfg, warnings, err = parse(path, b)
+	return cfg, path, warnings, err
+}
+
+// parse decodes the configuration text. path only labels diagnostics; the
+// returned Config starts from Defaults and is complete even when err != nil.
+func parse(path string, b []byte) (Config, []string, error) {
+	cfg := Defaults()
+	var warnings []string
 	section := ""
 	mapIndent := 0
 	seen := make(map[string]bool)
 	for n, raw := range strings.Split(strings.TrimPrefix(string(b), "\ufeff"), "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		if !utf8.ValidString(line) {
-			return cfg, path, warnings, fmt.Errorf("%s:%d: configuration must be valid UTF-8", path, n+1)
+			return cfg, warnings, fmt.Errorf("%s:%d: configuration must be valid UTF-8", path, n+1)
 		}
 		t := strings.Trim(line, " \t")
 		if t == "" || strings.HasPrefix(t, "#") {
@@ -138,29 +147,29 @@ func LoadWithWarnings() (Config, string, []string, error) {
 		indented := line[0] == ' ' || line[0] == '\t'
 		if indented && section != "trusted_keys" {
 			if section == "" {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: unexpected indentation", path, n+1)
+				return cfg, warnings, fmt.Errorf("%s:%d: unexpected indentation", path, n+1)
 			}
 			// Unknown blocks may contain arbitrary nested mappings and lists.
 			continue
 		}
 		i := keySeparator(t)
 		if i < 1 {
-			return cfg, path, warnings, fmt.Errorf("%s:%d: expected key: value", path, n+1)
+			return cfg, warnings, fmt.Errorf("%s:%d: expected key: value", path, n+1)
 		}
 		k, err := unquote(strings.Trim(t[:i], " \t"))
 		if err != nil || !printableKey(k) {
-			return cfg, path, warnings, fmt.Errorf("%s:%d: invalid configuration key %q (expected printable UTF-8 scalar)", path, n+1, t[:i])
+			return cfg, warnings, fmt.Errorf("%s:%d: invalid configuration key %q (expected printable UTF-8 scalar)", path, n+1, t[:i])
 		}
 		rawValue := strings.TrimSpace(stripComment(strings.TrimSpace(t[i+1:])))
 		if section == "trusted_keys" && indented {
 			indent := len(line) - len(strings.TrimLeft(line, " \t"))
 			if mapIndent != 0 && indent != mapIndent {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: trusted_keys must be a flat map", path, n+1)
+				return cfg, warnings, fmt.Errorf("%s:%d: trusted_keys must be a flat map", path, n+1)
 			}
 			mapIndent = indent
 			v, err := scalar(rawValue)
 			if err != nil || rawValue == "" {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: trusted_keys[%q]: expected scalar value; inline maps/flow sequences and nested blocks are unsupported", path, n+1, k)
+				return cfg, warnings, fmt.Errorf("%s:%d: trusted_keys[%q]: expected scalar value; inline maps/flow sequences and nested blocks are unsupported", path, n+1, k)
 			}
 			if _, exists := cfg.TrustedKeys[k]; exists {
 				warnings = append(warnings, fmt.Sprintf("%s:%d: duplicate trusted_keys key %q; last value wins", path, n+1, k))
@@ -186,7 +195,7 @@ func LoadWithWarnings() (Config, string, []string, error) {
 		if k != "formats" {
 			v, err = scalar(rawValue)
 			if err != nil {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: %s: %w", path, n+1, k, err)
+				return cfg, warnings, fmt.Errorf("%s:%d: %s: %w", path, n+1, k, err)
 			}
 		}
 		switch k {
@@ -201,14 +210,14 @@ func LoadWithWarnings() (Config, string, []string, error) {
 		case "formats":
 			cfg.Formats, err = parseList(v)
 			if err != nil {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: formats: %w", path, n+1, err)
+				return cfg, warnings, fmt.Errorf("%s:%d: formats: %w", path, n+1, err)
 			}
 		case "concurrency":
 			cfg.Concurrency, _ = strconv.Atoi(v)
 		case "offline", "db_require_signature", "update_require_signature":
 			value, err := parseBool(v)
 			if err != nil {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: %s: %w", path, n+1, k, err)
+				return cfg, warnings, fmt.Errorf("%s:%d: %s: %w", path, n+1, k, err)
 			}
 			switch k {
 			case "offline":
@@ -221,12 +230,12 @@ func LoadWithWarnings() (Config, string, []string, error) {
 		case "signature_min_version":
 			minimum, err := strconv.Atoi(v)
 			if err != nil || (minimum != 1 && minimum != 2) {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: signature_min_version must be 1 or 2", path, n+1)
+				return cfg, warnings, fmt.Errorf("%s:%d: signature_min_version must be 1 or 2", path, n+1)
 			}
 			cfg.SignatureMinVersion = minimum
 		case "trusted_keys":
 			if rawValue != "" {
-				return cfg, path, warnings, fmt.Errorf("%s:%d: trusted_keys must be a block map; inline maps/flow sequences are unsupported", path, n+1)
+				return cfg, warnings, fmt.Errorf("%s:%d: trusted_keys must be a block map; inline maps/flow sequences are unsupported", path, n+1)
 			}
 			cfg.TrustedKeys = make(map[string]string)
 			section = k
@@ -235,7 +244,7 @@ func LoadWithWarnings() (Config, string, []string, error) {
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 1
 	}
-	return cfg, path, warnings, nil
+	return cfg, warnings, nil
 }
 
 func Save(cfg Config) error {
@@ -246,13 +255,23 @@ func Save(cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	return os.WriteFile(path, render(cfg), 0o600)
+}
+
+// render produces the configuration text Save writes; parse reads it back
+// to an equal Config.
+func render(cfg Config) []byte {
 	var b strings.Builder
 	b.WriteString("# bongsu scanner configuration\n")
 	b.WriteString("signer: " + quote(cfg.Signer) + "\n")
 	b.WriteString("private_key: " + quote(cfg.PrivateKey) + "\n")
 	b.WriteString("public_key: " + quote(cfg.PublicKey) + "\n")
 	b.WriteString("hash: " + quote(cfg.Hash) + "\n")
-	b.WriteString("formats: [" + strings.Join(cfg.Formats, ", ") + "]\n")
+	formats := make([]string, 0, len(cfg.Formats))
+	for _, f := range cfg.Formats {
+		formats = append(formats, listItem(f))
+	}
+	b.WriteString("formats: [" + strings.Join(formats, ", ") + "]\n")
 	b.WriteString("concurrency: " + strconv.Itoa(cfg.Concurrency) + "\n")
 	b.WriteString("offline: " + strconv.FormatBool(cfg.Offline) + "\n")
 	b.WriteString("db_require_signature: " + strconv.FormatBool(cfg.DBRequireSignature) + "\n")
@@ -266,7 +285,17 @@ func Save(cfg Config) error {
 	for k, v := range cfg.TrustedKeys {
 		b.WriteString("  " + quote(k) + ": " + quote(v) + "\n")
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return []byte(b.String())
+}
+
+// listItem keeps ordinary format names bare ("[spdx, cyclonedx]") and quotes
+// anything the flow-sequence reader would otherwise split, trim or treat as
+// a comment.
+func listItem(s string) string {
+	if s == "" || strings.ContainsAny(s, ",[]\"'#: \t\\") || strings.TrimSpace(s) != s {
+		return quote(s)
+	}
+	return s
 }
 
 func unquote(s string) (string, error) {

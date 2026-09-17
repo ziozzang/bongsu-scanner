@@ -44,9 +44,17 @@ func TestReviewScanCancellationBeforeOutputs(t *testing.T) {
 			}
 		}
 	}
+	start := time.Now()
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("scan error=%v", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) || exitCode(err) != 130 {
+			t.Fatalf("scan error=%v exit=%d", err, exitCode(err))
+		}
+		t.Logf("scan cancellation: %s", time.Since(start))
+	case <-time.After(time.Second):
+		<-done
+		t.Fatal("scan cancellation exceeded 1s")
 	}
 	entries, err := os.ReadDir(output)
 	if err != nil {
