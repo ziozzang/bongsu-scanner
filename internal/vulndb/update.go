@@ -111,6 +111,9 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 		if source, ok := s.(*nvdSource); ok {
 			source.options = nvdOpts
 		}
+		if source, ok := s.(*redHatVEXSource); ok {
+			source.ctx = ctx
+		}
 		fs, err := s.Feeds(&opts)
 		if err != nil {
 			return meta, err
@@ -207,6 +210,10 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	if err := ctx.Err(); err != nil {
 		return meta, err
 	}
+	spools, err = consolidateVEXSpools(ctx, stage, feeds, spools)
+	if err != nil {
+		return meta, err
+	}
 	previousTimes, err := previousIngestionTimes(ctx, dir, old)
 	if err != nil {
 		return meta, err
@@ -243,6 +250,9 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[string]SourceMeta, opts Options, now time.Time, spool *ingestionSpool) (SourceMeta, error) {
 	if err := ctx.Err(); err != nil {
 		return SourceMeta{Name: feed.Source, URL: feed.URL}, err
+	}
+	if feed.vexDelta != nil {
+		return updateVEXDeltaFeed(ctx, dir, stage, feed, previous, opts, now, spool)
 	}
 	cacheRel := filepath.Join("cache", feed.Source, feed.Key+".jsonl.gz")
 	rawRel := filepath.Join("raw", feed.Source, feed.File)
@@ -290,6 +300,9 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	}
 	cacheLimit := feedCacheLimit(feed.Source, opts)
 	if err == nil && fetched.NotModified {
+		if feed.Source == SourceRedHatVEX && opts.Progress != nil {
+			opts.Progress("[db:redhat-vex] vex: not modified (304); replaying conversion cache")
+		}
 		err = readFeedCache(filepath.Join(dir, cacheRel), cacheLimit, func(r *Record) error {
 			if !validID(r.ID) {
 				return errors.New("feed emitted invalid advisory")

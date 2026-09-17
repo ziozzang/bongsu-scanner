@@ -30,7 +30,10 @@ var vexNEVRA = regexp.MustCompile(`^(.+)-([0-9]+:[^-:]+-[^:]+)\.([a-zA-Z0-9_]+)$
 // The Source interface has no context. Only the tiny index is fetched here,
 // with an independent deadline; the archive uses the update engine's context,
 // conditional requests, hashing and download bound. baseURL is a test seam.
-type redHatVEXSource struct{ baseURL string }
+type redHatVEXSource struct {
+	baseURL string
+	ctx     context.Context
+}
 
 func (redHatVEXSource) Name() string { return SourceRedHatVEX }
 func (s redHatVEXSource) Feeds(opts *Options) ([]Feed, error) {
@@ -46,7 +49,11 @@ func (s redHatVEXSource) Feeds(opts *Options) ([]Feed, error) {
 	if client == nil {
 		client = httpx.New(30 * time.Second)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	var index bytes.Buffer
 	if _, _, _, err := client.Download(ctx, base+"archive_latest.txt", nil, &index, 4096); err != nil {
@@ -61,10 +68,17 @@ func (s redHatVEXSource) Feeds(opts *Options) ([]Feed, error) {
 		maxBytes = DefaultMaxFeedBytes
 	}
 	expanded := opts.maxFeedUncompressedBytes()
-	return []Feed{{Source: SourceRedHatVEX, Key: "vex", URL: base + name, File: "vex.tar.zst", Ecosystems: []string{"Red Hat"}, MaxBytes: maxBytes,
+	feeds := []Feed{{Source: SourceRedHatVEX, Key: "vex", URL: base + name, File: "vex.tar.zst", Ecosystems: []string{"Red Hat"}, MaxBytes: maxBytes,
 		Parse: func(ctx context.Context, path string, _ int64, emit Emit, progress func(string)) error {
 			return parseRedHatVEX(ctx, path, expanded, vexMaxDocument, emit, progress)
-		}}}, nil
+		}}}
+	archiveDate, err := time.Parse(time.DateOnly, strings.TrimSuffix(strings.TrimPrefix(name, "csaf_vex_"), ".tar.zst"))
+	if err != nil {
+		return nil, errors.New("redhat-vex: invalid archive date")
+	}
+	delta := &vexDeltaFeed{baseURL: base, archiveDate: archiveDate, client: client, budget: 2 << 30, maxDocuments: 20_000, maxDocument: vexMaxDocument, retryDelay: 250 * time.Millisecond}
+	feeds = append(feeds, Feed{Source: SourceRedHatVEX, Key: "vex-changes", URL: base + "changes.csv", File: "changes.csv", Ecosystems: []string{"Red Hat"}, MaxBytes: vexListMaxBytes, Parse: delta.parse, vexDelta: delta})
+	return feeds, nil
 }
 
 // selectedOSVSource changes only feed assembly, never the persisted selection.

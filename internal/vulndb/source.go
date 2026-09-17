@@ -85,6 +85,7 @@ type Feed struct {
 	Ecosystems []string // ecosystems the feed is declared to cover
 	MaxBytes   int64
 	Parse      Parser
+	vexDelta   *vexDeltaFeed // incremental state owned by this feed worker
 }
 
 // Source is a plugin that knows which feed files to download for the given
@@ -272,6 +273,15 @@ func affectedKey(a Affected) string {
 // empty, and the fullest description is selected; Published is the earliest and Modified the latest
 // timestamp; Source becomes a comma-joined list of provenance names.
 func Merge(dst, src *Record) {
+	// Resolve VEX snapshots before combining them with other sources. A union
+	// would retain obsolete affected products when a newer document clears them.
+	if dst.ID == src.ID && dst.Source == SourceRedHatVEX && src.Source == SourceRedHatVEX {
+		newest := mergeRFC3339(dst.Modified, src.Modified, false)
+		if newest == src.Modified && (src.Modified != dst.Modified || src.Withdrawn != "" || dst.Withdrawn == "") {
+			*dst = *src
+		}
+		return
+	}
 	for _, provenance := range src.Provenance {
 		addProvenance(dst, provenance)
 	}

@@ -235,7 +235,8 @@ func TestRedHatVEXFeeds(t *testing.T) {
 	source := redHatVEXSource{baseURL: server.URL}
 	opts := Options{Client: client, MaxFeedBytes: 1 << 20}
 	feeds, err := source.Feeds(&opts)
-	if err != nil || len(feeds) != 1 {
+	// The archive feed plus the changes.csv delta feed.
+	if err != nil || len(feeds) != 2 || feeds[1].Key != "vex-changes" {
 		t.Fatalf("feeds=%v err=%v", feeds, err)
 	}
 	f := feeds[0]
@@ -318,6 +319,8 @@ func TestRedHatVEXSelectionPersistsAndRestoresOSV(t *testing.T) {
 			_, _ = fmt.Fprint(w, "csaf_vex_2026-09-13.tar.zst")
 		case strings.HasSuffix(r.URL.Path, ".tar.zst"):
 			_, _ = w.Write(data)
+		case strings.HasSuffix(r.URL.Path, "changes.csv"), strings.HasSuffix(r.URL.Path, "deletions.csv"):
+			// No deltas: an empty list is a valid response.
 		default:
 			osvRequests++
 			_, _ = w.Write(zipData)
@@ -335,8 +338,14 @@ func TestRedHatVEXSelectionPersistsAndRestoresOSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if osvRequests != 0 || len(meta.Sources) != 1 || meta.Selection == nil || !reflect.DeepEqual(meta.Selection.Sources, opts.Sources) || !reflect.DeepEqual(meta.Selection.Ecosystems, opts.Ecosystems) {
+	// Two VEX feeds (archive + deltas) and no OSV Red Hat download.
+	if osvRequests != 0 || len(meta.Sources) != 2 || meta.Selection == nil || !reflect.DeepEqual(meta.Selection.Sources, opts.Sources) || !reflect.DeepEqual(meta.Selection.Ecosystems, opts.Ecosystems) {
 		t.Fatalf("meta=%+v requests=%d", meta, osvRequests)
+	}
+	for _, source := range meta.Sources {
+		if source.Name != SourceRedHatVEX || source.Error != "" || source.DeltaMalformed != 0 {
+			t.Fatalf("unexpected source meta: %+v", source)
+		}
 	}
 	opts.Sources = []string{SourceOSV}
 	meta, err = Update(context.Background(), dir, opts)

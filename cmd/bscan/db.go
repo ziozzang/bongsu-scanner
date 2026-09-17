@@ -269,6 +269,11 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 		if _, err := fmt.Fprintf(w, "%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag)); err != nil {
 			return err
 		}
+		if line := source.VEXStatus(); line != "" {
+			if _, err := fmt.Fprintf(w, "  %s\n", line); err != nil {
+				return err
+			}
+		}
 		through := "unknown"
 		if !source.DataThrough.IsZero() {
 			through = source.DataThrough.UTC().Format(time.DateOnly)

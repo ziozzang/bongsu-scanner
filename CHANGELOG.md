@@ -9,6 +9,8 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Added
 
+- Incremental Red Hat VEX changes and deletions with bounded concurrent downloads, resumable delta caches, latest-document replacement and archive/delta freshness in `db status`.
+
 - Opt-in `redhat-vex` streaming CSAF source with per-CVE RHEL fixes, no-fix
   states, not-affected suppression and vendor severity; supersedes the selected
   OSV Red Hat feed without changing saved source choices.

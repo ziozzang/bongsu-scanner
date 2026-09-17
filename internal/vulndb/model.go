@@ -102,6 +102,16 @@ type SourceMeta struct {
 
 	// DataThrough is the newest valid record modified time, independent of fetching.
 	DataThrough time.Time `json:"data_through,omitempty,omitzero"`
+	// VEX delta state lives in meta.json, so old SQLite catalogs remain readable.
+	ArchiveDate    time.Time `json:"archive_date,omitempty,omitzero"`
+	DeltaThrough   time.Time `json:"delta_through,omitempty,omitzero"`
+	DeltaDocuments int       `json:"delta_documents,omitempty"`
+	DeltaFetched   int       `json:"delta_fetched,omitempty"`
+	DeltaDeleted   int       `json:"delta_deleted,omitempty"`
+	DeltaMalformed int       `json:"delta_malformed,omitempty"`
+	DeltaOversized int       `json:"delta_oversized,omitempty"`
+	DeltaRemaining int       `json:"delta_remaining,omitempty"`
+	DeltaBytes     int64     `json:"delta_bytes,omitempty"`
 }
 
 // Meta is the database manifest written after every update.
