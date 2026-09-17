@@ -74,6 +74,10 @@ Historical entries are grouped by commit date rather than inferred release versi
 - Pin the build toolchain to Go 1.27.1 while retaining Go 1.25 as the minimum.
 - Replace production-sized test fixtures with injectable limits and clocks;
   retain opt-in heavy tests through `BSCAN_HEAVY_TESTS=1`.
+- `db status` folds release-qualified ecosystems into "Name (N releases)";
+  `bscan init` no longer pins feed limits in scaner.yaml (defaults stay
+  commented out) and `db update` warns when a pinned limit is below the
+  current default. The expansion budget default is 32 GiB.
 - `--quiet` keeps alerts that change how results must be read (failed feed
   downloads, coverage gaps, unavailable LLM review); progress stays silent.
 - Standardize findings JSON as `bscan-findings/1` with snake_case fields, string PURLs, generation metadata, and schema validation on report import.
