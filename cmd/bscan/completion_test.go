@@ -379,8 +379,10 @@ latest versions on stdout and return 0 whether or not an update is available
 (there is no update-available exit code 4); failed checks still return 1.
 
 Progress, warnings, and operational summaries use the shared stderr logger.
-` + "`--quiet`" + ` / ` + "`-q`" + ` suppresses these logs; terminating errors remain visible
-through the single top-level error printer. ` + "`--log-format=json`" + ` emits one JSON
+` + "`--quiet`" + ` / ` + "`-q`" + ` suppresses progress logs; terminating errors remain visible
+through the single top-level error printer, and alerts that change how results
+must be read (failed feed downloads, catalog coverage gaps, unavailable LLM
+review) are still written at ` + "`warn`" + ` level. ` + "`--log-format=json`" + ` emits one JSON
 object per log line with ` + "`ts` (UTC RFC3339), `level` (info/warn), `stage`, and `msg`" + `.
 The log format never changes the result format or moves scan complete lines to
 stderr. No color is emitted; ` + "`--no-color`" + ` is a compatibility flag.

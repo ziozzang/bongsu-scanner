@@ -43,8 +43,12 @@ func captureCommandStreams(t *testing.T, fn func() error) (string, string, error
 func assertCommandLogs(t *testing.T, mode, stderr string) {
 	t.Helper()
 	if mode == "quiet" {
-		if stderr != "" {
-			t.Fatalf("quiet logs: %s", stderr)
+		// Quiet suppresses progress; alerts that change how results must be
+		// read (feed failures, coverage gaps, unavailable LLM review) stay.
+		for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+			if line != "" && !quietAlertLine(line) {
+				t.Fatalf("quiet logs: %s", stderr)
+			}
 		}
 		return
 	}
@@ -111,6 +115,11 @@ func (a outputAnalyzer) Analyze(context.Context, assessment.Input) (assessment.R
 	return assessment.Result{Status: assessment.NeedsReview}, a.err
 }
 
+func quietAlertLine(line string) bool {
+	return strings.HasPrefix(line, "[db:error] ") || strings.Contains(line, "WARNING: coverage gap") ||
+		strings.HasPrefix(line, "[match:llm] analysis unavailable")
+}
+
 func TestHelperOutputLoggingModes(t *testing.T) {
 	t.Setenv("BONGSU_HOME", t.TempDir())
 	for _, mode := range []string{"text", "json", "quiet"} {
@@ -157,6 +166,9 @@ func TestHelperOutputLoggingModes(t *testing.T) {
 				assertCommandLogs(t, mode, stderr)
 				if mode == "json" && strings.HasSuffix(helper, "warning") && !strings.Contains(stderr, `"level":"warn"`) {
 					t.Fatalf("warning severity lost: %s", stderr)
+				}
+				if mode == "quiet" && (helper == "db-warning" || helper == "llm-warning") && stderr == "" {
+					t.Fatalf("%s alert suppressed by --quiet", helper)
 				}
 			})
 		}

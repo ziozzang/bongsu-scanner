@@ -15,10 +15,14 @@ Project: https://github.com/ziozzang/bongsu-scanner
 
 See [the generated command reference](docs/commands.md) for all commands,
 flags, defaults, environment variables, configuration keys and exit codes.
+See also the [findings JSON reference](docs/findings-json.md) and [CI integration guide](docs/ci-integration.md).
 Place global logging flags before the command: `bscan --quiet scan .` suppresses
 progress logs; `bscan --log-format=json scan .` emits structured progress
 and operational summaries on stderr. Primary results, including `scan complete`
-lines and output paths, remain on stdout. Errors remain visible. These flags
+lines and output paths, remain on stdout. Errors remain visible, and so do
+warnings that change how results must be read (catalog coverage gaps, failed
+feed downloads, unavailable LLM review): a quiet run that matched nothing
+because the catalog lacks the host's distribution still says so. These flags
 also apply to database, matching, and update command logs.
 
 ## Build and initialize
@@ -87,10 +91,10 @@ match:
   db_isolation: auto
   report_formats: []       # e.g. [html, sarif]; scan/batch --match only
 db:
-  sources: []              # empty uses the database updater's default sources
-  ecosystems: []           # empty uses the updater's default ecosystems
-  alpine_releases: []      # empty uses the updater's default releases
-  nvd_years: ""            # default: current year and previous two
+  sources: []              # empty reuses installed choices, or built-in defaults
+  ecosystems: []           # empty reuses installed choices, or built-in defaults
+  alpine_releases: []      # empty reuses installed choices, or built-in defaults
+  nvd_years: ""            # saved years, or current year and previous two
   max_feed_bytes: 536870912
   max_feed_uncompressed: 17179869184
   keep_raw: true           # inverse of --no-keep-raw
@@ -216,6 +220,10 @@ the target as a directory: explicitly set `--files=false`, `--one-file-system`,
 [systemd deployment](deploy/README.md#systemd-linux) provides a daily host scan
 with HTML findings in `/var/lib/bscan/reports` and a weekly catalog update,
 using a dedicated `bscan` account. A cron example is also provided.
+Scheduled `bscan db update` runs retain the installed feed selection unless the
+config's `db:` block overrides it. Add coverage once with
+`bscan db update --add-ecosystem Ubuntu:24.04` using the same account and
+`BONGSU_HOME` as the scheduled job; check `bscan db status` for `Selection:`.
 `make dist VERSION=0.5.0` builds the five portable archives; the tag-release
 workflow uploads them and publishes a multi-architecture container image.
 
@@ -498,17 +506,54 @@ exit code 2 takes precedence over an LLM enrichment error (exit code 1).
 The findings report is retained and the LLM error is still reported. Without a
 threshold match, an LLM enrichment error returns exit code 1.
 
-`db update` with no selections downloads OSV's default ecosystems (Debian,
+On the first update, absent configuration, `db update` downloads OSV's default ecosystems (Debian,
 Alpine, Wolfi, Red Hat, Rocky Linux, AlmaLinux, npm, PyPI, Go, crates.io, Maven,
 RubyGems, NuGet, and Packagist), Alpine's configured release list, Debian tracker,
-and RubySec. Downloads can be hundreds of MB
+and RubySec. Later updates reuse the installed selection, including manually
+added feeds. Selection is stored separately from ecosystems found in advisory
+records and appears on the `Selection:` line of `bscan db status`.
+
+Each selection field resolves in this order: explicit flag, nonempty `db:`
+config value, installed catalog selection, built-in defaults. `--source`,
+`--ecosystem`, `--alpine-release`, and `--nvd-years` **replace their respective
+selection**: `--ecosystem PyPI` removes the other OSV exports on that rebuild.
+An explicitly empty selection flag resets that field to defaults. Old catalogs
+without selection metadata recover OSV choices from their feed declarations,
+falling back to defaults when absent; other selection fields use defaults.
+
+Use `--add-ecosystem`, `--add-source`, or `--add-alpine-release` to extend the
+effective selection. These accept comma-separated values and may repeat;
+duplicates are removed in first-seen order. Additions reject empty items and
+`/`, `\`, `?`, or `#`. In selection lists, `default` or `defaults` expands to
+the corresponding built-in list at that position. For example:
+
+```sh
+# Add Ubuntu coverage while retaining the existing selection.
+bscan db update --add-ecosystem Ubuntu:24.04 --add-ecosystem Ubuntu:22.04
+# Reset the OSV list to built-ins plus one release (other fields are retained).
+bscan db update --ecosystem default,Ubuntu:24.04:LTS
+# Refresh the saved selection, including additions; suitable for cron/systemd.
+bscan db update
+bscan db status
+```
+
+Prefer per-release Ubuntu OSV exports: `Ubuntu:24.04:LTS` is approximately
+142 MB versus approximately 700 MB for the full `Ubuntu` export, which exceeds
+the default 512 MiB download limit. Sizes change as feeds grow.
+`--add-ecosystem Ubuntu:24.04` and `Ubuntu:22.04` expand to
+`Ubuntu:24.04:LTS` and `Ubuntu:22.04:LTS`. Ubuntu Pro coverage requires an
+explicit `--add-ecosystem Ubuntu:Pro:24.04:LTS`; it is never added implicitly.
+Plain `Ubuntu` remains allowed. OSV export URLs are
+`<base>/<ecosystem>/all.zip`, including release-qualified names.
+
+Downloads can be hundreds of MB
 per feed. Use `--max-feed-bytes N` to adjust the feed bound, `--timeout 30m` to
 bound the operation, `--mirror https://...` for an OSV mirror, and
 `--no-keep-raw` to omit original downloads. `--force` bypasses conditional GETs.
 Large OSV Ubuntu and Chainguard feeds are opt-in; select their ecosystem names
 explicitly and increase the byte limit when needed. The configured byte limit
 also applies to GHSA downloads.
-NVD is opt-in via `--source nvd`; include it alongside package feeds with `bscan db update --source osv,alpine,debian,nvd --nvd-years 2024-2026`. `--nvd-years` accepts a range or comma-separated list and defaults to the current year and previous two years. Updates fetch yearly and modified NVD feeds. During ingestion, missing CVSS severity may be supplied by another advisory for the same CVE, preferring CVSS V4 over V3 over V2 while preserving existing severity. Provenance is recorded in `database_specific.severity_source` as `alias:<record ID>` or `nvd`.
+NVD is opt-in; add it alongside existing feeds with `bscan db update --add-source nvd --nvd-years 2024-2026`. `--nvd-years` accepts a range or comma-separated list, including `default`/`defaults` for the current year and previous two years. An explicit year list is saved with the selection and reused by later updates; the rolling default is saved as such and keeps following the current year. Updates fetch yearly and modified NVD feeds. During ingestion, missing CVSS severity may be supplied by another advisory for the same CVE, preferring CVSS V4 over V3 over V2 while preserving existing severity. Provenance is recorded in `database_specific.severity_source` as `alias:<record ID>` or `nvd`.
 
 CPE matching is separately opt-in: `bscan match --cpe inventory.cdx.json` or
 `bscan scan --match --cpe TARGET`. It is off by default because NVD CPE data can
@@ -520,15 +565,15 @@ parse, otherwise generic ordering. Range findings have low confidence; only exac
 criteria versions have high confidence. Existing ecosystem findings for the same
 CVE and subject take precedence. Ingestion reports the number of CPE entries
 requiring AND; matching reports relevant exclusions as `cpe-requires-and`.
-SQLite catalog schema v6 adds the CPE lookup index; run `bscan db update --source
+SQLite catalog schema v6 adds the CPE lookup index; run `bscan db update --add-source
 nvd --nvd-years 2025-2026` to populate it. Existing NVD conversion caches are
 refreshed automatically for this new matching data.
 
 
 RubySec is a default source (it is only a few MB); when you pass `--source` explicitly, include `rubysec` to keep it. It downloads [rubysec/ruby-advisory-db](https://github.com/rubysec/ruby-advisory-db)'s master ZIP with ETag conditional requests and a hard 64 MiB cap (a smaller `--max-feed-bytes` is honored). Gem advisories become RubyGems records using a dependency-free YAML subset reader. Numeric `patched_versions` requirements `>= X` map to an ECOSYSTEM range ending at exclusive `fixed: X`, starting at `introduced: 0` or the unaffected boundary; `~> A.B.C` maps to `[A.B.0, A.B.C)`. `unaffected_versions: < X` raises the lower bound to X. With multiple patched branches, the final `>=` range starts after the last earlier patched minor branch, at `A.(B+1).0`, so fixed releases are not reintroduced as vulnerable; duplicate branch fixes use the earliest fix. Complex requirements (including compound constraints, prereleases, and other operators) or missing patch information produce a versions-less affected entry with no ranges and `database_specific.rubysec_unmapped`, allowing the matcher to report `no-usable-range`. CVSS V3/V4 vector strings are retained; numeric scores alone are omitted.
 
-An update builds a complete replacement from the selected feeds; include every
-source/ecosystem you want to retain on each update. If any feed fails, the
+An update builds a complete replacement from the effective selection; plain
+updates retain saved choices, and `--add-*` extends them. If any feed fails, the
 existing database remains usable and the command returns an error.
 
 The database lives at `$BONGSU_HOME/db` (normally `~/.bongsu/db`). It contains
@@ -618,10 +663,10 @@ and other unranked values fall back to CVSS.
 Unimportant advisories are included by default. Use `--exclude-unimportant`
 to hide them; `--include-unimportant` remains accepted as a deprecated no-op
 and prints a one-line notice (including when set to `false`).
-With `--severity-source cvss`, `Severity` uses the CVSS rating while
-`DistroSeverity` retains the vendor urgency, including `unimportant`.
+With `--severity-source cvss`, `severity` uses the CVSS rating while
+`distro_severity` retains the vendor urgency, including `unimportant`.
 `--severity-source max` selects the higher rating. Both `--min-severity` and
-`--fail-on` use the selected policy's `Severity`. Tables and report legends
+`--fail-on` use the selected policy's `severity`. Tables and report legends
 identify the policy; the default is
 `Severity policy: distro (vendor rating first, CVSS fallback)`.
 These defaults and options also apply to `scan --match` and `batch --match`.

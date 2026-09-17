@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
@@ -80,11 +81,11 @@ func TestQuietMissStillBridgesAdvisoryAliases(t *testing.T) {
 	miss.ID, miss.Aliases = "bridge", []string{"CVE-2026-123456"}
 	subjects := []Subject{{Ref: "ref", Name: "fixture", Ecosystem: "npm", Version: "1.0.0"}}
 	store := &fakeStore{records: []vulndb.Record{hit, miss}}
-	report, err := Run(context.Background(), store, subjects, Options{})
+	report, err := Run(context.Background(), store, subjects, Options{Now: func() time.Time { return time.Unix(0, 0) }})
 	if err != nil || len(report.Findings) != 1 || report.Findings[0].ID != "CVE-2026-123456" {
 		t.Fatalf("quiet miss lost alias bridge: %+v, %v", report.Findings, err)
 	}
-	again, err := Run(context.Background(), store, subjects, Options{})
+	again, err := Run(context.Background(), store, subjects, Options{Now: func() time.Time { return time.Unix(0, 0) }})
 	if err != nil || !reflect.DeepEqual(report, again) {
 		t.Fatal("matching is nondeterministic")
 	}

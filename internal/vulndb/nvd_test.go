@@ -73,6 +73,9 @@ func TestNVDUpdateAliasSeverityAndConditionalGET(t *testing.T) {
 		if meta.Records != 3 {
 			t.Fatalf("records = %d", meta.Records)
 		}
+		if meta.Selection == nil || !meta.Selection.NVDEnabled || meta.Selection.NVDYears != "2025" {
+			t.Fatalf("NVD selection not persisted: %+v", meta.Selection)
+		}
 		st, err := Open(dir)
 		if err != nil {
 			t.Fatal(err)

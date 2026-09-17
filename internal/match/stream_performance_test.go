@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
@@ -43,11 +44,11 @@ func TestVisitorMatchesLegacyAndDeduplicatesLastQuery(t *testing.T) {
 	for _, details := range []bool{false, true} {
 		legacy := &fakeStore{records: records}
 		visitor := &visitorTestStore{fakeStore: &fakeStore{records: records}}
-		want, err := Run(context.Background(), legacy, subjects, Options{Details: details})
+		want, err := Run(context.Background(), legacy, subjects, Options{Details: details, Now: func() time.Time { return time.Unix(0, 0) }})
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := Run(context.Background(), visitor, subjects, Options{Details: details})
+		got, err := Run(context.Background(), visitor, subjects, Options{Details: details, Now: func() time.Time { return time.Unix(0, 0) }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +108,7 @@ func TestCompactFilePreservesEditableLoadSemantics(t *testing.T) {
 }
 
 func TestCycloneDXStreamsFindingChunks(t *testing.T) {
-	r := Report{Findings: make([]Finding, 1000)}
+	r := Report{GeneratedAt: time.Unix(0, 0), Findings: make([]Finding, 1000)}
 	for i := range r.Findings {
 		r.Findings[i] = Finding{ID: fmt.Sprint(i), Subject: Subject{Ref: fmt.Sprint(i)}, Record: RecordSummary{Summary: strings.Repeat("x", 500)}}
 	}

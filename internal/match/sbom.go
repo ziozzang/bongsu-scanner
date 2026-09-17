@@ -15,18 +15,48 @@ import (
 )
 
 type Subject struct {
-	CPE             string `json:",omitempty"`
-	Ref             string
-	Name            string
-	Version         string
-	PURL            purl.PURL
-	Type            string
-	Ecosystem       string
-	Release         string
-	Upstream        string
-	UpstreamVersion string
-	Properties      map[string]string
+	CPE             string            `json:"cpe,omitempty"`
+	Ref             string            `json:"ref"`
+	Name            string            `json:"name"`
+	Version         string            `json:"version,omitempty"`
+	PURL            purl.PURL         `json:"-"`
+	Type            string            `json:"type,omitempty"`
+	Ecosystem       string            `json:"ecosystem,omitempty"`
+	Release         string            `json:"release,omitempty"`
+	Upstream        string            `json:"upstream,omitempty"`
+	UpstreamVersion string            `json:"upstream_version,omitempty"`
+	Properties      map[string]string `json:"properties,omitempty"`
 }
+
+// Keep the parsed PURL in memory, but use a Package URL string on the wire.
+func (s Subject) MarshalJSON() ([]byte, error) {
+	type fields Subject
+	return json.Marshal(struct {
+		fields
+		PURL string `json:"purl,omitempty"`
+	}{fields: fields(s), PURL: s.PURL.String()})
+}
+
+func (s *Subject) UnmarshalJSON(data []byte) error {
+	type fields Subject
+	var wire struct {
+		fields
+		PURL string `json:"purl,omitempty"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.PURL != "" {
+		p, err := purl.Parse(wire.PURL)
+		if err != nil {
+			return fmt.Errorf("subject purl: %w", err)
+		}
+		wire.fields.PURL = p
+	}
+	*s = Subject(wire.fields)
+	return nil
+}
+
 type OSInfo struct {
 	ID        string
 	VersionID string

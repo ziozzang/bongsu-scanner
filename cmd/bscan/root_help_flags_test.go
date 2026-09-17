@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,32 @@ func TestFindingsExitCodeReachesProcessExit(t *testing.T) {
 		"--match", "--db", db, "--fail-on", "high", target)
 	if code != 7 {
 		t.Fatalf("process exit = %d, want 7: %s", code, stderr)
+	}
+}
+
+// Coverage-gap warnings must survive --quiet: a silent exit 0 with nothing
+// matched would read as "no vulnerabilities".
+func TestQuietKeepsCoverageWarnings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BONGSU_HOME", home)
+	if err := cmdInit([]string{"--signer", "quiet-warning-test"}); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(t.TempDir(), "input.cdx.json")
+	sbom := `{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"missing","version":"1","purl":"pkg:pypi/missing@1"}]}`
+	if err := os.WriteFile(input, []byte(sbom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := polishCLI(t, home, "-q", "match", "--db", cliTestDB(t), input)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "WARNING: coverage gap: PyPI") {
+		t.Fatalf("coverage warning suppressed by -q: %q", stderr)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		if !strings.Contains(line, "WARNING") {
+			t.Fatalf("progress leaked under -q: %q", line)
+		}
 	}
 }

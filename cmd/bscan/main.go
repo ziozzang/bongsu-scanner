@@ -186,7 +186,7 @@ Usage:
   bscan [global flags] COMMAND [command flags] [arguments]
 
 Global flags (before COMMAND):
-  -q, --quiet          suppress progress logs on stderr
+  -q, --quiet          suppress progress logs on stderr (warnings and errors stay)
   --log-format FORMAT text (default) or json
   --no-color          compatibility placeholder (no color is emitted)
   --config PATH       override BONGSU_CONFIG and the default config path
@@ -1414,8 +1414,8 @@ var findingsExitCode = 2
 
 func globalFlagSet(options *globalFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("bscan", flag.ContinueOnError)
-	fs.BoolVar(&options.quiet, "q", false, "suppress progress logs on stderr")
-	fs.BoolVar(&options.quiet, "quiet", false, "suppress progress logs on stderr")
+	fs.BoolVar(&options.quiet, "q", false, "suppress progress logs on stderr (warnings and errors stay)")
+	fs.BoolVar(&options.quiet, "quiet", false, "suppress progress logs on stderr (warnings and errors stay)")
 	fs.StringVar(&options.logFormat, "log-format", "text", "progress/summary log format: text or json")
 	fs.BoolVar(&options.noColor, "no-color", false, "compatibility placeholder; output never uses color")
 	fs.StringVar(&options.configPath, "config", "", "configuration path (overrides BONGSU_CONFIG)")
@@ -1534,6 +1534,21 @@ func logf(stage, format string, args ...any) {
 
 func warnf(stage, format string, args ...any) {
 	writeLogf("warn", stage, format, args...)
+}
+
+// alertf is for warnings that change how the results must be read (coverage
+// gaps, failed feeds, unavailable enrichment). Unlike progress logs they are
+// not suppressed by --quiet: a silent exit 0 with nothing matched would read
+// as "no vulnerabilities".
+func alertf(stage, format string, args ...any) {
+	progressLog.Lock()
+	quiet := progressLog.quiet
+	progressLog.quiet = false
+	progressLog.Unlock()
+	writeLogf("warn", stage, format, args...)
+	progressLog.Lock()
+	progressLog.quiet = quiet
+	progressLog.Unlock()
 }
 
 // logWriter adapts helpers that emit complete diagnostic lines to the shim.

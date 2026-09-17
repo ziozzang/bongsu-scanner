@@ -255,7 +255,7 @@ func TestAssessmentOutputsRemainAdvisory(t *testing.T) {
 				t.Fatal(e)
 			}
 			if format == "json" {
-				finding := obj(arr(raw["Findings"])[0])
+				finding := obj(arr(raw["findings"])[0])
 				if str(obj(finding["assessment"]), "status") == "" && str(obj(finding["assessment"]), "Status") == "" {
 					t.Fatal("assessment missing from JSON")
 				}

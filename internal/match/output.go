@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func Write(w io.Writer, format string, r Report, d Document) error {
@@ -88,6 +89,7 @@ func Write(w io.Writer, format string, r Report, d Document) error {
 // Encode findings individually so encoding/json does not retain a second
 // report-sized buffer alongside the command's atomic output buffer.
 func writeJSONReport(w io.Writer, r Report) error {
+	r = normalizeJSONReport(r, time.Now)
 	// The command intentionally buffers output before atomic publication. Size
 	// that buffer once to avoid retaining geometrically growing intermediate
 	// copies; other writers still receive each finding directly.
@@ -109,10 +111,8 @@ func (w *jsonSizeWriter) Write(p []byte) (int, error) {
 }
 
 func encodeJSONReport(w io.Writer, r Report) error {
-	if r.Findings == nil {
-		return json.NewEncoder(w).Encode(r)
-	}
-	if _, err := io.WriteString(w, `{"Findings":[`); err != nil {
+	r = normalizeJSONReport(r, time.Now)
+	if _, err := io.WriteString(w, `{"findings":[`); err != nil {
 		return err
 	}
 	encoder := json.NewEncoder(w)
@@ -129,7 +129,7 @@ func encodeJSONReport(w io.Writer, r Report) error {
 	type reportFields Report
 	tail := struct {
 		*reportFields
-		Findings []Finding `json:"Findings,omitempty"`
+		Findings []Finding `json:"findings,omitempty"`
 	}{reportFields: (*reportFields)(&r)}
 	data, err := json.Marshal(tail)
 	if err != nil {
@@ -376,4 +376,30 @@ func reportSeverityPolicy(r Report) string {
 		return httpx.Sanitize(r.SeverityPolicy)
 	}
 	return SeverityPolicy("")
+}
+
+// MarshalJSON also covers direct encoding (including multi-SBOM match output).
+func (r Report) MarshalJSON() ([]byte, error) {
+	type fields Report
+	return json.Marshal(fields(normalizeJSONReport(r, time.Now)))
+}
+
+func normalizeJSONReport(r Report, now func() time.Time) Report {
+	if r.Schema == "" {
+		r.Schema = FindingsSchema
+	}
+	if r.GeneratedAt.IsZero() {
+		r.GeneratedAt = now()
+	}
+	r.GeneratedAt = r.GeneratedAt.UTC()
+	if r.Findings == nil {
+		r.Findings = []Finding{}
+	}
+	if r.Skipped == nil {
+		r.Skipped = map[string]int{}
+	}
+	if r.BySeverity == nil {
+		r.BySeverity = map[string]int{}
+	}
+	return r
 }

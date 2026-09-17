@@ -93,7 +93,7 @@ func prepareScanMatch(ctx context.Context, f scanMatchFlags) (*scanMatcher, erro
 	if err != nil {
 		return nil, err
 	}
-	m.options = matcher.Options{CPE: f.cpe, SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, ExcludeUnimportant: f.excludeUnimportant}
+	m.options = matcher.Options{ToolVersion: version, CPE: f.cpe, SeveritySource: severityPolicy, MinSeverity: min, OnlyFixed: f.onlyFixed, ExcludeUnimportant: f.excludeUnimportant}
 	if f.db == "" {
 		f.db, err = databaseDir()
 		if err != nil {

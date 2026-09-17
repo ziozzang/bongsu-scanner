@@ -8,10 +8,14 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Options struct {
-	CPE                bool // Opt-in: NVD CPE applicability is less precise than ecosystem advisories.
+	// Now supplies the findings generation time; nil uses time.Now.
+	Now                func() time.Time `json:"-"`
+	ToolVersion        string           `json:"-"`
+	CPE                bool             // Opt-in: NVD CPE applicability is less precise than ecosystem advisories.
 	Details            bool
 	IncludeUnimportant bool // Deprecated: unimportant advisories are included by default; ignored.
 	ExcludeUnimportant bool
@@ -22,34 +26,54 @@ type Options struct {
 	OnlyFixed          bool
 }
 type Finding struct {
-	ID             string
-	RelatedIDs     []string
-	Subject        Subject
-	Record         RecordSummary
-	Affected       vulndb.Affected
-	MatchedBy      string
-	FixedIn        []string
-	Severity       string
-	Score          float64
-	Vector         string
-	Confidence     string
-	DistroSeverity string
-	DistroStatus   string
+	ID             string             `json:"id"`
+	RelatedIDs     []string           `json:"related_ids,omitempty"`
+	Subject        Subject            `json:"subject"`
+	Record         RecordSummary      `json:"record"`
+	Affected       vulndb.Affected    `json:"affected"`
+	MatchedBy      string             `json:"matched_by"`
+	FixedIn        []string           `json:"fixed_in,omitempty"`
+	Severity       string             `json:"severity"`
+	Score          float64            `json:"score,omitempty"`
+	Vector         string             `json:"vector,omitempty"`
+	Confidence     string             `json:"confidence"`
+	DistroSeverity string             `json:"distro_severity,omitempty"`
+	DistroStatus   string             `json:"distro_status,omitempty"`
 	Assessment     *assessment.Result `json:"assessment,omitempty"`
 }
+
+// FindingsSchema identifies the versioned findings interchange document.
+const FindingsSchema = "bscan-findings/1"
+
+type Tool struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 type Report struct {
-	SeverityPolicy  string `json:"SeverityPolicy,omitempty"`
-	Findings        []Finding
-	Subjects        int
-	Matched         int
-	Skipped         map[string]int
-	BySeverity      map[string]int
-	DB              vulndb.Meta
-	MissingCoverage []string
+	Schema          string         `json:"schema"`
+	GeneratedAt     time.Time      `json:"generated_at"`
+	Tool            *Tool          `json:"tool,omitempty"`
+	SeverityPolicy  string         `json:"severity_policy,omitempty"`
+	Findings        []Finding      `json:"findings"`
+	Subjects        int            `json:"subjects"`
+	Matched         int            `json:"matched"`
+	Skipped         map[string]int `json:"skipped"`
+	BySeverity      map[string]int `json:"by_severity"`
+	DB              vulndb.Meta    `json:"db"`
+	MissingCoverage []string       `json:"missing_coverage,omitempty"`
 }
 
 func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Options) (Report, error) {
 	report := Report{Subjects: len(subjects), Findings: make([]Finding, 0, len(subjects)), Skipped: map[string]int{}, BySeverity: map[string]int{}}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	report = normalizeJSONReport(report, now)
+	if opts.ToolVersion != "" {
+		report.Tool = &Tool{Name: "bscan", Version: opts.ToolVersion}
+	}
 	source, err := NormalizeSeveritySource(opts.SeveritySource)
 	if err != nil {
 		return report, err

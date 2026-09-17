@@ -18,8 +18,10 @@ latest versions on stdout and return 0 whether or not an update is available
 (there is no update-available exit code 4); failed checks still return 1.
 
 Progress, warnings, and operational summaries use the shared stderr logger.
-`--quiet` / `-q` suppresses these logs; terminating errors remain visible
-through the single top-level error printer. `--log-format=json` emits one JSON
+`--quiet` / `-q` suppresses progress logs; terminating errors remain visible
+through the single top-level error printer, and alerts that change how results
+must be read (failed feed downloads, catalog coverage gaps, unavailable LLM
+review) are still written at `warn` level. `--log-format=json` emits one JSON
 object per log line with `ts` (UTC RFC3339), `level` (info/warn), `stage`, and `msg`.
 The log format never changes the result format or moves scan complete lines to
 stderr. No color is emitted; `--no-color` is a compatibility flag.
@@ -152,8 +154,8 @@ bscan [global flags] COMMAND [command flags] [arguments]
 | `--log-format` | `text` | progress/summary log format: text or json |
 | `--memory-limit` | `""` | soft heap limit for the Go runtime, e.g. 512MiB or 1GiB (BSCAN_MEMORY_LIMIT); the collector works harder near the limit instead of aborting |
 | `--no-color` | `false` | compatibility placeholder; output never uses color |
-| `-q` | `false` | suppress progress logs on stderr |
-| `--quiet` | `false` | suppress progress logs on stderr |
+| `-q` | `false` | suppress progress logs on stderr (warnings and errors stay) |
+| `--quiet` | `false` | suppress progress logs on stderr (warnings and errors stay) |
 | `-v` | `false` | show build information |
 | `--version` | `false` | show build information |
 
@@ -468,6 +470,9 @@ bscan db update [flags]
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--add-alpine-release` | `""` | append Alpine releases (comma-separated; repeatable; default expands built-ins) |
+| `--add-ecosystem` | `""` | append OSV ecosystems (comma-separated; repeatable; default expands built-ins) |
+| `--add-source` | `""` | append sources (comma-separated; repeatable; default expands built-ins) |
 | `--alpine-release` | `""` | comma-separated Alpine releases (e.g. v3.20) |
 | `--db` | `$BONGSU_HOME/db` | database directory |
 | `--ecosystem` | `""` | comma-separated OSV ecosystems |

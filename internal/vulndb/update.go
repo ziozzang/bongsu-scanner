@@ -76,13 +76,26 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	for _, m := range old.Sources {
 		previous[m.Name+"\x00"+m.URL] = m
 	}
-	sources := opts.Sources
-	if len(sources) == 0 {
-		sources = DefaultSources
+	var nvdOpts NVDOptions
+	if len(nvd) == 1 {
+		nvdOpts = nvd[0]
 	}
+	selection := Selection{Sources: opts.Sources, Ecosystems: opts.Ecosystems, AlpineReleases: opts.AlpineReleases, NVDYears: nvdOpts.Years}
+	if opts.ResolveSelection != nil {
+		selection, err = opts.ResolveSelection(old)
+		if err != nil {
+			return meta, err
+		}
+	}
+	selection, err = selection.Normalize()
+	if err != nil {
+		return meta, err
+	}
+	opts.Sources, opts.Ecosystems, opts.AlpineReleases = selection.Sources, selection.Ecosystems, selection.AlpineReleases
+	nvdOpts.Years = selection.NVDYears
 	var feeds []Feed
 	seen := map[string]bool{}
-	for _, name := range sources {
+	for _, name := range selection.Sources {
 		s, ok := LookupSource(name)
 		if !ok {
 			return meta, fmt.Errorf("unknown vulnerability source %q", name)
@@ -91,8 +104,8 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 			continue
 		}
 		seen[s.Name()] = true
-		if source, ok := s.(*nvdSource); ok && len(nvd) == 1 {
-			source.options = nvd[0]
+		if source, ok := s.(*nvdSource); ok {
+			source.options = nvdOpts
 		}
 		fs, err := s.Feeds(&opts)
 		if err != nil {
@@ -103,7 +116,7 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	if len(feeds) == 0 {
 		return meta, errors.New("no vulnerability feeds selected")
 	}
-	meta = Meta{SchemaVersion: SchemaVersion, UpdatedAt: time.Now().UTC()}
+	meta = Meta{SchemaVersion: SchemaVersion, UpdatedAt: time.Now().UTC(), Selection: &selection}
 	spools := make([]*ingestionSpool, len(feeds))
 	feedPaths := map[string]bool{}
 	for _, feed := range feeds {

@@ -121,6 +121,9 @@ sudo install -m 0644 deploy/systemd/bscan-*.service deploy/systemd/bscan-*.timer
 sudo systemctl daemon-reload
 # Populate the catalog before enabling matched scans.
 sudo systemctl start bscan-db-update.service
+# Optional per-release Ubuntu coverage; later scheduled updates retain it.
+sudo -u bscan env BONGSU_HOME=/var/lib/bscan /usr/local/bin/bscan db update --add-ecosystem Ubuntu:24.04
+sudo -u bscan env BONGSU_HOME=/var/lib/bscan /usr/local/bin/bscan db status
 sudo systemctl enable --now bscan-db-update.timer bscan-scan.timer
 sudo systemctl start bscan-scan.service
 journalctl -u bscan-scan.service -u bscan-db-update.service
@@ -133,6 +136,14 @@ account (`DynamicUser=no`), a read-only filesystem, private temporary storage,
 and writable `/var/lib/bscan` for configuration, keys, catalog and reports.
 Only the scan receives `CAP_DAC_READ_SEARCH` (bounding and ambient) so it can
 read protected host files without UID 0. The update service has no capabilities.
+The update service reuses the installed selection. Nonempty selection values
+in `/var/lib/bscan/scaner.yaml`'s `db:` block override the saved choices on every
+run; include additions in that configuration or remove those overrides if you
+want the saved selection to control future updates. Use `--add-source`,
+`--add-ecosystem`, and `--add-alpine-release` to extend coverage; their ordinary
+counterparts replace the corresponding lists. `Ubuntu:24.04` is shorthand for
+the approximately 142 MB `Ubuntu:24.04:LTS` export, while full `Ubuntu` is about
+700 MB and needs a larger download limit.
 `ProtectHome` is intentionally not enabled because home directories are inputs.
 
 The scan excludes its own state, applies host defaults and stays on one
@@ -150,6 +161,9 @@ Do not also enable the systemd timers. This example uses root for the host
 scan because cron cannot supply ambient capabilities, and returns state
 ownership to `bscan` afterward. It lacks the systemd sandbox; prefer the units
 when available. Cron emails command output if a local mail transport exists.
+Its plain `bscan db update` preserves the installed selection, subject to the
+same config overrides as systemd. Add coverage as `bscan` with
+`BONGSU_HOME=/var/lib/bscan`, then verify the `Selection:` line in `db status`.
 
 For air-gapped hosts, import a signed catalog as `bscan` using the flow in the
 [main README](../README.md#install-and-deploy), and enable only the scan timer.

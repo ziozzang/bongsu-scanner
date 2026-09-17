@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
@@ -131,7 +132,7 @@ func (w *chunkBoundedWriter) Write(data []byte) (int, error) {
 	return w.Buffer.Write(data)
 }
 func TestJSONWritesBoundedFindingChunks(t *testing.T) {
-	report := Report{Subjects: 1000, Findings: make([]Finding, 1000), Skipped: map[string]int{"missing-version": 1}, BySeverity: map[string]int{"HIGH": 1000}}
+	report := Report{GeneratedAt: time.Unix(0, 0), Subjects: 1000, Findings: make([]Finding, 1000), Skipped: map[string]int{"missing-version": 1}, BySeverity: map[string]int{"HIGH": 1000}}
 	for i := range report.Findings {
 		report.Findings[i] = Finding{ID: fmt.Sprint(i), Subject: Subject{Ref: fmt.Sprint(i)}, Record: RecordSummary{Summary: strings.Repeat("x", 500)}}
 	}
@@ -172,7 +173,7 @@ func TestPreparedVersionsAndReleasesStayIsolated(t *testing.T) {
 	}
 }
 
-func TestJSONPreservesNilAndEmptyFindings(t *testing.T) {
+func TestJSONNormalizesNilAndEmptyFindings(t *testing.T) {
 	for _, findings := range [][]Finding{nil, {}} {
 		var out bytes.Buffer
 		if err := Write(&out, "json", Report{Findings: findings}, Document{}); err != nil {
@@ -182,8 +183,8 @@ func TestJSONPreservesNilAndEmptyFindings(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
-		if (got.Findings == nil) != (findings == nil) {
-			t.Fatal("nil and empty findings changed")
+		if got.Findings == nil || len(got.Findings) != 0 {
+			t.Fatal("findings must be an empty array")
 		}
 	}
 }

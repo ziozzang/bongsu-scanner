@@ -16,13 +16,13 @@ func FuzzLoadMatchJSON(f *testing.F) {
 	good, _ := json.Marshal(report)
 	f.Add(good)
 	f.Add([]byte(`{"Findings":null,"Subjects":0,"extra_future_field":{"x":[1,2,3]}}`))
-	f.Add([]byte(`{"findings":[{"ID":"CVE-1-1","Score":"not a number"}]}`))
+	f.Add([]byte(`{"schema":"bscan-findings/1","findings":[{"id":"CVE-1-1","score":"not a number"}]}`))
 	f.Add([]byte(`{"report_schema_version":1,"Findings":[]}`))
 	f.Add([]byte(`{"Subjects":1}`))
 	f.Add([]byte(`[{"Findings":[]}]`))
-	f.Add([]byte(`{"Findings":[]}{"Findings":[]}`))
+	f.Add([]byte(`{"schema":"bscan-findings/1","findings":[]}{"findings":[]}`))
 	f.Add([]byte(`null`))
-	f.Add([]byte(`{"Findings":[{"Assessment":{"summary":"[31mred[0m"}}]}`))
+	f.Add([]byte(`{"schema":"bscan-findings/1","findings":[{"assessment":{"reason":"[31mred[0m"}}]}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r, err := LoadMatchJSON(bytes.NewReader(data))
 		if err != nil {

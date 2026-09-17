@@ -258,6 +258,9 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 	if _, err := fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", ")); err != nil {
 		return err
 	}
+	if _, err := fmt.Fprintf(w, "Selection: %s\n", httpx.Sanitize(meta.EffectiveSelection().String())); err != nil {
+		return err
+	}
 	for _, source := range meta.Sources {
 		name := httpx.Sanitize(source.Name)
 		feed := strings.Join(source.Ecosystems, ", ")
@@ -271,7 +274,7 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 			return err
 		}
 		if source.Error != "" {
-			warnf("db:error", "%s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
+			alertf("db:error", "%s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
 		}
 	}
 	return nil
@@ -285,6 +288,10 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	nvdYears := fs.String("nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)")
 	ecosystems := fs.String("ecosystem", "", "comma-separated OSV ecosystems")
 	releases := fs.String("alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)")
+	var additions dbSelectionAdditions
+	fs.Var(&additions.ecosystems, "add-ecosystem", "append OSV ecosystems (comma-separated; repeatable; default expands built-ins)")
+	fs.Var(&additions.sources, "add-source", "append sources (comma-separated; repeatable; default expands built-ins)")
+	fs.Var(&additions.releases, "add-alpine-release", "append Alpine releases (comma-separated; repeatable; default expands built-ins)")
 	mirror := fs.String("mirror", "", "HTTPS OSV mirror base URL")
 	force := fs.Bool("force", false, "fetch feeds without conditional request headers")
 	noRaw := fs.Bool("no-keep-raw", false, "omit original feeds from installed database")
@@ -319,6 +326,13 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 		MaxFeedUncompressedBytes: *maxUncompressed,
 		Client:                   dbHTTPClient(*timeout),
 		Progress:                 func(message string) { logf("db", "%s\n", httpx.Sanitize(message)) },
+		ResolveSelection: func(old vulndb.Meta) (vulndb.Selection, error) {
+			selection, provenance, err := resolveDBSelection(fs, cfg.DB, old, additions)
+			if err == nil {
+				logf("db", "selection: %s (%s)\n", httpx.Sanitize(selection.String()), provenance)
+			}
+			return selection, err
+		},
 	}
 	opts.Client.UserAgent = "bscan/" + version
 	if err := setDBSigning(cfg, &opts); err != nil {

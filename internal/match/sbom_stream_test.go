@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/assessment"
 )
@@ -52,7 +53,7 @@ func TestSBOMStreamMatchesLegacy(t *testing.T) {
 			if !reflect.DeepEqual(a, b) {
 				t.Fatalf("environment diff:\n-%+v\n+%+v", a, b)
 			}
-			report := Report{Subjects: len(want.Subjects)}
+			report := Report{GeneratedAt: time.Unix(0, 0), Subjects: len(want.Subjects)}
 			if len(want.Subjects) > 0 {
 				report.Findings = []Finding{{ID: "CVE-fixture", Subject: want.Subjects[0]}}
 			}

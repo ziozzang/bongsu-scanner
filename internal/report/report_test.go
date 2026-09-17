@@ -31,7 +31,7 @@ func fixture() Input {
 		{ID: "GHSA-0003", Subject: subjects[1], Severity: "MEDIUM", Score: 5.0, Record: match.RecordSummary{Source: "osv", Summary: "medium", References: []string{"javascript:alert(1)", "https://example.org/a"}}},
 		{ID: "CVE-2026-0004", RelatedIDs: []string{"ALPINE-2026-4"}, Subject: subjects[2], Severity: "LOW", Score: 1.0, Record: match.RecordSummary{Source: "alpine-secdb", Summary: "low"}},
 	}
-	return Input{Report: match.Report{Findings: fs, Subjects: 3, Matched: 3, Skipped: map[string]int{"withdrawn": 1, "permission": 2}, DB: vulndb.Meta{Records: 100, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Sources: []vulndb.SourceMeta{{Name: "osv", Records: 100}}}}, Target: "target <script>", SBOMPath: "host.cdx.json", GeneratedAt: time.Date(2026, 1, 2, 12, 0, 0, 0, time.FixedZone("KST", 9*3600)), ToolVersion: "test", Scan: &scan.ScanMetadata{Partial: true, EUID: 1000, PermissionDenied: 2, MetadataSkipped: 3, Excluded: []string{"/proc"}, InContainer: true}, OS: &scan.OSRelease{ID: "debian", VersionID: "13"}, Image: &scan.ImageMetadata{ID: "sha256:abc"}, Host: &scan.HostMetadata{Hostname: "host"}, Options: match.Options{MinSeverity: "LOW", FailOn: "HIGH"}}
+	return Input{Report: match.Report{Schema: match.FindingsSchema, GeneratedAt: time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC), Findings: fs, Subjects: 3, Matched: 3, Skipped: map[string]int{"withdrawn": 1, "permission": 2}, DB: vulndb.Meta{Records: 100, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Sources: []vulndb.SourceMeta{{Name: "osv", Records: 100}}}}, Target: "target <script>", SBOMPath: "host.cdx.json", GeneratedAt: time.Date(2026, 1, 2, 12, 0, 0, 0, time.FixedZone("KST", 9*3600)), ToolVersion: "test", Scan: &scan.ScanMetadata{Partial: true, EUID: 1000, PermissionDenied: 2, MetadataSkipped: 3, Excluded: []string{"/proc"}, InContainer: true}, OS: &scan.OSRelease{ID: "debian", VersionID: "13"}, Image: &scan.ImageMetadata{ID: "sha256:abc"}, Host: &scan.HostMetadata{Hostname: "host"}, Options: match.Options{MinSeverity: "LOW", FailOn: "HIGH"}}
 }
 func renderTest(t *testing.T, format string, in Input) []byte {
 	t.Helper()
@@ -92,6 +92,7 @@ func TestJSONSchemaSummaryOrderingAndRollups(t *testing.T) {
 }
 func TestLoadActualMatcherJSON(t *testing.T) {
 	in := fixture()
+	in.Report.BySeverity = map[string]int{}
 	var b bytes.Buffer
 	if err := match.Write(&b, "json", in.Report, match.Document{}); err != nil {
 		t.Fatal(err)
@@ -109,7 +110,7 @@ func TestLoadActualMatcherJSON(t *testing.T) {
 	if _, err := LoadMatchJSON(strings.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"", `null`, `{}`, `[]`, `{"Findings":"bad"}`, `{"Findings":[]} {}`, `{"Findings":[]} junk`, string(renderTest(t, "json", in))} {
+	for _, bad := range []string{"", `null`, `{}`, `[]`, `{"schema":"bscan-findings/1","findings":"bad"}`, `{"Findings":[]} {}`, `{"Findings":[]} junk`, string(renderTest(t, "json", in))} {
 		if _, err := LoadMatchJSON(strings.NewReader(bad)); err == nil {
 			t.Errorf("accepted invalid input %s", bad)
 		}

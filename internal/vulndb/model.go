@@ -103,6 +103,7 @@ type SourceMeta struct {
 
 // Meta is the database manifest written after every update.
 type Meta struct {
+	Selection     *Selection   `json:"selection,omitempty"`
 	SchemaVersion int          `json:"schema_version"`
 	UpdatedAt     time.Time    `json:"updated_at"`
 	Sources       []SourceMeta `json:"sources"`

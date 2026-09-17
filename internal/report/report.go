@@ -1,4 +1,4 @@
-// Package report renders match results without changing match.Report's JSON API.
+// Package report reads versioned findings documents and renders match results.
 package report
 
 import (
@@ -119,8 +119,9 @@ func Render(w io.Writer, format string, in Input) error {
 	}
 }
 
-// LoadMatchJSON accepts one match.Report, including unknown future fields. It
-// rejects report envelopes, null, concatenated objects and multi-SBOM arrays.
+// LoadMatchJSON accepts one bscan-findings/1 document, including unknown future
+// fields. It rejects legacy/unrecognized schemas, report envelopes, null,
+// concatenated objects and multi-SBOM arrays.
 func LoadMatchJSON(r io.Reader) (match.Report, error) {
 	var raw map[string]json.RawMessage
 	dec := json.NewDecoder(r)
@@ -134,17 +135,22 @@ func LoadMatchJSON(r io.Reader) (match.Report, error) {
 		}
 		return match.Report{}, fmt.Errorf("read match JSON: %w", err)
 	}
-	found := false
-	for key := range raw {
-		if strings.EqualFold(key, "report_schema_version") {
-			return match.Report{}, fmt.Errorf("expected match JSON, got a rendered report envelope")
-		}
-		if strings.EqualFold(key, "Findings") {
-			found = true
-		}
+	if _, ok := raw["report_schema_version"]; ok {
+		return match.Report{}, fmt.Errorf("expected match JSON, got a rendered report envelope")
 	}
-	if !found {
-		return match.Report{}, fmt.Errorf("expected a match report with Findings")
+	schemaJSON, ok := raw["schema"]
+	if !ok {
+		return match.Report{}, fmt.Errorf("read match JSON: legacy findings JSON from a pre-release build; re-run bscan match")
+	}
+	var schema string
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		return match.Report{}, fmt.Errorf("read match JSON: findings schema: %w", err)
+	}
+	if schema != match.FindingsSchema {
+		return match.Report{}, fmt.Errorf("read match JSON: unsupported findings schema %q; expected %q", schema, match.FindingsSchema)
+	}
+	if findings, ok := raw["findings"]; !ok || len(findings) == 0 || findings[0] != '[' {
+		return match.Report{}, fmt.Errorf("expected a findings array in %s document", match.FindingsSchema)
 	}
 	b, err := json.Marshal(raw)
 	if err != nil {

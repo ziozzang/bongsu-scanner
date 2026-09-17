@@ -254,7 +254,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 			return fmt.Errorf("%s: %w", input, err)
 		}
 		matchReport, err := matcher.Run(ctx, store, doc.Subjects, matcher.Options{
-			CPE: *cpe, SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
+			ToolVersion: version, CPE: *cpe, SeveritySource: severityPolicy, Details: *details, ExcludeUnimportant: *excludeUnimportant, MinSeverity: min, IgnoreIDs: splitCSV(*ignore), OnlyFixed: *fixed,
 		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", input, err)
@@ -367,7 +367,7 @@ func (a *loggedAnalyzer) Analyze(ctx context.Context, input assessment.Input) (a
 	logf("match:llm", "%d: %s (%s %s)\n", a.count, httpx.Sanitize(input.AdvisoryID), httpx.Sanitize(input.Package), httpx.Sanitize(input.Version))
 	result, err := a.inner.Analyze(ctx, input)
 	if err != nil {
-		warnf("match:llm", "analysis unavailable; original finding retained")
+		alertf("match:llm", "analysis unavailable; original finding retained")
 	} else {
 		logf("match:llm", "%s (cached=%t)\n", result.Status, result.Cached)
 	}
@@ -376,7 +376,7 @@ func (a *loggedAnalyzer) Analyze(ctx context.Context, input assessment.Input) (a
 
 func logMissingCoverage(scope string, r matcher.Report) {
 	for _, warning := range r.MissingCoverage {
-		warnf(scope, "WARNING: %s\n", httpx.Sanitize(warning))
+		alertf(scope, "WARNING: %s\n", httpx.Sanitize(warning))
 	}
 }
 

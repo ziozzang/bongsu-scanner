@@ -87,6 +87,9 @@ func commandRegistry() []commandSpec {
 		{"require-signature", "false", "fail unless SHA256SUMS.sig verifies against a trusted 'release' key", "bool", false},
 	}
 	dbUpdateFlags := []commandFlag{
+		{"add-source", "", "append sources (comma-separated; repeatable; default expands built-ins)", "string", false},
+		{"add-ecosystem", "", "append OSV ecosystems (comma-separated; repeatable; default expands built-ins)", "string", false},
+		{"add-alpine-release", "", "append Alpine releases (comma-separated; repeatable; default expands built-ins)", "string", false},
 		{"source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in)", "string", false},
 		{"nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)", "string", false},
 		{"ecosystem", "", "comma-separated OSV ecosystems", "string", false},

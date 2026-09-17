@@ -4,6 +4,8 @@ SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
 BONGSU_HOME=/var/lib/bscan
 # Weekly catalog refresh as the unprivileged state owner.
+# Reuses saved selection; nonempty db: config selections override it.
+# Add coverage once as bscan: bscan db update --add-ecosystem Ubuntu:24.04
 0 1 * * 0 bscan umask 077; /usr/local/bin/bscan db update
 # Cron cannot grant ambient capabilities: run the host scan as root, then
 # return generated state ownership to bscan even when scanning fails.

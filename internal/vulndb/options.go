@@ -49,6 +49,10 @@ type Options struct {
 	PublicKey      ed25519.PublicKey
 	Signer         string
 	Progress       func(string)
+	// ResolveSelection optionally resolves CLI/config overrides against the
+	// verified previous manifest, under the update lock (zero Meta on first use).
+	// It must not reopen the catalog. Nil preserves the Options defaults.
+	ResolveSelection func(Meta) (Selection, error)
 
 	// MaxFeedUncompressedBytes limits total expanded OSV/GHSA archive bytes.
 	// Non-positive values use DefaultMaxFeedUncompressedBytes.
