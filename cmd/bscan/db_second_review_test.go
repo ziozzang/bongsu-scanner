@@ -19,7 +19,7 @@ func TestSecondReviewDBVerifyRecoveredTrust(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("BONGSU_HOME", t.TempDir())
-			dir := cliTestDB(t)
+			dir := privateCLITestDB(t)
 			pub, priv, err := sign.Generate()
 			if err != nil {
 				t.Fatal(err)

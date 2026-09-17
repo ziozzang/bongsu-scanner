@@ -3,6 +3,7 @@ package deploy
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func read(t *testing.T, path string) string {
@@ -241,5 +243,104 @@ printf '{}' > "$output/input.spdx.json"
 				t.Fatalf("smoke fixture leaked: %v, %v", fixtures, err)
 			}
 		})
+	}
+}
+
+// Exercise the shipped UID and filesystem: no --user override or tmpfs can
+// conceal incorrect /tmp permissions in the final scratch image.
+func TestDockerDefaultUIDDirectoryScan(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker unavailable")
+	}
+	probe, cancelProbe := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelProbe()
+	if out, err := exec.CommandContext(probe, "docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
+		t.Skipf("docker daemon unavailable: %v: %s", err, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	image := fmt.Sprintf("bscan:packaging-test-%d", time.Now().UnixNano())
+	// Buildx writes client state even on an otherwise read-only build host.
+	build := exec.CommandContext(ctx, "docker", "build", "--network=host", "-t", image, "..")
+	build.Env = append(os.Environ(), "BUILDX_CONFIG="+t.TempDir())
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("docker build: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		if out, err := exec.CommandContext(cleanup, "docker", "image", "rm", image).CombinedOutput(); err != nil {
+			t.Errorf("remove test image: %v: %s", err, out)
+		}
+	})
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Config.User}}", image).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "65532:65532" {
+		t.Fatalf("default UID: %v: %s", err, out)
+	}
+	input := t.TempDir()
+	if err := os.Chmod(input, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "requirements.txt"), []byte("bscan-container-fixture==1.2.3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec.CommandContext(ctx, "docker", "create", "--network=none", "--mount", "type=bind,src="+input+",dst=/input,readonly", "-e", "BONGSU_OFFLINE=1", image, "scan", "--no-sign", "/input").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker create: %v: %s", err, out)
+	}
+	container := strings.TrimSpace(string(out))
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		if out, err := exec.CommandContext(cleanup, "docker", "rm", "-f", container).CombinedOutput(); err != nil {
+			t.Errorf("remove test container: %v: %s", err, out)
+		}
+	})
+	if out, err := exec.CommandContext(ctx, "docker", "start", "-a", container).CombinedOutput(); err != nil {
+		t.Fatalf("default-UID directory scan: %v\n%s", err, out)
+	}
+	out, err = exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.ExitCode}}", container).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "0" {
+		t.Fatalf("scan exit: %v: %s", err, out)
+	}
+	// Stream the small image export, retaining only the directory metadata and SBOM.
+	export := exec.CommandContext(ctx, "docker", "export", container)
+	pipe, err := export.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := export.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pipe.Close(); _ = export.Process.Kill(); _ = export.Wait() }()
+	tr := tar.NewReader(pipe)
+	var tmpOK, sbomOK bool
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch strings.TrimPrefix(h.Name, "./") {
+		case "tmp", "tmp/":
+			tmpOK = h.Typeflag == tar.TypeDir && h.Mode&07777 == 01777
+			if !tmpOK {
+				t.Errorf("/tmp mode=%#o, want 01777", h.Mode)
+			}
+		case "reports/input.cdx.json":
+			data, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sbomOK = strings.Contains(string(data), "bscan-container-fixture")
+		}
+	}
+	if err := export.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !tmpOK || !sbomOK {
+		t.Fatalf("image /tmp correct=%t; scanned fixture in SBOM=%t", tmpOK, sbomOK)
 	}
 }

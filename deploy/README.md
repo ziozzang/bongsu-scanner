@@ -36,7 +36,7 @@ docker run --rm "$image" version
 mkdir -p scan-results
 docker run --rm --read-only --network none \
   --user "$(id -u):$(id -g)" --cap-drop ALL \
-  --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=256m,mode=1777 \
   --mount "type=bind,src=$PWD,dst=/input,readonly" \
   --mount "type=bind,src=$PWD/scan-results,dst=/reports" \
   "$image" scan --no-sign --exclude scan-results --workers 2 --output /reports /input
@@ -45,16 +45,20 @@ docker run --rm --read-only --network none \
 The scratch image contains a static binary, CA certificates and license notices;
 it defaults to UID/GID 65532 and `/reports` as its working directory. Bind-mount
 output and `/var/lib/bscan` (the image's `BONGSU_HOME`) with ownership matching
-the selected UID. Writable temporary storage is needed for archive processing
-and catalog operations; size it for the inputs. A plain directory scan without
-signing needs only the writable output directory.
+the selected UID. Writable temporary storage is needed for directory-walk
+spooling, archive processing, and catalog operations; size it for the inputs.
+Even an unsigned directory scan needs writable temporary storage in addition
+to its output directory. Set the tmpfs mode explicitly to `1777` so the selected
+non-root UID can write to it. The image's `/tmp` is world-writable with the
+sticky bit (`1777`); a read-only root filesystem still requires a writable
+tmpfs mount.
 
 To scan a Linux host's bind-mounted root as a directory:
 
 ```sh
 docker run --rm --read-only --network none \
   --user "$(id -u):$(id -g)" --cap-drop ALL \
-  --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=256m,mode=1777 \
   --mount type=bind,src=/,dst=/host,readonly \
   --mount "type=bind,src=$PWD/scan-results,dst=/reports" \
   "$image" scan --no-sign --files=false --one-file-system --workers 2 \
@@ -93,7 +97,7 @@ docker_cli=/opt/docker-static/docker
 docker run --rm --read-only --network none \
   --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" \
   --cap-drop ALL --security-opt no-new-privileges \
-  --tmpfs /tmp:rw,noexec,nosuid,size=2g \
+  --tmpfs /tmp:rw,noexec,nosuid,size=2g,mode=1777 \
   --mount "type=bind,src=$docker_cli,dst=/usr/local/bin/docker,readonly" \
   --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly \
   --mount "type=bind,src=$PWD/scan-results,dst=/reports" \

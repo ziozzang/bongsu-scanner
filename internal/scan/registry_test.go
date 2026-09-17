@@ -369,6 +369,10 @@ func TestRegistryRetries(t *testing.T) {
 					return false
 				}
 				requests.Add(1)
+				if testing.Short() {
+					// Backoff timing is covered with virtual time in TestRegistryRetryBackoffClock.
+					w.Header().Set("Retry-After", "0")
+				}
 				w.WriteHeader(status)
 				fmt.Fprint(w, "fixture-secret-token")
 				return true

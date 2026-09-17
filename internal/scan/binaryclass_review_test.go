@@ -111,43 +111,50 @@ func binaryReviewMarker(name string) string {
 }
 
 func TestBinaryReviewImageBudgetMetadata(t *testing.T) {
-	file, err := os.CreateTemp(t.TempDir(), "budget-*.tar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tw := tar.NewWriter(file)
-	data := []byte("\x7fELF\x00curl_easy_init curl 8.9.1\x00")
-	for i := 0; i <= maxClassifiedBinaries; i++ {
-		if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("bin/%d", i), Mode: 0755, Size: int64(len(data))}); err != nil {
+	t.Run("remaining-budget", testBinaryImageRemainingBudget)
+	t.Run("production-budget", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("20,001-entry archive; remaining-budget checks the same exhaustion boundary")
+		}
+
+		file, err := os.CreateTemp(t.TempDir(), "budget-*.tar")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tw.Write(data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, scan := range []struct {
-		name string
-		run  func() (Result, error)
-	}{
-		{"archive", func() (Result, error) { return Archive(file.Name(), Options{}) }},
-		{"rootfs", func() (Result, error) { return rootfsArchive(context.Background(), file.Name(), Options{}) }},
-	} {
-		t.Run(scan.name, func(t *testing.T) {
-			r, err := scan.run()
-			if err != nil {
+		tw := tar.NewWriter(file)
+		data := []byte("\x7fELF\x00curl_easy_init curl 8.9.1\x00")
+		for i := 0; i <= maxClassifiedBinaries; i++ {
+			if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("bin/%d", i), Mode: 0755, Size: int64(len(data))}); err != nil {
 				t.Fatal(err)
 			}
-			if r.Scan == nil || !r.Scan.Partial || r.Scan.LimitReached != "max-binaries" {
-				t.Fatalf("missing limit metadata: %+v", r.Scan)
+			if _, err := tw.Write(data); err != nil {
+				t.Fatal(err)
 			}
-		})
-	}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, scan := range []struct {
+			name string
+			run  func() (Result, error)
+		}{
+			{"archive", func() (Result, error) { return Archive(file.Name(), Options{}) }},
+			{"rootfs", func() (Result, error) { return rootfsArchive(context.Background(), file.Name(), Options{}) }},
+		} {
+			t.Run(scan.name, func(t *testing.T) {
+				r, err := scan.run()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if r.Scan == nil || !r.Scan.Partial || r.Scan.LimitReached != "max-binaries" {
+					t.Fatalf("missing limit metadata: %+v", r.Scan)
+				}
+			})
+		}
+	})
 }
 
 func binaryReviewLargeELF() []byte {

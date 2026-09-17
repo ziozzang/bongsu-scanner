@@ -185,6 +185,9 @@ func TestDBMutationOutputContract(t *testing.T) {
 	for _, mode := range []string{"text", "json", "quiet"} {
 		for _, command := range []string{"import", "convert", "status"} {
 			t.Run(mode+"/"+command, func(t *testing.T) {
+				if testing.Short() && command == "import" && mode != "text" {
+					t.Skip("repeated import; text import and all convert/status logging modes run in short mode")
+				}
 				args := append(outputModeArgs(mode), "db", command)
 				destination := filepath.Join(t.TempDir(), "db")
 				switch command {

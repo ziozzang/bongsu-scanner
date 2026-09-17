@@ -16,9 +16,10 @@ Project: https://github.com/ziozzang/bongsu-scanner
 See [the generated command reference](docs/commands.md) for all commands,
 flags, defaults, environment variables, configuration keys and exit codes.
 Place global logging flags before the command: `bscan --quiet scan .` suppresses
-migrated progress logs; `bscan --log-format=json scan .` emits structured progress
-and scan summaries on stderr. Errors remain visible. These flags currently cover
-main.go scan/batch logging; the reference lists the remaining migration scope.
+progress logs; `bscan --log-format=json scan .` emits structured progress
+and operational summaries on stderr. Primary results, including `scan complete`
+lines and output paths, remain on stdout. Errors remain visible. These flags
+also apply to database, matching, and update command logs.
 
 ## Build and initialize
 
@@ -114,7 +115,12 @@ trusted_keys:
   # release: "path/to/publisher.pub"
 ```
 
-`offline` disables network access. `db_require_signature` exposes the trusted
+`offline` or `BONGSU_OFFLINE=1` disables database/release updates, background
+release checks, LLM requests, and remote `registry://` / `oci://` scans.
+Scan and batch (including `--match`) reject remote registry targets before
+network access. Local directories, archives, and `docker://` images from the
+local daemon remain available.
+`db_require_signature` exposes the trusted
 signature policy for database refresh consumers; `update_require_signature` requires a trusted
 release signature even without the update command's `--require-signature` flag.
 `signature_min_version` accepts `1` (compatibility default) or `2`; setting it to
@@ -485,7 +491,7 @@ The findings report is retained and the LLM error is still reported. Without a
 threshold match, an LLM enrichment error returns exit code 1.
 
 `db update` with no selections downloads OSV's default ecosystems, Alpine's
-configured release list, and Debian tracker. Downloads can be hundreds of MB
+configured release list, Debian tracker, and RubySec. Downloads can be hundreds of MB
 per feed. Use `--max-feed-bytes N` to adjust the feed bound, `--timeout 30m` to
 bound the operation, `--mirror https://...` for an OSV mirror, and
 `--no-keep-raw` to omit original downloads. `--force` bypasses conditional GETs.
@@ -525,8 +531,9 @@ New manifests include retained raw feeds. Older manifests may omit raw feeds;
 those unlisted files are not authenticated by legacy signatures.
 One previous generation is retained at `db.prev`.
 
-SQLite schema version 2 is used for new updates. Existing version 1 databases
-remain readable and can be converted completely offline:
+The catalog envelope (`meta.json`'s `schema_version`) is version 2; the SQLite
+layout has a separate version, currently 7 (`PRAGMA user_version`). Legacy
+version 1 catalogs remain readable and can be converted completely offline:
 
 ```sh
 bscan db convert --db /path/to/old-db /path/to/sqlite-db
@@ -578,9 +585,12 @@ Opening a database validates its manifest and any bundled signature. An
 unpinned signature proves consistency; `--pubkey` requires a signature from
 the selected key. `db verify` also recognizes locally configured/trusted keys.
 Unsigned databases can be used with checksum verification.
-SQLite readers open a private verified copy so subsequent changes to the source
-file cannot alter an active reader. Linux uses copy-on-write cloning when
-available; other filesystems require temporary space for a full database copy.
+With `--db-isolation auto` (the default), SQLite readers try copy-on-write
+cloning and use a verified in-place reader if cloning is unavailable; they do
+not fall back to a full copy. Use `--db-isolation copy` to require a private
+snapshot, with a full copy when cloning is unavailable, or `none` to read
+in place. Reader snapshots use a private sibling directory next to the catalog;
+allow space there for a full SQLite copy when selecting `copy`.
 Interrupting catalog import cancels extraction and validation, removes its
 temporary staging directory, and preserves the installed database. Catalog
 opening and verification also check cancellation during file reads and copying.

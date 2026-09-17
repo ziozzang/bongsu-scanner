@@ -18,7 +18,7 @@ import (
 	"github.com/ziozzang/bongsu-scanner/internal/vulndb"
 )
 
-func cliTestDB(t *testing.T) string {
+func buildCLITestDB(t *testing.T, dir string) {
 	t.Helper()
 	var zipped bytes.Buffer
 	zw := zip.NewWriter(&zipped)
@@ -43,12 +43,10 @@ func cliTestDB(t *testing.T) string {
 	defer server.Close()
 	client := httpx.New(time.Second)
 	client.HTTP.Transport = server.Client().Transport
-	dir := filepath.Join(t.TempDir(), "db")
 	_, err = vulndb.Update(context.Background(), dir, vulndb.Options{Sources: []string{"osv"}, Ecosystems: []string{"npm"}, OSVBaseURL: server.URL, Client: client})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dir
 }
 
 func TestDBCommandOfflineAndArguments(t *testing.T) {
@@ -98,9 +96,14 @@ func TestDBCommandsExportImportAndVerify(t *testing.T) {
 		{"db", "convert", "--db", imported, converted},
 		{"db", "lookup", "--db", converted, "npm", "fixture"},
 	} {
-		if err := run(context.Background(), args); err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
+		t.Run(strings.Join(args[:2], "/"), func(t *testing.T) {
+			if testing.Short() && (args[1] == "convert" || args[1] == "lookup" && args[3] == converted) {
+				t.Skip("repeated conversion round trip; conversion command/output cases run in short mode")
+			}
+			if err := run(context.Background(), args); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+		})
 	}
 	pub, priv, err := sign.Generate()
 	if err != nil {

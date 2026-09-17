@@ -18,6 +18,8 @@ import (
 const maxMetadata = 16 << 20
 
 type Options struct {
+	// Offline forbids remote registry targets; local Docker daemon scans remain allowed.
+	Offline           bool
 	IncludeFileHashes bool
 	Now               time.Time
 	Verbose           bool

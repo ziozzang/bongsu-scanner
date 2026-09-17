@@ -748,6 +748,9 @@ func (c *registryClient) selectManifest(ctx context.Context, ref string, expecte
 }
 
 func registryImage(ctx context.Context, target string, opts Options) (Result, error) {
+	if opts.Offline {
+		return Result{}, errors.New("registry scan disabled: offline mode; use a local directory/archive or docker:// image")
+	}
 	ref, err := parseRegistryReference(target)
 	if err != nil {
 		return Result{}, err

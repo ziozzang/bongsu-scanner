@@ -124,6 +124,7 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	}
 	results := make([]SourceMeta, len(feeds))
 	feedErrors := make([]error, len(feeds))
+	started := make([]bool, len(feeds))
 	jobs := make(chan int, len(feeds))
 	for i := range feeds {
 		jobs <- i
@@ -135,6 +136,11 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 		go func() {
 			defer workers.Done()
 			for i := range jobs {
+				if err := ctx.Err(); err != nil {
+					feedErrors[i] = err
+					continue
+				}
+				started[i] = true
 				spool, err := newIngestionSpool(stage)
 				if err != nil {
 					feedErrors[i] = err
@@ -148,7 +154,16 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	}
 	workers.Wait()
 	var failures []error
+	var notStarted, interrupted int
 	for i, feed := range feeds {
+		if ctx.Err() != nil && errors.Is(feedErrors[i], ctx.Err()) {
+			if started[i] {
+				interrupted++
+			} else {
+				notStarted++
+			}
+			continue
+		}
 		m := results[i]
 		if m.Name == "" {
 			m = SourceMeta{Name: feed.Source, URL: feed.URL, Ecosystems: feed.Ecosystems, FetchedAt: meta.UpdatedAt}
@@ -160,6 +175,12 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 		meta.Sources = append(meta.Sources, m)
 	}
 
+	if err := ctx.Err(); err != nil {
+		if opts.Progress != nil {
+			opts.Progress(fmt.Sprintf("update interrupted: %d feeds not started; %d feeds interrupted", notStarted, interrupted))
+		}
+		return meta, errors.Join(append(failures, err)...)
+	}
 	if len(failures) > 0 {
 		return meta, errors.Join(failures...)
 	}
@@ -295,7 +316,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		m.Error = httpx.Sanitize(err.Error())
 
 	}
-	if opts.Progress != nil {
+	if opts.Progress != nil && !(ctx.Err() != nil && errors.Is(err, ctx.Err())) {
 		opts.Progress(fmt.Sprintf("[db:%s] %s: %s records (%s)%s", httpx.Sanitize(feed.Source), httpx.Sanitize(feed.Key), formatCount(m.Records), formatBytes(m.Bytes), func() string {
 			if m.Error != "" {
 				return ": " + m.Error

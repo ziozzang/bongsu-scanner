@@ -11,7 +11,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X main.version=$VERSION" -o /out/bscan ./cmd/bscan
-RUN mkdir -p /out/state /out/reports /out/tmp && chmod 1777 /out/tmp
+RUN mkdir -p /out/state /out/reports /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 FROM scratch
 ARG VERSION=dev
@@ -27,7 +27,8 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY --from=build /out/bscan /bscan
 COPY --from=build --chown=65532:65532 /out/state /var/lib/bscan
 COPY --from=build --chown=65532:65532 /out/reports /reports
-COPY --from=build /out/tmp /tmp
+# Copy the child directory itself so its sticky mode survives COPY.
+COPY --from=build /out/rootfs/ /
 COPY LICENSE THIRD_PARTY_NOTICES.txt /usr/share/licenses/bscan/
 ENV BONGSU_HOME=/var/lib/bscan HOME=/var/lib/bscan PATH=/usr/local/bin
 USER 65532:65532

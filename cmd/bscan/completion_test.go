@@ -412,6 +412,10 @@ actual command help. Hidden profiling flags are documented but not suggested.
 | 3 | The walk was partial (permission denied, I/O errors, limits) and --fail-on-partial was set; no SBOM is written |
 | 130 | Interrupted (context canceled); deadlines remain execution errors |
 
+Negative --workers and --jobs values are rejected with exit 1. Offline mode rejects
+registry:// and oci:// targets before network access in scan, batch, and --match;
+docker:// uses the local daemon and remains allowed.
+
 ## Environment variables
 
 | Variable | Meaning / default |
@@ -419,7 +423,7 @@ actual command help. Hidden profiling flags are documented but not suggested.
 | BONGSU_HOME | Private configuration, identity, database, and cache root; default ~/.bongsu |
 | BONGSU_CONFIG | Configuration file override; --config PATH takes precedence; otherwise $BONGSU_HOME/scaner.yaml |
 | BONGSU_NO_UPDATE_CHECK | Disable background release checks; unset/empty/0/false/no/off leaves them enabled |
-| BONGSU_OFFLINE | Disable outbound update/LLM requests; same truth rules; also enabled by offline: true |
+| BONGSU_OFFLINE | Disable outbound registry/update/LLM requests; same truth rules; also enabled by offline: true |
 | BONGSU_WALK_WORKERS | Positive directory-walk worker override (takes precedence over --workers); otherwise --workers or min(8, CPUs) |
 | BSCAN_LLM_BASE_URL | Default --llm-base-url; empty until explicitly configured |
 | BSCAN_LLM_MODEL | Default --llm-model; empty until explicitly configured |

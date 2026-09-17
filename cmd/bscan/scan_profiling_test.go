@@ -45,13 +45,13 @@ func TestScanProfilingCreationErrors(t *testing.T) {
 }
 
 func TestScanProfilingFlagsHidden(t *testing.T) {
-	old := os.Stderr
+	old := os.Stdout
 	capture, err := os.CreateTemp(t.TempDir(), "help")
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = capture
-	defer func() { os.Stderr = old; capture.Close() }()
+	os.Stdout = capture
+	defer func() { os.Stdout = old; capture.Close() }()
 	if err := cmdScan(context.Background(), []string{"--help"}); !errors.Is(err, flag.ErrHelp) {
 		t.Fatal(err)
 	}

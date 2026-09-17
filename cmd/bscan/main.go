@@ -135,7 +135,7 @@ func run(ctx context.Context, args []string) (err error) {
 	case "batch":
 		return cmdBatch(ctx, args[1:])
 	case "update", "self-update":
-		return cmdUpdate(ctx, args[1:])
+		return cmdUpdateNamed(ctx, args[1:], args[0])
 	case "completion":
 		return cmdCompletion(args[1:])
 	case "version", "--version", "-v":
@@ -263,7 +263,7 @@ func applyScanDefaults(fs *flag.FlagSet, cfg config.Config) error {
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	signerName := fs.String("signer", "", "signer label")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	cfg, path, err := config.LoadForCLI()
@@ -465,7 +465,7 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 		addScanFlags(visible)
 		visible.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -505,6 +505,15 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 	return err
 }
 
+// Validate before matching or starting batch workers so a local finding cannot
+// mask an offline policy failure with the findings exit code.
+func validateOfflineTarget(target string, offline bool) error {
+	if offline && (strings.HasPrefix(target, "registry://") || strings.HasPrefix(target, "oci://")) {
+		return errors.New("registry scan disabled: offline mode (BONGSU_OFFLINE or 'offline: true' in config); use a local directory/archive or docker:// image")
+	}
+	return nil
+}
+
 func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
 	if err := scan.ValidateRegistryReference(target); err != nil {
 		return nil, err
@@ -512,8 +521,15 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	if f.format != "both" && f.format != "spdx" && f.format != "cyclonedx" {
 		return nil, fmt.Errorf("unsupported format %q", f.format)
 	}
-	if f.maxFiles < 0 || f.timeout < 0 {
-		return nil, errors.New("--max-files and --timeout must not be negative")
+	if f.maxFiles < 0 || f.timeout < 0 || f.workers < 0 {
+		return nil, errors.New("--max-files, --timeout, and --workers must not be negative")
+	}
+	cfg, _, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOfflineTarget(target, offlineMode(cfg)); err != nil {
+		return nil, err
 	}
 	matching, err := prepareScanMatch(ctx, f.scanMatchFlags)
 	if err != nil {
@@ -556,6 +572,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		logf("scan:sign", "%s\n", "unsigned scan: configured signer/private key not available")
 	}
 	opts := f.options()
+	opts.Offline = offlineMode(cfg)
 	opts.Progress = logProgress
 	results, scanErr := scan.TargetAll(ctx, target, opts)
 	if err := ctx.Err(); err != nil {
@@ -577,11 +594,12 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		if r.Scan == nil || !r.Scan.Partial {
 			continue
 		}
-		logf("scan:policy", "partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
-			r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
 		if f.failOnPartial {
+			logf("scan:policy", "partial scan; no SBOM written (--fail-on-partial)\n")
 			return nil, &partialScanError{target: r.Name, denied: r.Scan.PermissionDenied, errors: r.Scan.SkippedErrors, skipped: r.Scan.MetadataSkipped, limit: r.Scan.LimitReached}
 		}
+		logf("scan:policy", "partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
+			r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
 	}
 	if err := os.MkdirAll(f.output, 0o755); err != nil {
 		return nil, err
@@ -771,7 +789,7 @@ func isPhysicalArchive(r scan.Result) bool {
 func cmdHash(args []string) error {
 	fs := flag.NewFlagSet("hash", flag.ContinueOnError)
 	out := fs.String("o", "", "manifest path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
@@ -802,7 +820,7 @@ func cmdHash(args []string) error {
 func cmdSign(args []string) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	out := fs.String("o", "", "signature path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -839,10 +857,14 @@ func signPath(target, output string) (string, error) {
 }
 
 func cmdCheck(ctx context.Context, args []string, requireTrusted bool) error {
-	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	name := "check"
+	if requireTrusted {
+		name = "verify"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	pubSpec := fs.String("pubkey", "", "trusted name, public key file, or hex")
 	source := fs.String("source", "", "source archive/image for layer manifest verification")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
@@ -973,6 +995,7 @@ func verificationKey(cfg config.Config, record sign.Record, spec string, require
 }
 
 func cmdScramble(args []string) error {
+	name := args[0]
 	if args[0] == "encrypt" || args[0] == "decrypt" {
 		args = append([]string{"scramble"}, args...)
 	}
@@ -980,11 +1003,14 @@ func cmdScramble(args []string) error {
 		return errors.New("scramble requires encrypt or decrypt")
 	}
 	mode := args[1]
-	fs := flag.NewFlagSet("scramble "+mode, flag.ContinueOnError)
+	if name == "scramble" {
+		name += " " + mode
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	out := fs.String("o", "", "output path")
 	chunk := fs.String("chunk-size", "1MiB", "processing chunk size")
 	pubSpec := fs.String("pubkey", "", "pinned public key for decryption")
-	if err := fs.Parse(args[2:]); err != nil {
+	if err := parseCommandFlags(fs, args[2:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -1045,8 +1071,8 @@ func cmdScramble(args []string) error {
 func cmdBatch(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("batch", flag.ContinueOnError)
 	f := addScanFlags(fs)
-	jobs := fs.Int("jobs", 0, "parallel scans")
-	if err := fs.Parse(args); err != nil {
+	jobs := fs.Int("jobs", 0, "parallel scans (0 = configured concurrency, default 2; 1 = sequential)")
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
@@ -1068,7 +1094,15 @@ func cmdBatch(ctx context.Context, args []string) error {
 	if err := applyScanDefaults(fs, cfg); err != nil {
 		return err
 	}
-	if *jobs <= 0 {
+	for _, target := range fs.Args() {
+		if err := validateOfflineTarget(target, offlineMode(cfg)); err != nil {
+			return err
+		}
+	}
+	if *jobs < 0 {
+		return errors.New("--jobs must not be negative")
+	}
+	if *jobs == 0 {
 		*jobs = cfg.Concurrency
 	}
 	ctx, cancel := context.WithCancel(ctx)

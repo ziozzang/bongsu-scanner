@@ -224,6 +224,10 @@ func TestCatalogRetentionDifferential(t *testing.T) {
 	for _, include := range []bool{false, true} {
 		for seed := int64(0); seed < 64; seed++ {
 			t.Run(fmt.Sprintf("include=%t/seed=%d", include, seed), func(t *testing.T) {
+				// Keep both source sets and both declaration policies in short mode.
+				if testing.Short() && seed != 0 && seed != 32 {
+					t.Skip("repetitive differential seed; run without -short")
+				}
 				var got cataloger
 				var want legacyRetentionCatalog
 				got.includeDeclared, want.includeDeclared = include, include

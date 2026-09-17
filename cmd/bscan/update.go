@@ -98,7 +98,11 @@ func newReleaseUpdater(cfg config.Config, repo string, requireSignature bool) (*
 }
 
 func cmdUpdate(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	return cmdUpdateNamed(ctx, args, "update")
+}
+
+func cmdUpdateNamed(ctx context.Context, args []string, commandName string) error {
+	fs := flag.NewFlagSet(commandName, flag.ContinueOnError)
 	check := fs.Bool("check", false, "check without installing")
 	force := fs.Bool("force", false, "install even if current")
 	repo := fs.String("repo", updateRepo, "GitHub owner/repository")

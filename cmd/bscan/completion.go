@@ -41,7 +41,7 @@ func commandRegistry() []commandSpec {
 	scanSet := flag.NewFlagSet("scan", flag.ContinueOnError)
 	addScanFlags(scanSet)
 	scanFlags := flagsFromSet(scanSet)
-	batchFlags := append(append([]commandFlag(nil), scanFlags...), commandFlag{"jobs", "0", "parallel scans", "int", false})
+	batchFlags := append(append([]commandFlag(nil), scanFlags...), commandFlag{"jobs", "0", "parallel scans (0 = configured concurrency, default 2; 1 = sequential)", "int", false})
 	scanFlags = append(scanFlags,
 		commandFlag{"cpuprofile", "", "write CPU profile (hidden)", "string", true},
 		commandFlag{"memprofile", "", "write heap profile (hidden)", "string", true})

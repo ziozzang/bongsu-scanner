@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ziozzang/bongsu-scanner/internal/config"
@@ -97,7 +98,9 @@ func cmdDB(ctx context.Context, args []string) error {
 		if fs.NArg() != 1 {
 			return errors.New("db export requires one tar.gz output path")
 		}
-		if err := vulndb.ExportVerified(*db, fs.Arg(0), key); err != nil {
+		if err := waitForCatalog(ctx, 10*time.Second, func() error {
+			return vulndb.ExportVerified(*db, fs.Arg(0), key)
+		}); err != nil {
 			return err
 		}
 		fmt.Println(fs.Arg(0))
@@ -107,23 +110,28 @@ func cmdDB(ctx context.Context, args []string) error {
 			return errors.New("db verify takes no positional arguments")
 		}
 		// Resolve trust after recovery under the verification generation's lock.
-		store, err := vulndb.OpenWithKeyResolverContext(ctx, *db, vulndb.Options{PublicKey: key, Isolation: *isolation}, func(dir string) (ed25519.PublicKey, error) {
-			if *pub != "" {
-				return key, nil
-			}
-			record, err := vulndb.ReadSignatureContext(ctx, filepath.Join(dir, "manifest.sha256.sig"))
-			if os.IsNotExist(err) {
-				return nil, nil
-			}
-			if err != nil {
-				return nil, err
-			}
-			cfg, _, err := config.Load()
-			if err != nil {
-				return nil, err
-			}
-			key, _, err = verificationKey(cfg, record, "", true)
-			return key, err
+		var store vulndb.Store
+		err := waitForCatalog(ctx, 10*time.Second, func() error {
+			var openErr error
+			store, openErr = vulndb.OpenWithKeyResolverContext(ctx, *db, vulndb.Options{PublicKey: key, Isolation: *isolation}, func(dir string) (ed25519.PublicKey, error) {
+				if *pub != "" {
+					return key, nil
+				}
+				record, err := vulndb.ReadSignatureContext(ctx, filepath.Join(dir, "manifest.sha256.sig"))
+				if os.IsNotExist(err) {
+					return nil, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				cfg, _, err := config.Load()
+				if err != nil {
+					return nil, err
+				}
+				key, _, err = verificationKey(cfg, record, "", true)
+				return key, err
+			})
+			return openErr
 		})
 		if err != nil {
 			return err
@@ -147,7 +155,18 @@ func cmdDB(ctx context.Context, args []string) error {
 		if args[0] == "lookup" && fs.NArg() != 2 {
 			return errors.New("db lookup requires ECOSYSTEM NAME")
 		}
-		store, err := vulndb.OpenWithOptionsContext(ctx, *db, vulndb.Options{PublicKey: key, Isolation: *isolation})
+		var store vulndb.Store
+		open := func() error {
+			var err error
+			store, err = vulndb.OpenWithOptionsContext(ctx, *db, vulndb.Options{PublicKey: key, Isolation: *isolation})
+			return err
+		}
+		var err error
+		if args[0] == "status" {
+			err = waitForCatalog(ctx, 10*time.Second, open)
+		} else {
+			err = open()
+		}
 		if err != nil {
 			return err
 		}
@@ -354,4 +373,37 @@ func dbAffectedName(a vulndb.Affected) string {
 		}
 	}
 	return vulndb.NormalizeName(a.Ecosystem, name)
+}
+
+// Retry only catalog lock contention. Other I/O, verification, and argument
+// failures must remain immediate; the wait budget does not limit the operation.
+func waitForCatalog(ctx context.Context, wait time.Duration, operation func() error) error {
+	deadline := time.Now().Add(wait)
+	announced := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := operation()
+		busy := err != nil && strings.Contains(err.Error(), "database is locked or unavailable:") &&
+			(errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, os.ErrExist))
+		if !busy {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("catalog busy (another bscan process holds the lock); timed out after %s; retry the command: %w", wait, err)
+		}
+		if !announced {
+			logf("db", "catalog busy (another bscan process holds the lock); retrying…\n")
+			announced = true
+		}
+		timer := time.NewTimer(min(100*time.Millisecond, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

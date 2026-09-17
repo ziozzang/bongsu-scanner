@@ -161,12 +161,21 @@ func TestBinaryClassifierRodata(t *testing.T) {
 			order.PutUint32(data[128+2*stride:], 1)
 			copy(data[maxBinaryScanBytes+128:], "curl_easy_init\x00curl 8.9.1\x00")
 			r := &binaryCountingReader{ReaderAt: bytes.NewReader(data)}
-			got := binaryPackages(r, int64(len(data)), "curl", "")
+			// Keep the real section offset beyond the production prefix, but
+			// spend only a small remaining read budget in short mode.
+			var probe io.ReaderAt = r
+			if testing.Short() {
+				probe = &binaryReadBudget{ReaderAt: r, remaining: 4096}
+			}
+			got := binaryPackages(probe, int64(len(data)), "curl", "")
 			if len(got) != 1 || got[0].Version != "8.9.1" {
 				t.Fatalf("class=%d, order=%v: %+v", class, order, got)
 			}
 			if r.read > maxBinaryScanBytes {
 				t.Fatalf("read %d", r.read)
+			}
+			if testing.Short() && r.read > 4096 {
+				t.Fatalf("short rodata probe read %d bytes, want <=4096", r.read)
 			}
 			// A malicious section offset must not wrap into a valid range.
 			setSection(2, ^uint64(0)-1, 128)
@@ -235,6 +244,9 @@ func TestBinaryClassifierHost(t *testing.T) {
 		{"/lib/x86_64-linux-gnu/libc.so.6", "glibc", "/lib/x86_64-linux-gnu/libc.so.6", `stable release version ([0-9]+\.[0-9]+)`, nil},
 	} {
 		t.Run(tc.file, func(t *testing.T) {
+			if testing.Short() && tc.name == "python" {
+				t.Skip("production-size Python binary; synthetic Python signatures run in short mode")
+			}
 			f, err := os.Open(tc.file)
 			if err != nil {
 				t.Skip(err)

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -231,21 +232,27 @@ func TestRegistrySecurityRetryAfter(t *testing.T) {
 	for _, form := range []string{"seconds", "date"} {
 		t.Run(form, func(t *testing.T) {
 			c := registrySecurityClient(t)
-			calls := 0
-			c.http.HTTP.Transport = registryRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-				calls++
-				value := "2"
-				if form == "date" {
-					value = time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				c.http.HTTP.Transport = registryRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					value := "2"
+					if form == "date" {
+						value = time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)
+					}
+					return &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {value}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				})
+				start := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+				defer cancel()
+				_, err := c.request(ctx, c.base, "", "")
+				if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+					t.Fatalf("retry before Retry-After: calls=%d err=%v", calls, err)
 				}
-				return &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {value}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				if elapsed := time.Since(start); elapsed != 400*time.Millisecond {
+					t.Fatalf("retry cancellation elapsed %s, want exactly 400ms of virtual time", elapsed)
+				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
-			defer cancel()
-			_, err := c.request(ctx, c.base, "", "")
-			if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
-				t.Fatalf("retry before Retry-After: calls=%d err=%v", calls, err)
-			}
 		})
 	}
 }

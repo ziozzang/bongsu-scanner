@@ -354,7 +354,10 @@ func TestImageLayerReferenceLimits(t *testing.T) {
 // many opaque whiteouts on distinct directories. Before the child index each
 // whiteout rescanned every retained path, making such a layer quadratic.
 func TestWhiteoutCostIsSubtreeBound(t *testing.T) {
-	const n = 20000
+	n := 20000
+	if testing.Short() {
+		n = 128
+	}
 	var lower, upper []tarEntry
 	for i := 0; i < n; i++ {
 		dir := fmt.Sprintf("d%d", i)

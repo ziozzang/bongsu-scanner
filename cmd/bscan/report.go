@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -40,7 +42,12 @@ func cmdReport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	r, readErr := report.LoadMatchJSON(f)
+	reader := bufio.NewReader(f)
+	if err := rejectMatchArray(reader); err != nil {
+		f.Close()
+		return err
+	}
+	r, readErr := report.LoadMatchJSON(reader)
 	closeErr := f.Close()
 	if readErr != nil {
 		return readErr
@@ -88,4 +95,45 @@ func writeReportFile(path string, render func(io.Writer) error) error {
 		return closeErr
 	}
 	return os.Rename(f.Name(), path)
+}
+
+// Count array results one at a time so the diagnostic does not retain every SBOM.
+func rejectMatchArray(r *bufio.Reader) error {
+	for {
+		b, err := r.Peek(1)
+		if err != nil {
+			return nil
+		} // The normal loader reports empty/invalid input.
+		if b[0] != ' ' && b[0] != '\n' && b[0] != '\r' && b[0] != '\t' {
+			break
+		}
+		_, _ = r.Discard(1)
+	}
+	b, _ := r.Peek(1)
+	if b[0] != '[' {
+		return nil
+	}
+	dec := json.NewDecoder(r)
+	if _, err := dec.Token(); err != nil {
+		return fmt.Errorf("read match JSON: %w", err)
+	}
+	count := 0
+	for dec.More() {
+		var item json.RawMessage
+		if err := dec.Decode(&item); err != nil {
+			return fmt.Errorf("read match JSON: %w", err)
+		}
+		count++
+	}
+	if _, err := dec.Token(); err != nil {
+		return fmt.Errorf("read match JSON: %w", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("read match JSON: multiple JSON values")
+		}
+		return fmt.Errorf("read match JSON: %w", err)
+	}
+	return fmt.Errorf("match output for %d SBOMs; pass a single result (use --format json with one SBOM or split the array)", count)
 }
