@@ -61,14 +61,20 @@ func Convert(ctx context.Context, srcDir, destDir string, opts Options) (_ Meta,
 	if err != nil {
 		return meta, err
 	}
-	records := map[string]*Record{}
-	if err = visitStoreRecords(ctx, st, func(r *Record) error {
-		if _, exists := records[r.ID]; !exists {
-			records[r.ID] = r
-		}
-		return nil
-	}); err != nil {
-		return meta, err
+	// Records stream from the source store into the new SQLite file; only
+	// the set of seen IDs is retained (legacy per-ecosystem stores may list
+	// one advisory under several ecosystems). Holding every decoded record
+	// needed ~10 GiB for a default catalog.
+	seen := map[string]struct{}{}
+	streamRecords := func(emit Emit) error {
+		clear(seen)
+		return visitStoreRecords(ctx, st, func(r *Record) error {
+			if _, dup := seen[r.ID]; dup {
+				return nil
+			}
+			seen[r.ID] = struct{}{}
+			return emit(r)
+		})
 	}
 	stage, err := os.MkdirTemp(filepath.Dir(dest), filepath.Base(dest)+".tmp-")
 	if err != nil {
@@ -110,7 +116,7 @@ func Convert(ctx context.Context, srcDir, destDir string, opts Options) (_ Meta,
 			return meta, err
 		}
 	}
-	if err = buildSQLite(ctx, stage, records, &meta); err != nil {
+	if err = buildSQLiteStream(ctx, stage, streamRecords, &meta); err != nil {
 		return meta, err
 	}
 	if err = writeJSON(filepath.Join(stage, "meta.json"), meta); err != nil {

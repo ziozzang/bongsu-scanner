@@ -78,6 +78,8 @@ Historical entries are grouped by commit date rather than inferred release versi
   `bscan init` no longer pins feed limits in scaner.yaml (defaults stay
   commented out) and `db update` warns when a pinned limit is below the
   current default. The expansion budget default is 32 GiB.
+- `db convert` streams records into the new catalog instead of holding
+  every decoded record (about 10 GiB for a default catalog before).
 - `--quiet` keeps alerts that change how results must be read (failed feed
   downloads, coverage gaps, unavailable LLM review); progress stays silent.
 - Standardize findings JSON as `bscan-findings/1` with snake_case fields, string PURLs, generation metadata, and schema validation on report import.
