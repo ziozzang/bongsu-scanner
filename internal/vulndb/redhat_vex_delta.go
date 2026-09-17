@@ -66,6 +66,9 @@ type vexDeltaFeed struct {
 	oldCache   string
 	ledger     map[string]time.Time
 	meta       SourceMeta
+	// On archive replacement, only deletions may survive the old overlay.
+	// Reconcile these after both feed workers finish, before cross-source union.
+	archiveTombstones map[string]*Record
 }
 
 // Small lists are retained in cache even with --no-keep-raw: a 304 must still
@@ -79,6 +82,7 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 	reusable := exists && old.ArchiveDate.Equal(d.archiveDate) && old.ConversionVersion == conversionCacheVersion && !opts.Force
 	d.ledger = map[string]time.Time{}
 	d.oldCache = ""
+	d.archiveTombstones = nil
 	d.cacheLimit = feedCacheLimit(feed.Source, opts)
 	d.meta = SourceMeta{ArchiveDate: d.archiveDate}
 	if reusable {
@@ -87,6 +91,9 @@ func updateVEXDeltaFeed(ctx context.Context, dir, stage string, feed Feed, previ
 		}
 		d.oldCache = filepath.Join(dir, cacheRel)
 		d.meta.DeltaThrough, d.meta.DeltaDocuments, d.meta.DeltaDeleted = old.DeltaThrough, old.DeltaDocuments, old.DeltaDeleted
+	} else if exists && !old.ArchiveDate.Equal(d.archiveDate) {
+		d.oldCache = filepath.Join(dir, cacheRel)
+		d.archiveTombstones = map[string]*Record{}
 	}
 	var prev *SourceMeta
 	if exists {
@@ -211,14 +218,16 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 		}
 		return pending[i].key() < pending[j].key()
 	})
-	// A deletion supersedes a change for the same path, avoiding pointless 404s.
+	// A deletion supersedes an older change, avoiding pointless 404s. Keep an
+	// earlier deletion too: a later change row cannot supersede it until the
+	// fetched document's tracking date wins in Merge (deletions win ties).
 	latest := map[string]vexDeltaEntry{}
 	for _, e := range pending {
 		latest[e.Path] = e
 	}
 	selected := pending[:0]
 	for _, e := range pending {
-		if latest[e.Path] == e {
+		if e.Deleted || latest[e.Path] == e {
 			selected = append(selected, e)
 		}
 	}
@@ -240,6 +249,15 @@ func (d *vexDeltaFeed) parse(ctx context.Context, path string, _ int64, emit Emi
 	}
 	if d.oldCache != "" {
 		if err := readFeedCache(d.oldCache, d.cacheLimit, func(r *Record) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if d.archiveTombstones != nil {
+				if r.Withdrawn != "" {
+					d.archiveTombstones[r.ID] = r
+				}
+				return nil
+			}
 			// Older conversion caches lack the tie-break marker. Recover it from
 			// the ledger without invalidating an otherwise resumable delta cache.
 			if parts := strings.Split(r.ID, "-"); r.VEXDelta == "" && len(parts) == 3 {
@@ -453,6 +471,21 @@ func (m SourceMeta) VEXStatus() string {
 // their provenance into a comma-joined source. Keep the original source order
 // for all cross-source union rules (including summary/severity preference).
 func consolidateVEXSpools(ctx context.Context, stage string, feeds []Feed, spools []*ingestionSpool) ([]*ingestionSpool, error) {
+	var archives []*ingestionSpool
+	for i, feed := range feeds {
+		if feed.Source == SourceRedHatVEX && feed.vexDelta == nil {
+			archives = append(archives, spools[i])
+		}
+	}
+	for i, feed := range feeds {
+		if d := feed.vexDelta; d != nil && len(d.archiveTombstones) > 0 {
+			spool, err := d.reconcileArchive(ctx, stage, feed, archives, spools[i])
+			if err != nil {
+				return nil, err
+			}
+			spools[i] = spool
+		}
+	}
 	var vex []*ingestionSpool
 	for i, feed := range feeds {
 		if feed.Source == SourceRedHatVEX {
@@ -492,4 +525,47 @@ func consolidateVEXSpools(ctx context.Context, stage string, feeds []Feed, spool
 		}
 	}
 	return out, nil
+}
+
+// The archive and delta download concurrently. Once both finish, retain only
+// tombstones for archive documents whose tracking date is not strictly newer.
+// Rewrite the delta cache as well as its spool so subsequent 304 updates and
+// archive replacements see the same deletion history as this update.
+func (d *vexDeltaFeed) reconcileArchive(ctx context.Context, stage string, feed Feed, archives []*ingestionSpool, delta *ingestionSpool) (*ingestionSpool, error) {
+	retained, err := newIngestionSpool(stage)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = retained.close(); _ = os.RemoveAll(retained.dir) }()
+	err = visitMergedIngestionSpools(ctx, archives, nil, time.Time{}, func(r *Record) error {
+		tombstone := d.archiveTombstones[r.ID]
+		if tombstone == nil || compareRFC3339(r.Modified, tombstone.Withdrawn) > 0 {
+			return nil
+		}
+		b, err := json.Marshal(tombstone)
+		if err != nil {
+			return err
+		}
+		return retained.append(r.ID, append(b, '\n'))
+	})
+	if err = errors.Join(err, retained.close()); err != nil {
+		return nil, err
+	}
+	replacement, err := newIngestionSpool(stage)
+	if err != nil {
+		return nil, err
+	}
+	feed.Parse = func(ctx context.Context, _ string, _ int64, emit Emit, _ func(string)) error {
+		return visitMergedIngestionSpools(ctx, []*ingestionSpool{retained, delta}, nil, time.Time{}, emit)
+	}
+	cache := filepath.Join(stage, "cache", feed.Source, feed.Key+".jsonl.gz")
+	_, err = streamFeedCacheSpool(ctx, feed, "", cache, 0, nil, d.cacheLimit, 64<<20, replacement.append)
+	if err = errors.Join(err, replacement.close()); err != nil {
+		_ = os.RemoveAll(replacement.dir)
+		return nil, err
+	}
+	if err = os.RemoveAll(delta.dir); err != nil {
+		return nil, err
+	}
+	return replacement, nil
 }
