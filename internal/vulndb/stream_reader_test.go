@@ -49,6 +49,20 @@ func TestSQLiteVisitorOwnershipCancellationAndErrors(t *testing.T) {
 }
 
 func TestReusedSQLiteDecoderChecksumsCapsAndOwnership(t *testing.T) {
+	testLimit(t, &sqliteMaxExpandedBytes, int64(1024))
+	testReusedSQLiteDecoderChecksumsCapsAndOwnership(t)
+}
+
+func TestHeavyReusedSQLiteDecoderChecksumsCapsAndOwnership(t *testing.T) {
+	heavyTest(t)
+	if sqliteMaxExpandedBytes != 64<<20 {
+		t.Fatal("production expansion limit changed", sqliteMaxExpandedBytes)
+	}
+	testReusedSQLiteDecoderChecksumsCapsAndOwnership(t)
+}
+
+func testReusedSQLiteDecoderChecksumsCapsAndOwnership(t *testing.T) {
+	t.Helper()
 	compress := func(body io.Reader) []byte {
 		t.Helper()
 		var b bytes.Buffer
@@ -84,8 +98,8 @@ func TestReusedSQLiteDecoderChecksumsCapsAndOwnership(t *testing.T) {
 	if err := decoder.decode(two, new(Record)); err != nil {
 		t.Fatalf("reset after error failed: %v", err)
 	}
-	// Reach the actual production 64 MiB expansion cap without a large input.
-	expanded := compress(io.LimitReader(repeatedByteReader{}, 64<<20))
+	// The same boundary runs at 1 KiB normally and 64 MiB when opted in.
+	expanded := compress(io.LimitReader(repeatedByteReader{}, sqliteMaxExpandedBytes))
 	if err := decoder.decode(expanded, new(Record)); err == nil || !strings.Contains(err.Error(), "expanded size limit") {
 		t.Fatalf("expansion cap not enforced: %v", err)
 	}

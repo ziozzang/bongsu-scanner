@@ -23,6 +23,10 @@ type catalogFile struct {
 
 const verificationMarkerName = ".verified"
 
+// Injectable clock and timer keep ctime settlement tests independent of wall time.
+var verificationNow = time.Now
+var verificationTimer = time.NewTimer
+
 // catalogStat excludes atime, which our own reads may change. Platforms without
 // a trustworthy ctime and descriptor ownership check disable this cache.
 type catalogStat struct {
@@ -46,12 +50,12 @@ func settledVerificationStat(ctx context.Context, info os.FileInfo) (catalogStat
 	if !ok {
 		return stat, false, nil
 	}
-	delay := time.Until(time.Unix(stat.CTimeSec+1, 0))
+	delay := time.Unix(stat.CTimeSec+1, 0).Sub(verificationNow())
 	if delay > time.Second {
 		return stat, false, nil
 	}
 	if delay > 0 {
-		timer := time.NewTimer(delay)
+		timer := verificationTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():

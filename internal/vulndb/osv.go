@@ -22,8 +22,10 @@ const (
 	osvMaxSummary                  = 1 << 10
 	osvMaxAliases                  = 100
 	osvMaxReferences               = 100
-	osvMaxVersions                 = 5_000_000
 )
+
+// Injectable so aggregate version bounds can be exercised with small fixtures.
+var osvMaxVersions = 5_000_000
 
 // osvVuln is the subset of the OSV schema that is read from feeds.
 type osvVuln struct {

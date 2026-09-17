@@ -33,6 +33,10 @@ type sqliteStore struct {
 // this binary cannot read; a fresh `bscan db update` rebuilds it.
 var ErrUnsupportedCatalog = errors.New("unsupported catalog format")
 
+// Injectable resource limits; production defaults remain 64 MiB.
+var sqliteMaxRowBytes = 64 << 20
+var sqliteMaxExpandedBytes int64 = 64 << 20
+
 func openSQLiteSnapshot(dir string, m Meta, expectedDigest string) (Store, error) {
 	return openSQLiteSnapshotContext(context.Background(), dir, m, expectedDigest)
 }
@@ -108,7 +112,7 @@ func openSQLiteSnapshotOptionsContext(ctx context.Context, dir string, m Meta, e
 	fail = func(err error) (Store, error) { conn.Close(); db.Close(); cleanup(); return nil, err }
 	// Limits belong to a physical connection, so all queries use this pinned
 	// connection for its full lifetime, including advisory-ID lookups.
-	if _, err = sqlite.Limit(conn, sqlitelib.SQLITE_LIMIT_LENGTH, 64<<20); err != nil {
+	if _, err = sqlite.Limit(conn, sqlitelib.SQLITE_LIMIT_LENGTH, sqliteMaxRowBytes); err != nil {
 		return fail(err)
 	}
 	if _, err = sqlite.Limit(conn, sqlitelib.SQLITE_LIMIT_SQL_LENGTH, 1<<20); err != nil {
@@ -461,11 +465,11 @@ func (d *sqliteReadDecoder) decode(data []byte, record *Record) error {
 	}
 	defer d.reader.Close()
 	d.output.Reset()
-	_, err = d.output.ReadFrom(io.LimitReader(d.reader, 64<<20))
+	_, err = d.output.ReadFrom(io.LimitReader(d.reader, sqliteMaxExpandedBytes))
 	if err != nil {
 		return fmt.Errorf("invalid compressed SQLite advisory: %w", err)
 	}
-	if d.output.Len() >= 64<<20 {
+	if int64(d.output.Len()) >= sqliteMaxExpandedBytes {
 		return errors.New("SQLite advisory exceeds expanded size limit")
 	}
 	return json.Unmarshal(d.output.Bytes(), record)

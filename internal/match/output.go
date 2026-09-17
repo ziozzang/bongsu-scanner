@@ -2,10 +2,12 @@ package match
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/ziozzang/bongsu-scanner/internal/httpx"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -141,6 +143,23 @@ func encode(w io.Writer, v any) error {
 	return e.Encode(v)
 }
 func writeCycloneDX(w io.Writer, r Report, d Document) error {
+	// Preserve the historical compact-file encoder byte for byte, including
+	// generated refs, float64 numbers and sorted keys. Only CycloneDX pays for
+	// materializing unknown fields; table/JSON retain no copy of the source.
+	if d.Format == "cyclonedx" && d.sourcePath != "" {
+		data, err := os.ReadFile(d.sourcePath)
+		if err != nil {
+			return err
+		}
+		if sha256.Sum256(data) != d.sourceHash {
+			return fmt.Errorf("SBOM changed after loading: %s", d.sourcePath)
+		}
+		d, err = loadCompactFile(data)
+		if err != nil {
+			return err
+		}
+	}
+
 	out := map[string]any{}
 	if d.Format == "cyclonedx" {
 		for k, v := range d.Raw {
@@ -182,6 +201,19 @@ func writeCycloneDX(w io.Writer, r Report, d Document) error {
 	// Stream top-level arrays, including vulnerabilities, so neither the
 	// object tree nor encoding/json needs a report-sized temporary buffer.
 	out["vulnerabilities"] = nil
+	// The CLI uses an atomic output buffer. Avoid retaining its geometrically
+	// growing intermediate copies alongside the CycloneDX compatibility tree.
+	if buffer, ok := w.(*bytes.Buffer); ok {
+		var size jsonSizeWriter
+		if err := encodeCycloneDX(&size, r, out); err != nil {
+			return err
+		}
+		buffer.Grow(int(size))
+	}
+	return encodeCycloneDX(w, r, out)
+}
+
+func encodeCycloneDX(w io.Writer, r Report, out map[string]any) error {
 	keys := make([]string, 0, len(out))
 	for key := range out {
 		keys = append(keys, key)

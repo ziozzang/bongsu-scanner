@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,8 +88,22 @@ func TestSQLiteReaderRejectsExecutableSchemas(t *testing.T) {
 }
 
 func TestSQLiteConnectionRejectsOversizedImportedRows(t *testing.T) {
+	testLimit(t, &sqliteMaxRowBytes, 16<<10)
+	testSQLiteConnectionRejectsOversizedImportedRows(t)
+}
+
+func TestHeavySQLiteConnectionRejectsOversizedImportedRows(t *testing.T) {
+	heavyTest(t)
+	if sqliteMaxRowBytes != 64<<20 {
+		t.Fatal("production row limit changed", sqliteMaxRowBytes)
+	}
+	testSQLiteConnectionRejectsOversizedImportedRows(t)
+}
+
+func testSQLiteConnectionRejectsOversizedImportedRows(t *testing.T) {
+	t.Helper()
 	dir := readerCatalog(t)
-	alterReaderCatalog(t, dir, `UPDATE records SET json=zeroblob(67108865)`)
+	alterReaderCatalog(t, dir, fmt.Sprintf(`UPDATE records SET json=zeroblob(%d)`, sqliteMaxRowBytes+1))
 	st, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)

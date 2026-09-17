@@ -35,7 +35,6 @@ func TestSecondReviewAutoDetectsModification(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(10 * time.Millisecond)
 			switch mutation {
 			case "delete":
 				db, err := sql.Open("sqlite", sqliteURI(path, false))
@@ -53,13 +52,13 @@ func TestSecondReviewAutoDetectsModification(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				time.Sleep(time.Millisecond)
 				if err := os.WriteFile(path, data, 0600); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
 					t.Fatal(err)
 				}
+				changeCatalogCTime(t, path, before)
 			}
 			for _, lookup := range []func() ([]Record, error){
 				func() ([]Record, error) { return st.Lookup("npm", "example") },
@@ -90,8 +89,11 @@ func TestSecondReviewAutoDetectsModification(t *testing.T) {
 func TestSecondReviewAutoDetectsVerificationMutation(t *testing.T) {
 	dir := readerCatalog(t)
 	ctx := &replaceAfterVerification{Context: context.Background(), replace: func() {
-		time.Sleep(10 * time.Millisecond)
 		path := filepath.Join(dir, SQLiteFileName)
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -99,6 +101,7 @@ func TestSecondReviewAutoDetectsVerificationMutation(t *testing.T) {
 		if err := os.WriteFile(path, data, 0600); err != nil {
 			t.Fatal(err)
 		}
+		changeCatalogCTime(t, path, before)
 	}}
 	st, err := OpenWithOptionsContext(ctx, dir, Options{Isolation: "auto"})
 	if st != nil {
@@ -186,6 +189,20 @@ func TestSecondReviewConversionCacheVersion(t *testing.T) {
 }
 
 func TestSecondReviewOSVVersionOverflowRetainsDatabase(t *testing.T) {
+	testLimit(t, &osvMaxVersions, 10)
+	testOSVVersionOverflowRetainsDatabase(t)
+}
+
+func TestHeavyOSVVersionOverflowRetainsDatabase(t *testing.T) {
+	heavyTest(t)
+	if osvMaxVersions != 5_000_000 {
+		t.Fatal("production version limit changed", osvMaxVersions)
+	}
+	testOSVVersionOverflowRetainsDatabase(t)
+}
+
+func testOSVVersionOverflowRetainsDatabase(t *testing.T) {
+	t.Helper()
 	good := fixtureZip(t, map[string]string{"record.json": osvFixture("CVE-2026-1234", "npm", "example")})
 	var feed atomic.Value
 	feed.Store(good)

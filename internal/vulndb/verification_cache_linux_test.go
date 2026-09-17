@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,7 @@ func TestVerificationCacheFirstAndSecondOpen(t *testing.T) {
 			opts := Options{Isolation: mode}
 			cacheOpen(t, dir, opts, 2, "")
 			m := readMarker(t, dir)
-			if m.Stat.CTimeSec >= time.Now().Unix() {
+			if m.Stat.CTimeSec >= verificationNow().Unix() {
 				t.Fatal("verification did not wait out the inode's ctime tick")
 			}
 			info, err := os.Stat(filepath.Join(dir, verificationMarkerName))
@@ -107,10 +108,14 @@ func TestVerificationCacheRejectsChangedSQLite(t *testing.T) {
 		t.Run(map[bool]string{false: "changed-times", true: "restored-mtime"}[restoreMtime], func(t *testing.T) {
 			dir := readerCatalog(t)
 			cacheOpen(t, dir, Options{}, 2, "")
-			// Mutate immediately: the initial verification must have waited out
-			// the old ctime tick, even when mtime is restored below.
+			// Explicitly change ctime even when mtime is restored below; clock
+			// settlement is covered separately without waiting for a real tick.
 			old := readMarker(t, dir)
 			path := filepath.Join(dir, SQLiteFileName)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			f, err := os.OpenFile(path, os.O_WRONLY, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -127,6 +132,7 @@ func TestVerificationCacheRejectsChangedSQLite(t *testing.T) {
 				if err := os.Chtimes(path, stamp, stamp); err != nil {
 					t.Fatal(err)
 				}
+				changeCatalogCTime(t, path, before)
 			}
 			info, err := os.Stat(path)
 			if err != nil {
@@ -433,13 +439,13 @@ func TestVerificationCacheFreshStatCancellationAndFutureClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	stat := *info.Sys().(*syscall.Stat_t)
-	stat.Ctim.Sec = time.Now().Unix()
+	stat.Ctim.Sec = verificationNow().Unix()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, ok, err := settledVerificationStat(ctx, markerOwnerInfo{info, stat}); ok || err != context.Canceled {
 		t.Fatalf("cancelled wait: %v %v", ok, err)
 	}
-	stat.Ctim.Sec = time.Now().Add(time.Hour).Unix()
+	stat.Ctim.Sec = verificationNow().Add(time.Hour).Unix()
 	if _, ok, err := settledVerificationStat(context.Background(), markerOwnerInfo{info, stat}); ok || err != nil {
 		t.Fatalf("future timestamp must disable cache: %v %v", ok, err)
 	}
@@ -492,5 +498,110 @@ func TestVerificationCacheCorruptSignatureOnHit(t *testing.T) {
 	cacheOpen(t, dir, Options{PublicKey: pub}, 1, "signature")
 	if readMarker(t, dir) != old {
 		t.Fatal("bad signature changed receipt")
+	}
+}
+
+func TestVerificationSettlementInjectedClock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stat")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 250_000_000)
+	for _, tc := range []struct {
+		name      string
+		offset    int64
+		cancelled bool
+		wantOK    bool
+		wantDelay time.Duration
+	}{
+		{"settled", -1, false, true, 0},
+		{"fresh", 0, false, true, 750 * time.Millisecond},
+		{"future", 1, false, false, 0},
+		{"cancelled-wait", 0, true, false, 750 * time.Millisecond},
+		{"cancelled-settled", -1, true, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testLimit(t, &verificationNow, func() time.Time { return now })
+			var delays []time.Duration
+			testLimit(t, &verificationTimer, func(delay time.Duration) *time.Timer {
+				delays = append(delays, delay)
+				if tc.cancelled {
+					return time.NewTimer(time.Hour)
+				}
+				return time.NewTimer(0)
+			})
+			stat := *info.Sys().(*syscall.Stat_t)
+			stat.Ctim.Sec = now.Unix() + tc.offset
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancelled {
+				cancel()
+			}
+			fakeInfo := markerOwnerInfo{info, stat}
+			wantStat, _ := verificationStat(fakeInfo)
+			got, ok, err := settledVerificationStat(ctx, fakeInfo)
+			if got != wantStat || ok != tc.wantOK || tc.cancelled && !errors.Is(err, context.Canceled) || !tc.cancelled && err != nil {
+				t.Fatalf("stat=%+v ok=%v err=%v", got, ok, err)
+			}
+			if tc.wantDelay == 0 {
+				if len(delays) != 0 {
+					t.Fatalf("unnecessary wait: %v", delays)
+				}
+			} else if len(delays) != 1 || delays[0] != tc.wantDelay {
+				t.Fatalf("waits=%v want [%s]", delays, tc.wantDelay)
+			}
+		})
+	}
+}
+
+func TestVerificationCacheCTimeOnlyChange(t *testing.T) {
+	dir := readerCatalog(t)
+	cacheOpen(t, dir, Options{}, 2, "")
+	old := readMarker(t, dir)
+	path := filepath.Join(dir, SQLiteFileName)
+	f, err := openCatalogFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.file.Close()
+	changeCatalogCTime(t, path, f.info)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := verificationStat(info)
+	if current == old.Stat {
+		t.Fatal("chmod did not change stat tuple")
+	}
+	current.CTimeSec, current.CTimeNSec = old.Stat.CTimeSec, old.Stat.CTimeNSec
+	if current != old.Stat {
+		t.Fatal("chmod changed fields other than ctime")
+	}
+	if err := f.check("ctime changed"); err == nil || err.Error() != "ctime changed" {
+		t.Fatalf("descriptor missed ctime-only change: %v", err)
+	}
+	cacheOpen(t, dir, Options{}, 2, "")
+	cacheOpen(t, dir, Options{}, 1, "")
+}
+
+func TestHeavyVerificationSettlementRealClock(t *testing.T) {
+	heavyTest(t)
+	testLimit(t, &verificationNow, time.Now)
+	path := filepath.Join(t.TempDir(), "stat")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := verificationStat(info)
+	got, ok, err := settledVerificationStat(context.Background(), info)
+	if err != nil || !ok || got != want || got.CTimeSec >= time.Now().Unix() {
+		t.Fatalf("real clock did not settle ctime: stat=%+v ok=%v err=%v", got, ok, err)
 	}
 }
