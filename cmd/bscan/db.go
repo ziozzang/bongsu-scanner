@@ -273,6 +273,13 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 		if _, err := fmt.Fprintf(w, "%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag)); err != nil {
 			return err
 		}
+		through := "unknown"
+		if !source.DataThrough.IsZero() {
+			through = source.DataThrough.UTC().Format(time.DateOnly)
+		}
+		if _, err := fmt.Fprintf(w, "  data through: %s\n", through); err != nil {
+			return err
+		}
 		if source.Error != "" {
 			alertf("db:error", "%s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
 		}
@@ -341,6 +348,11 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 	meta, err := vulndb.Update(ctx, filepath.Clean(*db), opts, vulndb.NVDOptions{Years: *nvdYears})
+	for _, source := range meta.Sources {
+		if source.Error == "" && !source.DataThrough.IsZero() && source.DataThrough.Before(meta.UpdatedAt.Add(-60*24*time.Hour)) {
+			alertf("db:warning", "WARNING: feed %s [%s] data through: %s; newest record is older than 60 days\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.URL), source.DataThrough.UTC().Format(time.DateOnly))
+		}
+	}
 	if err != nil {
 		if len(meta.Sources) > 0 {
 			_ = printDBMetaTo(logWriter{stage: "db"}, meta)

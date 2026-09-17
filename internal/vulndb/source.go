@@ -38,9 +38,9 @@ const (
 	DefaultGHSAURL       = "https://github.com/github/advisory-database/archive/refs/heads/main.zip"
 
 	// DefaultMaxFeedBytes bounds one downloaded feed file (OSV zip, secdb
-	// JSON, tracker JSON). The OSV Ubuntu and Chainguard exports exceed it;
-	// raise Options.MaxFeedBytes to fetch them.
-	DefaultMaxFeedBytes int64 = 512 << 20
+	// JSON, tracker JSON). The 1 GiB bound accommodates the maintained OSV
+	// Ubuntu (~700 MB) and Chainguard (~920 MB) exports; it is not a download.
+	DefaultMaxFeedBytes int64 = 1 << 30
 	// GHSAMaxBytes bounds the GitHub advisory-database repository archive.
 	GHSAMaxBytes int64 = 1 << 30
 
@@ -51,8 +51,8 @@ const (
 
 // DefaultOSVEcosystems is the OSV ecosystem list fetched when
 // Options.Ecosystems is empty, including the small Red Hat, Rocky Linux and
-// AlmaLinux RPM feeds. Ubuntu and Chainguard exports exceed the
-// default feed size bound; select them explicitly with a larger MaxFeedBytes.
+// AlmaLinux RPM feeds (~670 MB of OSV downloads in total). Ubuntu and
+// Chainguard fit the default feed bound but remain opt-in due to their size.
 var DefaultOSVEcosystems = []string{
 	"Debian", "Alpine", "Wolfi", "Red Hat", "Rocky Linux", "AlmaLinux",
 	"npm", "PyPI", "Go", "crates.io", "Maven", "RubyGems", "NuGet", "Packagist",

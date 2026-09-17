@@ -97,7 +97,7 @@ func commandRegistry() []commandSpec {
 		{"mirror", "", "HTTPS OSV mirror base URL", "string", false},
 		{"force", "false", "fetch feeds without conditional request headers", "bool", false},
 		{"no-keep-raw", "false", "omit original feeds from installed database", "bool", false},
-		{"max-feed-bytes", "536870912", "maximum bytes per downloaded feed", "int64", false},
+		{"max-feed-bytes", "1073741824", "maximum bytes per downloaded feed", "int64", false},
 		{"max-feed-uncompressed", "17179869184", "maximum total uncompressed bytes per OSV/GHSA archive", "int64", false},
 		{"timeout", "30m0s", "overall update timeout", "duration", false},
 	}

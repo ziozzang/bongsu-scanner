@@ -477,7 +477,7 @@ bscan db update [flags]
 | `--db` | `$BONGSU_HOME/db` | database directory |
 | `--ecosystem` | `""` | comma-separated OSV ecosystems |
 | `--force` | `false` | fetch feeds without conditional request headers |
-| `--max-feed-bytes` | `536870912` | maximum bytes per downloaded feed |
+| `--max-feed-bytes` | `1073741824` | maximum bytes per downloaded feed |
 | `--max-feed-uncompressed` | `17179869184` | maximum total uncompressed bytes per OSV/GHSA archive |
 | `--mirror` | `""` | HTTPS OSV mirror base URL |
 | `--no-keep-raw` | `false` | omit original feeds from installed database |

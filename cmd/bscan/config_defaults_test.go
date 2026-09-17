@@ -78,7 +78,7 @@ func TestDBConfigFlagPrecedence(t *testing.T) {
 		args := []string{}
 		want := map[string]string{"source": "osv,nvd", "ecosystem": "Go,PyPI", "alpine-release": "v3.20", "nvd-years": "2020-2022", "mirror": "https://mirror.example", "max-feed-bytes": "123", "max-feed-uncompressed": "456", "no-keep-raw": "true"}
 		if explicit {
-			want = map[string]string{"source": "", "ecosystem": "", "alpine-release": "", "nvd-years": "", "mirror": "", "max-feed-bytes": "536870912", "max-feed-uncompressed": "17179869184", "no-keep-raw": "false"}
+			want = map[string]string{"source": "", "ecosystem": "", "alpine-release": "", "nvd-years": "", "mirror": "", "max-feed-bytes": "1073741824", "max-feed-uncompressed": "17179869184", "no-keep-raw": "false"}
 			for name, value := range want {
 				args = append(args, "--"+name+"="+value)
 			}
@@ -140,7 +140,7 @@ func TestConfigShowAndInitCommands(t *testing.T) {
 	}
 	writeCommandConfig(t, home, "scan:\n  workers: 3\n  typo: true\nmatch:\n  severity_source: max\ndb:\n  keep_raw: false\n")
 	stdout, stderr, code = polishCLI(t, home, "config", "show")
-	for _, want := range []string{"workers: 3", "severity_source: \"max\"", "keep_raw: false", "format: \"both\"", "max_feed_bytes: 536870912"} {
+	for _, want := range []string{"workers: 3", "severity_source: \"max\"", "keep_raw: false", "format: \"both\"", "max_feed_bytes: 1073741824"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("show lacks %q: %s", want, stdout)
 		}

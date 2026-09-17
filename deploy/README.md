@@ -121,8 +121,8 @@ sudo install -m 0644 deploy/systemd/bscan-*.service deploy/systemd/bscan-*.timer
 sudo systemctl daemon-reload
 # Populate the catalog before enabling matched scans.
 sudo systemctl start bscan-db-update.service
-# Optional per-release Ubuntu coverage; later scheduled updates retain it.
-sudo -u bscan env BONGSU_HOME=/var/lib/bscan /usr/local/bin/bscan db update --add-ecosystem Ubuntu:24.04
+# Optional Ubuntu coverage; later scheduled updates retain it.
+sudo -u bscan env BONGSU_HOME=/var/lib/bscan /usr/local/bin/bscan db update --add-ecosystem Ubuntu
 sudo -u bscan env BONGSU_HOME=/var/lib/bscan /usr/local/bin/bscan db status
 sudo systemctl enable --now bscan-db-update.timer bscan-scan.timer
 sudo systemctl start bscan-scan.service
@@ -141,9 +141,17 @@ in `/var/lib/bscan/scaner.yaml`'s `db:` block override the saved choices on ever
 run; include additions in that configuration or remove those overrides if you
 want the saved selection to control future updates. Use `--add-source`,
 `--add-ecosystem`, and `--add-alpine-release` to extend coverage; their ordinary
-counterparts replace the corresponding lists. `Ubuntu:24.04` is shorthand for
-the approximately 142 MB `Ubuntu:24.04:LTS` export, while full `Ubuntu` is about
-700 MB and needs a larger download limit.
+counterparts replace the corresponding lists. OSV per-release exports have been
+frozen since October 2024; release-qualified selections automatically fetch and
+save the base ecosystem (for example, `Ubuntu:24.04:LTS` becomes `Ubuntu`).
+Use `--add-ecosystem Ubuntu` for maintained Ubuntu coverage. Ubuntu (~700 MB)
+and Chainguard (~920 MB) fit the default 1 GiB per-feed download bound. The
+default catalog downloads ~670 MB of OSV feeds plus other sources; these sizes
+were measured on 2026-09-17 and can grow. The bound does not reserve memory.
+`db status` shows each source's newest record date as `data through`.
+Updates warn when that date is older than 60 days, even under `--quiet`;
+check scheduled-update logs for stale upstream feeds.
+
 `ProtectHome` is intentionally not enabled because home directories are inputs.
 
 The scan excludes its own state, applies host defaults and stays on one

@@ -378,6 +378,11 @@ func validateSQLiteSchemaContext(ctx context.Context, conn *sql.Conn) error {
 		if err != nil {
 			return err
 		}
+		// Freshness is an additive, optional column; pre-freshness catalogs
+		// remain readable without a schema-version migration.
+		if name == "sources" && len(got) == len(columns)+1 && got[len(columns)] == "data_through" {
+			got = got[:len(columns)]
+		}
 		if strings.Join(got, "\x00") != strings.Join(columns, "\x00") {
 			return fmt.Errorf("SQLite %s has unexpected columns", name)
 		}

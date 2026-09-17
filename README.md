@@ -95,7 +95,7 @@ db:
   ecosystems: []           # empty reuses installed choices, or built-in defaults
   alpine_releases: []      # empty reuses installed choices, or built-in defaults
   nvd_years: ""            # saved years, or current year and previous two
-  max_feed_bytes: 536870912
+  max_feed_bytes: 1073741824
   max_feed_uncompressed: 17179869184
   keep_raw: true           # inverse of --no-keep-raw
   mirror: ""
@@ -222,7 +222,7 @@ with HTML findings in `/var/lib/bscan/reports` and a weekly catalog update,
 using a dedicated `bscan` account. A cron example is also provided.
 Scheduled `bscan db update` runs retain the installed feed selection unless the
 config's `db:` block overrides it. Add coverage once with
-`bscan db update --add-ecosystem Ubuntu:24.04` using the same account and
+`bscan db update --add-ecosystem Ubuntu` using the same account and
 `BONGSU_HOME` as the scheduled job; check `bscan db status` for `Selection:`.
 `make dist VERSION=0.5.0` builds the five portable archives; the tag-release
 workflow uploads them and publishes a multi-architecture container image.
@@ -534,29 +534,41 @@ the corresponding built-in list at that position. For example:
 
 ```sh
 # Add Ubuntu coverage while retaining the existing selection.
-bscan db update --add-ecosystem Ubuntu:24.04 --add-ecosystem Ubuntu:22.04
-# Reset the OSV list to built-ins plus one release (other fields are retained).
-bscan db update --ecosystem default,Ubuntu:24.04:LTS
+bscan db update --add-ecosystem Ubuntu
+# Reset the OSV list to built-ins plus Ubuntu (other fields are retained).
+bscan db update --ecosystem default,Ubuntu
 # Refresh the saved selection, including additions; suitable for cron/systemd.
 bscan db update
 bscan db status
 ```
 
-Prefer per-release Ubuntu OSV exports: `Ubuntu:24.04:LTS` is approximately
-142 MB versus approximately 700 MB for the full `Ubuntu` export, which exceeds
-the default 512 MiB download limit. Sizes change as feeds grow.
-`--add-ecosystem Ubuntu:24.04` and `Ubuntu:22.04` expand to
-`Ubuntu:24.04:LTS` and `Ubuntu:22.04:LTS`. Ubuntu Pro coverage requires an
-explicit `--add-ecosystem Ubuntu:Pro:24.04:LTS`; it is never added implicitly.
-Plain `Ubuntu` remains allowed. OSV export URLs are
-`<base>/<ecosystem>/all.zip`, including release-qualified names.
+OSV release-qualified exports have been frozen since October 2024. Selections
+such as `Ubuntu:24.04`, `Ubuntu:24.04:LTS`, `Ubuntu:Pro:24.04:LTS`, `Debian:13`,
+and `Alpine:v3.20` therefore fetch their maintained base exports (`Ubuntu`,
+`Debian`, and `Alpine`). The update logs this mapping, deduplicates exports,
+and saves base names in the selection. Advisory release qualifiers remain
+available for matching, including Ubuntu Pro records present in the base feed.
+OSV export URLs are `<base>/<base-ecosystem>/all.zip`.
+
+As measured on 2026-09-17, Ubuntu is approximately 700 MB and Chainguard is
+approximately 920 MB; both fit the default **1 GiB per-feed download bound**.
+The default catalog downloads approximately 670 MB of OSV exports in total,
+plus its other sources. The bound is a maximum, not a download or memory
+allocation. Sizes grow over time. The total uncompressed bound remains
+16 GiB per OSV/GHSA archive.
+
+`bscan db status` reports `data through: <date>` per source: the newest valid
+record `modified` timestamp, separately from the fetch time (`unknown` when
+unavailable). `db update` emits a WARNING naming any feed whose newest record
+is older than 60 days, even under `--quiet`. A successful download or 304
+response does not establish that the upstream data is current.
 
 Downloads can be hundreds of MB
 per feed. Use `--max-feed-bytes N` to adjust the feed bound, `--timeout 30m` to
 bound the operation, `--mirror https://...` for an OSV mirror, and
 `--no-keep-raw` to omit original downloads. `--force` bypasses conditional GETs.
 Large OSV Ubuntu and Chainguard feeds are opt-in; select their ecosystem names
-explicitly and increase the byte limit when needed. The configured byte limit
+explicitly. Increase the byte limit if a feed outgrows it. The configured byte limit
 also applies to GHSA downloads.
 NVD is opt-in; add it alongside existing feeds with `bscan db update --add-source nvd --nvd-years 2024-2026`. `--nvd-years` accepts a range or comma-separated list, including `default`/`defaults` for the current year and previous two years. An explicit year list is saved with the selection and reused by later updates; the rolling default is saved as such and keeps following the current year. Updates fetch yearly and modified NVD feeds. During ingestion, missing CVSS severity may be supplied by another advisory for the same CVE, preferring CVSS V4 over V3 over V2 while preserving existing severity. Provenance is recorded in `database_specific.severity_source` as `alias:<record ID>` or `nvd`.
 

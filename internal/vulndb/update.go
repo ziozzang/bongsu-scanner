@@ -87,6 +87,10 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 			return meta, err
 		}
 	}
+	selection.Ecosystems, err = NormalizeOSVEcosystems(selection.Ecosystems, opts.Progress)
+	if err != nil {
+		return meta, err
+	}
 	selection, err = selection.Normalize()
 	if err != nil {
 		return meta, err
@@ -278,6 +282,12 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		fetched.NotModified = false // Reparse retained bytes with current conversion and limits.
 	}
 	var parsedCount int
+	var dataThrough time.Time
+	trackModified := func(r *Record) {
+		if modified, err := time.Parse(time.RFC3339Nano, r.Modified); err == nil && modified.After(dataThrough) {
+			dataThrough = modified.UTC()
+		}
+	}
 	cacheLimit := feedCacheLimit(feed.Source, opts)
 	if err == nil && fetched.NotModified {
 		err = readFeedCache(filepath.Join(dir, cacheRel), cacheLimit, func(r *Record) error {
@@ -295,6 +305,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 			if err := spool.append(r.ID, append(b, '\n')); err != nil {
 				return err
 			}
+			trackModified(r)
 			parsedCount++
 			return nil
 		})
@@ -314,6 +325,10 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 		if opts.Progress != nil {
 			progress = func(s string) { opts.Progress(httpx.Sanitize(s)) }
 		}
+		parse := feed.Parse
+		feed.Parse = func(ctx context.Context, path string, size int64, emit Emit, progress func(string)) error {
+			return parse(ctx, path, size, func(r *Record) error { trackModified(r); return emit(r) }, progress)
+		}
 		parsedCount, err = streamFeedCacheSpool(ctx, feed, filepath.Join(stage, rawRel), filepath.Join(stage, cacheRel), fetched.Meta.Bytes, progress, cacheLimit, 64<<20, spool.append)
 		if err == nil && expansionLimited {
 			var expanded uint64
@@ -327,6 +342,7 @@ func updateFeed(ctx context.Context, dir, stage string, feed Feed, previous map[
 	m.Records = parsedCount
 	if err == nil {
 		m.ConversionVersion = conversionCacheVersion
+		m.DataThrough = dataThrough
 	}
 	if err != nil {
 		m.Error = httpx.Sanitize(err.Error())

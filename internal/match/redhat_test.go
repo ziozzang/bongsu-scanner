@@ -65,7 +65,7 @@ func TestCentOSStreamSkipWithoutCoverage(t *testing.T) {
 func TestCoverageWarningExportNames(t *testing.T) {
 	subjects := []Subject{{Ref: "r", Ecosystem: "Red Hat", Release: "9", Version: "1"}, {Ref: "a", Ecosystem: "Alpine", Release: "v3.20", Version: "1"}, {Ref: "u", Ecosystem: "Ubuntu", Release: "22.04", Version: "1"}}
 	report, err := Run(context.Background(), &fakeStore{}, subjects, Options{})
-	want := []string{"coverage gap: Alpine:v3.20 (1 subjects) — run bscan db update --add-ecosystem Alpine", "coverage gap: Red Hat:9 (1 subjects) — run bscan db update --add-ecosystem 'Red Hat'", "coverage gap: Ubuntu:22.04 (1 subjects) — run bscan db update --add-ecosystem 'Ubuntu:22.04:LTS'"}
+	want := []string{"coverage gap: Alpine:v3.20 (1 subjects) — run bscan db update --add-ecosystem Alpine", "coverage gap: Red Hat:9 (1 subjects) — run bscan db update --add-ecosystem 'Red Hat'", "coverage gap: Ubuntu:22.04 (1 subjects) — run bscan db update --add-ecosystem Ubuntu"}
 	if err != nil || !reflect.DeepEqual(report.MissingCoverage, want) {
 		t.Fatalf("warnings=%v error=%v", report.MissingCoverage, err)
 	}

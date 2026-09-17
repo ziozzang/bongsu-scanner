@@ -79,7 +79,8 @@ CREATE TABLE sources (
  bytes INTEGER NOT NULL,
  records INTEGER NOT NULL,
  fetched_at TEXT,
- error TEXT
+ error TEXT,
+ data_through TEXT
 );
 CREATE UNIQUE INDEX source_feeds ON sources(name, url);
 CREATE TABLE advisory_references (
@@ -399,7 +400,7 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT OR REPLACE INTO sources(name,url,ecosystems_json,etag,last_modified,sha256,bytes,records,fetched_at,error) VALUES(?,?,?,?,?,?,?,?,?,?)", source.Name, source.URL, string(ecos), nullableText(source.ETag), nullableText(source.LastMod), nullableText(source.SHA256), source.Bytes, source.Records, nullableTime(source.FetchedAt), nullableText(source.Error)); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT OR REPLACE INTO sources(name,url,ecosystems_json,etag,last_modified,sha256,bytes,records,fetched_at,error,data_through) VALUES(?,?,?,?,?,?,?,?,?,?,?)", source.Name, source.URL, string(ecos), nullableText(source.ETag), nullableText(source.LastMod), nullableText(source.SHA256), source.Bytes, source.Records, nullableTime(source.FetchedAt), nullableText(source.Error), nullableTime(source.DataThrough)); err != nil {
 			return err
 		}
 	}

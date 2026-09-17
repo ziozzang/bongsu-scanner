@@ -66,15 +66,14 @@ func resolveDBSelection(fs *flag.FlagSet, cfg config.DBConfig, old vulndb.Meta, 
 		s.NVDYears = value
 	}
 	s.Sources = append(s.Sources, additions.sources...)
-	for _, ecosystem := range additions.ecosystems {
-		switch ecosystem {
-		case "Ubuntu:24.04", "Ubuntu:22.04":
-			ecosystem += ":LTS"
-		}
-		s.Ecosystems = append(s.Ecosystems, ecosystem)
+	s.Ecosystems = append(s.Ecosystems, additions.ecosystems...)
+	var err error
+	s.Ecosystems, err = vulndb.NormalizeOSVEcosystems(s.Ecosystems, func(message string) { logf("db", "%s\n", message) })
+	if err != nil {
+		return s, "", err
 	}
 	s.AlpineReleases = append(s.AlpineReleases, additions.releases...)
-	s, err := s.Normalize()
+	s, err = s.Normalize()
 	if err != nil {
 		return s, "", err
 	}

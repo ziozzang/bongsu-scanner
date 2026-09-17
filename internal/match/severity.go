@@ -237,6 +237,14 @@ func distroSeverity(rec vulndb.Record, a vulndb.Affected) string {
 					return strings.ToLower(level)
 				}
 			}
+			// AlmaLinux and Rocky publish vendor ratings at the start of
+			// erratum titles, independently of their CVEs' CVSS scores.
+			if label, _, ok := strings.Cut(rec.Summary, ":"); ok {
+				switch strings.ToLower(label) {
+				case "critical", "important", "moderate", "low":
+					return strings.ToLower(normalizeSeverity(label))
+				}
+			}
 			// With no separate vendor label, retain the erratum's rating.
 			// Multiple CVE aliases still remain one advisory finding.
 			sev, _, _ := severity(rec, vulndb.Affected{})

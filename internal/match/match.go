@@ -282,9 +282,6 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	}
 	for key, count := range missing {
 		eco := vulndb.BaseEcosystem(key)
-		if release := vulndb.EcosystemRelease(key); eco == "Ubuntu" && release != "" {
-			eco += ":" + release + ":LTS"
-		}
 		if strings.ContainsAny(eco, " \t:") {
 			eco = "'" + eco + "'"
 		}

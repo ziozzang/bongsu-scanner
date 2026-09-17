@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ziozzang/bongsu-scanner/internal/httpx"
 )
 
 // Selection records feed inputs, independently of ecosystems found in records.
@@ -73,6 +75,11 @@ func (s Selection) Normalize() (Selection, error) {
 
 func (s Selection) normalize(now time.Time) (Selection, error) {
 	s = s.withDefaults()
+	var err error
+	s.Ecosystems, err = NormalizeOSVEcosystems(s.Ecosystems, nil)
+	if err != nil {
+		return s, err
+	}
 	var defaults []string
 	for year := now.UTC().Year() - 2; year <= now.UTC().Year(); year++ {
 		defaults = append(defaults, strconv.Itoa(year))
@@ -111,4 +118,25 @@ func (s Selection) String() string {
 	return fmt.Sprintf("sources=%s ecosystems=%s alpine=%s nvd=%t nvd-years=%s",
 		strings.Join(s.Sources, ","), strings.Join(s.Ecosystems, ","),
 		strings.Join(s.AlpineReleases, ","), s.NVDEnabled, years)
+}
+
+// NormalizeOSVEcosystems maps release selections to maintained base exports.
+// Validate before stripping suffixes, and announce all remappings in one line.
+func NormalizeOSVEcosystems(ecosystems []string, progress func(string)) ([]string, error) {
+	var bases, mapped []string
+	for _, value := range ecosystems {
+		value = strings.TrimSpace(value)
+		if strings.ContainsAny(value, `/\?#`) {
+			return nil, fmt.Errorf("invalid OSV ecosystem %q", value)
+		}
+		base := BaseEcosystem(value)
+		if base != value {
+			mapped = append(mapped, value+" -> "+base)
+		}
+		bases = append(bases, base)
+	}
+	if len(mapped) > 0 && progress != nil {
+		progress("OSV per-release exports are no longer maintained (frozen 2024-10); fetching base exports: " + httpx.Sanitize(strings.Join(dedupeStrings(mapped), ", ")))
+	}
+	return dedupeStrings(bases), nil
 }

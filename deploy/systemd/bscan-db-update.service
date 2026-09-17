@@ -13,7 +13,7 @@ StateDirectory=bscan
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/bscan
 # Reuses saved selection unless db: config overrides it. Add coverage once with
-# bscan db update --add-ecosystem Ubuntu:24.04 as bscan using this BONGSU_HOME.
+# bscan db update --add-ecosystem Ubuntu as bscan using this BONGSU_HOME.
 ExecStart=/usr/local/bin/bscan db update
 UMask=0077
 ProtectSystem=strict

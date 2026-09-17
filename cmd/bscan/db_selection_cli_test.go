@@ -68,7 +68,9 @@ func TestDBSelectionCLI(t *testing.T) {
 		{"add", []string{"--add-ecosystem", "PyPI,npm", "--add-ecosystem", "PyPI"}, []string{"npm", "PyPI"}, "installed catalog + --add-ecosystem"},
 		{"sticky", nil, []string{"npm", "PyPI"}, "installed catalog"},
 		{"replace", []string{"--ecosystem", "PyPI"}, []string{"PyPI"}, "flags"},
-		{"ubuntu", []string{"--add-ecosystem", "Ubuntu:24.04,Ubuntu:22.04,Ubuntu:Pro:24.04:LTS,Ubuntu"}, []string{"PyPI", "Ubuntu:24.04:LTS", "Ubuntu:22.04:LTS", "Ubuntu:Pro:24.04:LTS", "Ubuntu"}, "installed catalog + --add-ecosystem"},
+		// Release-qualified OSV exports are frozen (2024-10); every spelling
+		// resolves to the maintained base export and is stored that way.
+		{"ubuntu", []string{"--add-ecosystem", "Ubuntu:24.04,Ubuntu:22.04,Ubuntu:Pro:24.04:LTS,Ubuntu"}, []string{"PyPI", "Ubuntu"}, "installed catalog + --add-ecosystem"},
 	}
 	for _, step := range steps {
 		if !t.Run(step.name, func(t *testing.T) {

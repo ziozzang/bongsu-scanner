@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -159,6 +160,7 @@ func visitIngestionPartition(ctx context.Context, spools []*ingestionSpool, i in
 			return err
 		}
 		r := records[id]
+		promoteAlmaLinuxRelatedCVEs(r)
 		applyDebianStatusMarkers(r)
 		if added, exists := previous[id]; exists {
 			r.AddedAt = added
@@ -171,6 +173,25 @@ func visitIngestionPartition(ctx context.Context, spools []*ingestionSpool, i in
 		}
 	}
 	return nil
+}
+
+// AlmaLinux errata place their CVEs in related instead of aliases/upstream.
+// Derive aliases after merging, including on conversion-cache hits, before
+// both alias severity passes. Other sources' related IDs are not equivalent.
+func promoteAlmaLinuxRelatedCVEs(r *Record) {
+	if !strings.HasPrefix(r.ID, "ALSA-") && !strings.HasPrefix(r.ID, "ALBA-") && !strings.HasPrefix(r.ID, "ALEA-") {
+		return
+	}
+	for _, id := range r.Aliases {
+		if strings.HasPrefix(id, "CVE-") {
+			return
+		}
+	}
+	for _, id := range r.Related {
+		if strings.HasPrefix(id, "CVE-") && !slices.Contains(r.Aliases, id) {
+			r.Aliases = append(r.Aliases, id)
+		}
+	}
 }
 
 // Native negative/uncertain status applies to the package and release even

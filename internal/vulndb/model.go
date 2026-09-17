@@ -99,6 +99,9 @@ type SourceMeta struct {
 	Records           int       `json:"records"`
 	FetchedAt         time.Time `json:"fetched_at"`
 	Error             string    `json:"error,omitempty"`
+
+	// DataThrough is the newest valid record modified time, independent of fetching.
+	DataThrough time.Time `json:"data_through,omitempty,omitzero"`
 }
 
 // Meta is the database manifest written after every update.

@@ -330,6 +330,11 @@ func (osvSource) Feeds(opts *Options) ([]Feed, error) {
 	if len(ecos) == 0 {
 		ecos = DefaultOSVEcosystems
 	}
+	var err error
+	ecos, err = NormalizeOSVEcosystems(ecos, opts.Progress)
+	if err != nil {
+		return nil, err
+	}
 	var feeds []Feed
 	seen := map[string]bool{}
 	for _, e := range ecos {

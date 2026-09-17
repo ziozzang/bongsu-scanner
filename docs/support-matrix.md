@@ -9,11 +9,11 @@
 | AlmaLinux | OSV ALSA | 기본 | `almalinux-9.8` → `9` | structured 등급/CVSS가 있으면 사용; 이번 8 findings는 모두 UNKNOWN | 원문 Moderate/Important는 summary에만 있어 미반영, CVE related 연결도 출력에서 유실. `internal/match/cache.go:288`, `internal/match/severity.go:227`. Rocky와 같은 major 규칙; PURL namespace `alma`, `almalinux`: `internal/vulndb/model.go:215` |
 | CentOS Stream | 일반 RHEL feed로 대체하지 않음 | 미지원 | CentOS major ≥8 → `centos-stream:N` | 해당 OS 매칭 없음 | 정확한 skip reason: `centos-stream-unsupported`. `internal/match/sbom.go:361`, `internal/match/match.go:325`. 이 판별은 이름의 Stream 여부 대신 CentOS major를 사용하므로 CentOS Linux 8도 같은 이유로 제외됨 |
 | CentOS Linux 6/7 | OSV Red Hat | 기본 Red Hat feed의 매핑 경로 존재 | CentOS major ≤7 → RHEL major | RHSA CVSS fallback | 코드 경로만 확인; 이번 실이미지 검증 대상 아님. `internal/match/sbom.go:361` |
-| Ubuntu | OSV Ubuntu | 선택 | `Ubuntu:24.04:LTS`, `Ubuntu:Pro:24.04:LTS`, `ubuntu-24.04`, `noble` → `24.04` | `affected.ecosystem_specific.ubuntu_priority` → `priority` → record의 `Ubuntu` severity 순; 이어 일반 fallback | `internal/vulndb/debian.go:32`, `internal/match/severity.go:207`. FIPS 등 알 수 없는 stream은 범위 유지. 릴리스별 ZIP은 이번 조회에서 **2024-10에 정지**: 크기가 작아도 최신 coverage로 간주하면 안 됨 |
+| Ubuntu | 유지되는 OSV Ubuntu 전체 export (`--add-ecosystem Ubuntu`) | 선택 | `Ubuntu:24.04:LTS`, `Ubuntu:Pro:24.04:LTS`, `ubuntu-24.04`, `noble` → `24.04` | `affected.ecosystem_specific.ubuntu_priority` → `priority` → record의 `Ubuntu` severity 순; 이어 일반 fallback | `internal/vulndb/debian.go:32`, `internal/match/severity.go:207`. FIPS 등 알 수 없는 stream은 범위 유지. 릴리스별 ZIP은 **2024-10에 정지**하여 릴리스 선택도 전체 `Ubuntu`로 통합·저장. 전체 약 700 MB는 새 기본 제한 1 GiB 이내. `db status`의 `data through` 확인; 최신 레코드가 60일보다 오래되면 `--quiet`에서도 경고 |
 | Debian | OSV + Debian security tracker | 기본 | 코드명 → 숫자 major, 예: bookworm → 12 | release/package urgency, 이후 CVSS fallback | not-affected 억제, undetermined는 낮은 confidence. `internal/vulndb/debian.go:15`, `internal/match/cache.go:235`, `internal/match/match.go:228` |
 | Alpine | OSV + Alpine secdb | 기본 | `3.20.10` → `v3.20` | vendor 메타데이터가 있으면 우선, 이후 CVSS | native secdb 기본 선택 v3.18–v3.22; OSV 내 coverage는 그보다 넓을 수 있음. `internal/vulndb/source.go:62`, `internal/match/sbom.go:382` |
 | Wolfi | OSV Wolfi export | **기본** | rolling, 빈 release | vendor 메타데이터 / CVSS fallback | 이번 코드에서는 opt-in이 아님. `internal/vulndb/source.go:57`, `internal/vulndb/model.go:189`. ZIP 약 257.3 MiB |
-| Chainguard | OSV Chainguard export | 전용 feed는 선택 | rolling, 빈 release | vendor 메타데이터 / CVSS fallback | ZIP 약 877.7 MiB로 기본 512 MiB 제한 초과. 다른 기본 feed에 포함된 교차 ecosystem 레코드는 기본 DB에도 나타날 수 있으므로 `db status`의 ecosystem 나열을 전용 feed 선택과 혼동하지 말 것. `internal/vulndb/source.go:43`, `internal/vulndb/osv.go:101` |
+| Chainguard | OSV Chainguard export | 전용 feed는 선택 | rolling, 빈 release | vendor 메타데이터 / CVSS fallback | ZIP 약 877.7 MiB, 기본 1 GiB 제한 이내. 다른 기본 feed에 포함된 교차 ecosystem 레코드는 기본 DB에도 나타날 수 있으므로 `db status`의 ecosystem 나열을 전용 feed 선택과 혼동하지 말 것. `internal/vulndb/source.go:43`, `internal/vulndb/osv.go:101` |
 | openSUSE / SUSE | OSV 해당 ecosystem | 선택 | Leap `15.6` → `Leap 15.6`; Tumbleweed; SLES `15.5` → `Linux Enterprise Server 15 SP5` | vendor 메타데이터 / CVSS fallback | 코드 경로만 확인, 이번 실이미지 검증 대상 아님. `internal/vulndb/model.go:219`, `internal/match/sbom.go:345` |
 | Fedora / Amazon Linux / Oracle Linux / Photon | 전용 OS 매칭 공급원 없음 | 미지원 | RPM namespace를 다른 배포판으로 대체하지 않음 | 없음 | `internal/vulndb/model.go:225`. RPM 인벤토리가 있어도 해당 배포판 advisory coverage를 뜻하지 않음 |
 | npm, PyPI, Go, crates.io, Maven, RubyGems, NuGet, Packagist | OSV | 기본 | 언어 ecosystem/name/version | OSV CVSS / 해당 advisory 메타데이터 | 기본 목록 `internal/vulndb/source.go:58`; PURL type 매핑 `internal/vulndb/model.go:195`. PyPI 이름의 `-_.` 정규화: 같은 파일 `:154` |
@@ -30,12 +30,12 @@ Ubuntu를 포함해 기본 정책은 `distro`이며 vendor 등급이 없으면 C
 | OSV export | bytes | MiB | HTTP Last-Modified (UTC) |
 |---|---:|---:|---|
 | Ubuntu 전체 | 701,433,255 | 668.9 | 2026-09-17 08:10:35 |
-| Ubuntu:24.04:LTS | 142,361,968 | 135.8 | 2024-10-08 19:12:19 |
-| Ubuntu:22.04:LTS | 149,860,571 | 142.9 | 2024-10-09 02:28:02 |
+| Ubuntu:24.04:LTS (동결; 선택 시 Ubuntu로 통합) | 142,361,968 | 135.8 | 2024-10-08 19:12:19 |
+| Ubuntu:22.04:LTS (동결; 선택 시 Ubuntu로 통합) | 149,860,571 | 142.9 | 2024-10-09 02:28:02 |
 | Wolfi | 269,789,835 | 257.3 | 2026-09-17 04:35:28 |
 | Chainguard | 920,288,558 | 877.7 | 2026-09-17 04:36:39 |
 | Red Hat | 26,374,924 | 25.2 | 2026-09-17 10:33:59 |
 | Rocky Linux | 4,860,973 | 4.6 | 2026-09-17 06:33:39 |
 | AlmaLinux | 6,244,262 | 6.0 | 2026-09-16 14:07:32 |
 
-기본 개별 feed 다운로드 제한은 512 MiB, 압축 해제 누적 제한은 16 GiB다 (`internal/vulndb/source.go:43`, `internal/vulndb/options.go:11`). 전체 Ubuntu와 Chainguard에는 `--max-feed-bytes` 상향이 필요하다. URL·헤더 측정값은 상세 JSON `feed_sizes`에 보존했다. export URL 생성 규칙은 `internal/vulndb/osv.go:348`이다. 크기 및 upstream 갱신 여부는 시간이 지나면 달라진다.
+기본 개별 feed 다운로드 제한은 1 GiB, 압축 해제 누적 제한은 16 GiB다 (`internal/vulndb/source.go:43`, `internal/vulndb/options.go:11`). 전체 Ubuntu와 Chainguard도 기본 제한 안에 들어온다. 릴리스별 export 이름은 항상 base export로 대체되며, 각 feed의 최신 레코드 시각이 `db status`에 `data through`로 표시되고 60일을 넘으면 경고한다. URL·헤더 측정값은 상세 JSON `feed_sizes`에 보존했다. export URL 생성 규칙은 `internal/vulndb/osv.go:348`이다. 크기 및 upstream 갱신 여부는 시간이 지나면 달라진다.

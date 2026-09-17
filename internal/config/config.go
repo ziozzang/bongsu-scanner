@@ -69,7 +69,7 @@ type Config struct {
 }
 
 func Defaults() Config {
-	return Config{Scan: ScanConfig{Output: ".", Format: "both"}, Match: MatchConfig{SeveritySource: "distro", DBIsolation: "auto"}, DB: DBConfig{MaxFeedBytes: 512 << 20, MaxFeedUncompressed: 16 << 30, KeepRaw: true}, Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
+	return Config{Scan: ScanConfig{Output: ".", Format: "both"}, Match: MatchConfig{SeveritySource: "distro", DBIsolation: "auto"}, DB: DBConfig{MaxFeedBytes: 1 << 30, MaxFeedUncompressed: 16 << 30, KeepRaw: true}, Hash: "sha256", Formats: []string{"spdx", "cyclonedx"}, Concurrency: 2, TrustedKeys: map[string]string{}, SignatureMinVersion: 1}
 }
 
 // CheckSignatureVersion applies the configured minimum before a caller verifies

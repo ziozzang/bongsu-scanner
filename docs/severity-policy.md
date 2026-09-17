@@ -20,3 +20,12 @@ Ubuntu `UBUNTU-CVE-YYYY-NNNN` identifiers are associated with their embedded
 CVE for grouping and CVSS enrichment. Other CVEs listed only in `related` are
 separate vulnerabilities and are not promoted to aliases. Updating the catalog
 is necessary to apply this alias derivation to previously ingested exports.
+
+For `RLSA-`, `ALSA-`, `RHSA-`, `USN-`, `DSA-`, and `DLA-` advisories without an
+explicit vendor rating, a summary starting with `Critical:`, `Important:`,
+`Moderate:`, or `Low:` (case-insensitive) supplies the distro rating; Important
+maps to HIGH and Moderate to MEDIUM. CVSS policy, scores, and vectors are
+unchanged. AlmaLinux `ALSA-`, `ALBA-`, and `ALEA-` records without a CVE alias
+promote related CVEs to aliases for grouping and CVSS enrichment, preserving
+`related`. This derivation runs on every catalog update, including conversion
+cache hits; other sources' related IDs are not promoted by this rule.

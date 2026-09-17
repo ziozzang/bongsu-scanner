@@ -200,14 +200,14 @@ func TestDistroMissingCoverageCollection(t *testing.T) {
 		{Ref: "e", Name: "unknown", Version: "1"},
 	}
 	r, err := Run(context.Background(), &fakeStore{records: []vulndb.Record{advisory("Debian:13", "glibc", "2")}}, subjects, Options{})
-	want := []string{"coverage gap: Debian:12 (1 subjects) — run bscan db update --add-ecosystem Debian", "coverage gap: Ubuntu:24.04 (2 subjects) — run bscan db update --add-ecosystem 'Ubuntu:24.04:LTS'"}
+	want := []string{"coverage gap: Debian:12 (1 subjects) — run bscan db update --add-ecosystem Debian", "coverage gap: Ubuntu:24.04 (2 subjects) — run bscan db update --add-ecosystem Ubuntu"}
 	if err != nil || !reflect.DeepEqual(r.MissingCoverage, want) || r.Skipped["ecosystem-not-in-database"] != 2 || r.Skipped["release-not-in-database"] != 1 {
 		t.Fatalf("coverage: %+v %v", r, err)
 	}
 }
 
 func TestDistroMatchOutput(t *testing.T) {
-	warning := "coverage gap: Ubuntu:24.04 (137 subjects) — run bscan db update --add-ecosystem 'Ubuntu:24.04:LTS'"
+	warning := "coverage gap: Ubuntu:24.04 (137 subjects) — run bscan db update --add-ecosystem Ubuntu"
 	r := Report{MissingCoverage: []string{warning}, Findings: []Finding{{ID: "CVE-2026-1", DistroSeverity: "end-of-life", DistroStatus: "undetermined", Confidence: "low"}}}
 	for _, format := range []string{"table", "json", "cyclonedx"} {
 		var b bytes.Buffer

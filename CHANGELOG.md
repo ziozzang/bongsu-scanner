@@ -45,13 +45,17 @@ Historical entries are grouped by commit date rather than inferred release versi
   severity; `negligible` is shown as NEGLIGIBLE and excluded by
   `--exclude-unimportant`; `UBUNTU-CVE-*` records carry their CVE alias.
   Coverage-gap warnings recommend `db update --add-ecosystem` with the
-  per-release Ubuntu export.
+  maintained base Ubuntu export.
 
 ### Changed
 
+- Raise the per-feed download bound to 1 GiB; persist and display each feed's
+  newest record date and warn on data older than 60 days, including under `--quiet`.
+
 - Persist catalog feed selections across plain `db update` runs and show them
   in `db status`; add repeatable `--add-ecosystem`, `--add-source`, and
-  `--add-alpine-release`, default-list expansion, and Ubuntu LTS export shortcuts.
+  `--add-alpine-release`, default-list expansion, and mapping of frozen release-qualified OSV exports
+  to maintained base exports.
 - Default matching severity to `distro` (vendor rating first, CVSS fallback)
   and include Debian unimportant advisories as `NEGLIGIBLE`. Add
   `--exclude-unimportant`; retain `--include-unimportant` as a deprecated
