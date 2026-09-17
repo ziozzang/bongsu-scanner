@@ -15,6 +15,8 @@ import (
 )
 
 type Subject struct {
+	Modularity      string            `json:"modularity,omitempty"`
+	Owner           string            `json:"owner,omitempty"`
 	CPE             string            `json:"cpe,omitempty"`
 	Ref             string            `json:"ref"`
 	Name            string            `json:"name"`
@@ -214,6 +216,7 @@ func loadDocument(d Document) (Document, error) {
 	refs := make(map[string]int, len(components))
 	for _, m := range components {
 		s := Subject{CPE: str(m, "cpe"), Name: str(m, "name"), Version: str(m, "version"), Ref: str(m, "bom-ref"), Type: str(m, "type"), Properties: props(m["properties"])}
+		s.loadDistroProperties(str(m, "comment"), str(m, "packageComment"))
 		ps := str(m, "purl")
 		if d.Format == "spdx" {
 			s.Version = str(m, "versionInfo")
@@ -673,7 +676,7 @@ func (inv *streamInventory) componentToken(dec *sbomDecoder, spdx bool, token js
 				}
 			case "primaryPackagePurpose":
 				dst = &c.purpose
-			case "packageComment":
+			case "packageComment", "comment":
 				if spdx {
 					dst = &c.packageInfo.comment
 				}
@@ -929,6 +932,11 @@ func loadStream(reader io.Reader) (Document, error) {
 	for i := 0; i < inv.count; i++ {
 		c := inv.at(i)
 		s := Subject{CPE: c.subject.CPE, Ref: c.subject.Ref, Name: c.subject.Name, Version: c.subject.Version, Type: c.subject.Type, Properties: c.subject.Properties}
+		comment := ""
+		if c.packageInfo != nil {
+			comment = c.packageInfo.comment
+		}
+		s.loadDistroProperties(comment, "")
 		if s.CPE == "" && (s.Type == "operating-system" || c.purpose == "OPERATING-SYSTEM") {
 			continue
 		}
@@ -965,4 +973,28 @@ func loadStream(reader io.Reader) (Document, error) {
 		d.Subjects = append(d.Subjects, s)
 	}
 	return d, nil
+}
+
+// SPDX uses comment; also accept the legacy packageComment spelling.
+func (s *Subject) loadDistroProperties(comment, legacy string) {
+	s.Modularity = s.Properties["bscan:modularity"]
+	s.Owner = s.Properties["bscan:owner"]
+	if comment == "" {
+		comment = legacy
+	}
+	if !strings.HasPrefix(comment, "bscan: ") {
+		return
+	}
+	for _, note := range strings.Split(strings.TrimPrefix(comment, "bscan: "), "; ") {
+		key, value, ok := strings.Cut(note, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "modularity":
+			s.Modularity = value
+		case "owner":
+			s.Owner = value
+		}
+	}
 }

@@ -195,7 +195,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					continue
 				}
 				for _, a := range rec.affected {
-					if a.version != q.ver || a.release != s.Release {
+					if a.version != q.ver || a.release != s.Release || s.Type == "rpm" && a.modular != (s.Modularity != "") {
 						continue
 					}
 					id := canonical[rec.ID]
@@ -227,6 +227,10 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						continue
 					}
 					if rel := prepared.release; rel != "" && rel != s.Release {
+						continue
+					}
+					if s.Type == "rpm" && prepared.modular != (s.Modularity != "") {
+						report.Skipped["module-mismatch"]++
 						continue
 					}
 					status := statuses[id]
@@ -319,6 +323,9 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 }
 
 func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
+	if s.Owner != "" && s.Type != "rpm" && s.Type != "deb" && s.Type != "apk" {
+		return "distro-owned"
+	}
 	if s.Ecosystem == "Red Hat" && strings.HasPrefix(s.Release, "centos-stream:") {
 		return "centos-stream-unsupported"
 	}

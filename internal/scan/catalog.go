@@ -55,6 +55,8 @@ func parseOSRelease(b []byte) OSRelease {
 // os-release has the same effect as the archive catalog's original two passes.
 // The zero value is ready for use.
 type cataloger struct {
+	ownedPaths        map[string]string
+	ownedBytes        int
 	osr               *OSRelease
 	osRank            int
 	seen              map[string]Package
@@ -117,6 +119,10 @@ func (c *cataloger) addFile(f File) {
 			c.osr, c.osRank = &o, rank
 		}
 	}
+	if isRPMDatabase(f.Path) {
+		c.addRPMFile(f, "")
+		return
+	}
 	scanFileWithPrefixes(f, c.npmBundlePrefixes, c.addPackage)
 }
 
@@ -141,6 +147,20 @@ func packageKey(p Package) string {
 }
 
 func (c *cataloger) addPackage(p Package) {
+	if p.Ownership != nil {
+		owner := p.Owner
+		if p.Type == "rpm" {
+			owner = "rpm:" + p.Name + "@" + p.Version
+		}
+		for _, metadata := range p.Ownership.Paths {
+			c.ownPath(metadata, owner)
+		}
+		p.Ownership = nil
+		// File-list ownership records are not inventory packages.
+		if p.Name == "" {
+			return
+		}
+	}
 	if p.Evidence == "" && p.Type == "rpm" {
 		p.Evidence = "installed"
 	}
@@ -324,7 +344,7 @@ func (c *cataloger) retainPackage(p Package) Package {
 	p.Type, p.Namespace = intern(p.Type), intern(p.Namespace)
 	p.Arch, p.Evidence = intern(p.Arch), intern(p.Evidence)
 	fields := []*string{&p.Name, &p.Version, &p.PURL, &p.CPE, &p.License,
-		&p.Distro, &p.SourceName, &p.SourceVersion, &p.Layer, &p.VersionOriginal}
+		&p.Distro, &p.SourceName, &p.SourceVersion, &p.Layer, &p.VersionOriginal, &p.Modularity, &p.Owner}
 	// Individual sources already have a scan-local canonical copy. Merged
 	// source lists own their allocation; neither can pin a metadata buffer.
 	if i, ok := c.sourceOrder[p.Source]; ok && i < len(c.sources) {
@@ -400,6 +420,7 @@ func (c *cataloger) finish() ([]Package, *OSRelease) {
 	c.pendingCounts = nil
 	c.orderedPending = false
 	c.skippedSources = nil
+	c.resolveOwnership()
 	c.installed = nil
 	sources := make([]string, 0, len(skipped))
 	for source := range skipped {
@@ -518,6 +539,7 @@ func scanFile(f File, add func(Package)) {
 }
 
 func scanFileWithPrefixes(f File, prefixes []string, add func(Package)) {
+	scanFileOwnership(f, add)
 	emit := add
 	add = func(p Package) {
 		if isDeclarationFile(f.Path) {
@@ -1631,7 +1653,7 @@ func npmBundlePath(p string, prefixes []string) bool {
 }
 
 // interestingPackageMetadata extends the shared selector for application
-// bundles and requirements variants without changing other input classes.
+// bundles, requirements variants, and distribution ownership file lists.
 func interestingPackageMetadata(p string) bool {
-	return interesting(p) || isNPMPackageJSON(p) || isDeclarationFile(p)
+	return interesting(p) || isNPMPackageJSON(p) || isDeclarationFile(p) || isDpkgList(p)
 }

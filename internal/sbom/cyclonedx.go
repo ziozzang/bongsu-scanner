@@ -219,6 +219,8 @@ func packageComponent(p scan.Package, ref string) cdxComponent {
 	c.Licenses = cdxLicenses(p.License)
 	addProperty(&c.Properties, "bscan:source", p.Source)
 	addProperty(&c.Properties, "bscan:evidence", p.Evidence)
+	addProperty(&c.Properties, "bscan:modularity", p.Modularity)
+	addProperty(&c.Properties, "bscan:owner", p.Owner)
 	addProperty(&c.Properties, "bscan:version-original", p.VersionOriginal)
 	if isBinarySource(p) {
 		addProperty(&c.Properties, "bscan:source-kind", "binary")

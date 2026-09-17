@@ -23,6 +23,8 @@ type File struct {
 //
 // Source is the path of the metadata file the package was discovered in.
 type Package struct {
+	Modularity    string `json:"modularity,omitempty"`
+	Owner         string `json:"owner,omitempty"`
 	Name          string `json:"name"`
 	Version       string `json:"version,omitempty"`
 	Type          string `json:"type,omitempty"`
@@ -40,9 +42,17 @@ type Package struct {
 	Layer         string `json:"layer,omitempty"`
 	Evidence      string `json:"evidence,omitempty"`
 
+	// Ownership transports bounded metadata paths through
+	// the parallel walk's gob spool. The catalog consumes and clears it before
+	// inventory retention; it is never part of JSON or SBOM output.
+	Ownership *packageOwnership `json:"-"`
+
 	// VersionOriginal preserves a manifest version before Maven normalization.
 	VersionOriginal string `json:"version_original,omitempty"`
 }
+
+// packageOwnership is internal transport state, consumed before retention.
+type packageOwnership struct{ Paths []string }
 
 // OSRelease is the parsed /etc/os-release of the scanned root.
 type OSRelease struct {

@@ -82,6 +82,8 @@ non-exact CPE applicability, and vendor `undetermined` status.
 | `release` | string | Optional normalized distribution release (e.g. Alpine `v3.20`). |
 | `upstream` | string | Optional source package name. |
 | `upstream_version` | string | Optional source package version used for matching. |
+| `modularity` | string | Optional RPM MODULARITYLABEL; CycloneDX `bscan:modularity`, SPDX `comment` note `modularity=<label>`. |
+| `owner` | string | Optional distribution owner, e.g. `rpm:python3-idna@2.5-8.el8_10`; CycloneDX `bscan:owner`, SPDX `comment` note `owner=<owner>`. Inventory is retained; language ecosystem matching is skipped. |
 | `properties` | object of string | Optional SBOM properties, including evidence/source paths; property names are preserved. |
 
 ## Advisory, affected entry and assessment
@@ -132,6 +134,8 @@ Selection describes requested feeds, not guaranteed matching coverage.
 | Reason | Counted when |
 | --- | --- |
 | `centos-stream-unsupported` | A Red Hat subject identifies CentOS Stream, which is not mapped to RHEL advisories. |
+| `distro-owned` | A language subject has a distribution owner. The owning OS package is matched through its own subject. |
+| `module-mismatch` | An RPM affected-entry/version/query check has a `.module+` build marker but the subject lacks MODULARITYLABEL, or vice versa. Counted after package/release filtering, including version nonmatches; repeated binary/source queries can count separately. |
 | `unknown-ecosystem` | A subject cannot be assigned a supported ecosystem. |
 | `ecosystem-not-in-database` | The subject ecosystem is absent from the catalog. |
 | `release-unknown` | Matching needs a distribution release but the subject has none. |

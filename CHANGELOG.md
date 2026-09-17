@@ -76,6 +76,9 @@ Historical entries are grouped by commit date rather than inferred release versi
 
 ### Fixed
 
+- Separate modular/non-modular RPM advisory matching and retain distro-owned
+  language inventory with SBOM ownership while skipping upstream matching.
+
 - Prioritize OS/package metadata when scanning large hosts; preserve partial
   scan diagnostics and propagate container failures and cancellation.
 - Lockfiles bundled inside installed packages no longer produce phantom

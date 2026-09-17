@@ -241,6 +241,12 @@ func spdxPackageFor(p scan.Package, id string) spdxPackage {
 		pkg.ExternalRefs = append(pkg.ExternalRefs, spdxRef{ReferenceCategory: "SECURITY", ReferenceType: "cpe23Type", ReferenceLocator: p.CPE})
 	}
 	var notes []string
+	if p.Modularity != "" {
+		notes = append(notes, "modularity="+p.Modularity)
+	}
+	if p.Owner != "" {
+		notes = append(notes, "owner="+p.Owner)
+	}
 	if p.VersionOriginal != "" {
 		notes = append(notes, "bscan:version-original="+p.VersionOriginal)
 	}

@@ -361,6 +361,16 @@ AUS, TUS, ELS, EUS long life, and enterprise_linux_eus) remain in the catalog
 under separate product/minor-version keys. They do not match ordinary hosts;
 fixed builds such as `*.el9_4` are not comparable with mainline builds and
 would cause false positives. Original OSV ecosystem names remain visible.
+RPM MODULARITYLABEL is preserved in SBOMs; affected entries with `.module+`
+versions match only labelled RPMs, and non-module entries match only unlabelled
+RPMs. Red Hat OSV does not identify module names/streams, so this separates
+module from non-module builds without distinguishing individual module streams.
+RPM/dpkg/APK-owned Python, npm and Ruby metadata stays in the SBOM with `bscan:owner`
+(CycloneDX) or `owner=` in the SPDX package comment; language advisory matching
+skips these subjects as `distro-owned` while matching their OS owners normally.
+Ownership retains only metadata paths, capped at 65,536 paths and 16 MiB of
+path/owner text per scan (also bounded per RPM/APK package); incomplete or
+conflicting ownership keeps language matching enabled.
 
 Output and signing depend on the target:
 

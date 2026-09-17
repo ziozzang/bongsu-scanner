@@ -49,8 +49,10 @@ type preparedRecord struct {
 }
 
 // Only evaluated outcomes survive the visitor; parsed version ranges and maps
-// are scratch space for one affected entry. Quiet misses need no retained row.
+// are scratch space for one affected entry. RPM misses retain a row so module
+// mismatches can be counted before deciding applicability for each subject.
 type evaluatedAffected struct {
+	modular                      bool
 	version, release             string
 	unimportant                  bool
 	distroStatus, distroSeverity string
@@ -230,6 +232,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		if vulndb.NormalizeName(eco, packageName) != name {
 			continue
 		}
+		modular := moduleAffected(a)
 		prepared := cache.prepareAffected(eco, a)
 		release := vulndb.EcosystemRelease(a.Ecosystem)
 		urgency := distroSeverity(r, a)
@@ -249,7 +252,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 			if !hit && !marker {
 				entryStatus, entryUrgency = "", ""
 			}
-			if !hit && reason == "" && entryStatus == "" && entryUrgency == "" {
+			if !hit && reason == "" && entryStatus == "" && entryUrgency == "" && !rpmEcosystem(eco) {
 				continue
 			}
 			if hit && detail == nil {
@@ -257,7 +260,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 				sev, score, vector := cache.severity(r, a)
 				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
 			}
-			result := evaluatedAffected{version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
+			result := evaluatedAffected{modular: modular, version: v, release: release, unimportant: entryUrgency == "unimportant" || entryUrgency == "negligible", distroStatus: entryStatus, distroSeverity: entryUrgency, versionMatch: versionMatch{hit, fixed, low, reason}}
 			// A range-free unimportant/negligible marker can be counted as
 			// excluded, but cannot lower a positive alias entry's rating.
 			if !hit && result.unimportant {
@@ -450,4 +453,28 @@ func canonicalBytes(values map[string]string) int64 {
 		n += int64(len(k) + len(v))
 	}
 	return n
+}
+
+func moduleAffected(a vulndb.Affected) bool {
+	for _, v := range a.Versions {
+		if strings.Contains(v, ".module+") {
+			return true
+		}
+	}
+	for _, r := range a.Ranges {
+		for _, e := range r.Events {
+			if strings.Contains(e.Fixed, ".module+") || strings.Contains(e.Introduced, ".module+") || strings.Contains(e.LastAffected, ".module+") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rpmEcosystem(eco string) bool {
+	switch eco {
+	case "Red Hat", "Rocky Linux", "AlmaLinux", "SUSE", "openSUSE":
+		return true
+	}
+	return false
 }
