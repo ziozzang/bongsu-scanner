@@ -32,6 +32,12 @@ Historical entries are grouped by commit date rather than inferred release versi
   configuration, signatures and archive handling (`make fuzz-smoke`).
 - Dockerfile, systemd/cron deployment examples, `make dist`/`image`,
   darwin/windows/freebsd builds and multi-arch image publishing.
+- Binary runtime classification (python, node, ruby, java, openssl,
+  busybox, php, perl, nginx, httpd, redis, postgres, mysql/mariadb, curl,
+  sqlite, zlib, glibc, musl, bash) with CPEs; opt-in `--cpe` matching
+  against NVD configurations; `registry://` and `oci://` targets that pull
+  images without a Docker daemon; configuration-file defaults for scan,
+  match and db options with `bscan config show|init`.
 
 ### Changed
 
@@ -64,6 +70,13 @@ Historical entries are grouped by commit date rather than inferred release versi
   normalization idempotence.
 - `--fail-on-partial` exits 3; interruption prints one line and exits 130;
   stdout carries only primary results.
+- Matching no longer lets an unmatched range's urgency remove other hits;
+  rubysec ranges follow bundler-audit semantics; catalog readers detect
+  same-tick modifications through the SQLite change counter.
+- Registry client hardening (HTTPS for credentials and redirects, no
+  server text in errors, sanitized references in logs, manifest cache and
+  request budget, Retry-After); classifier requires exact names and
+  product markers; CPE attributes normalized consistently.
 - Correct OSV limits, distro source-package/release matching, PURL-only
   affected records, package-level severity and ambiguous multi-CVE grouping.
 - Correct language lockfile parsing, SPDX fields, CycloneDX identifiers,
