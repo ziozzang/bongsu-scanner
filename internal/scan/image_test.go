@@ -918,9 +918,10 @@ func TestSeekableOuterOffsets(t *testing.T) {
 }
 
 func TestCompressedOuterArchiveSpillsLargeBlobsToDisk(t *testing.T) {
-	// A layer above maxMetadata inside a gzip-compressed outer archive must be
+	setTestLimit(t, &maxFileMetadata, 1<<20)
+	// A layer above maxFileMetadata inside a gzip-compressed outer archive must be
 	// buffered through a temp file (the outer stream is not seekable).
-	big := bytes.Repeat([]byte{0}, maxMetadata+4096)
+	big := bytes.Repeat([]byte{0}, int(maxFileMetadata)+4096)
 	layer := buildTar(t, []tarEntry{{name: "usr/share/blob.bin", data: big}, {name: "etc/os-release", data: []byte("ID=alpine\n")}})
 	p := writeTemp(t, "big.tgz", gzipBytes(t, dockerArchive(t, layer)))
 	r, err := Archive(p, Options{Now: time.Unix(1, 0)})

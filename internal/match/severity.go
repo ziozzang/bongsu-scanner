@@ -123,7 +123,34 @@ func normalizeSeverity(s string) string {
 		return "UNKNOWN"
 	}
 }
+
+type cvssResult struct {
+	score float64
+	err   error
+}
+
+func (c *versionCache) cvssBase(vector string) (float64, error) {
+	if result, ok := c.cvss[vector]; ok {
+		return result.score, result.err
+	}
+	score, err := CVSSBase(vector)
+	// A Run sees many advisories with the same vectors. Bound both entry count
+	// and individual key length so malformed feed data cannot pin large text.
+	if len(vector) <= 1024 {
+		if len(c.cvss) >= 1024 {
+			clear(c.cvss)
+		}
+		c.cvss[vector] = cvssResult{score, err}
+	}
+	return score, err
+}
+func (c *versionCache) severity(rec vulndb.Record, a vulndb.Affected) (string, float64, string) {
+	return severityWithCVSS(rec, a, c.cvssBase)
+}
 func severity(rec vulndb.Record, a vulndb.Affected) (string, float64, string) {
+	return severityWithCVSS(rec, a, CVSSBase)
+}
+func severityWithCVSS(rec vulndb.Record, a vulndb.Affected, cvss func(string) (float64, error)) (string, float64, string) {
 	severities := a.Severity
 	if len(severities) == 0 {
 		severities = rec.Severity
@@ -135,7 +162,7 @@ func severity(rec vulndb.Record, a vulndb.Affected) (string, float64, string) {
 			if s.Type != typ {
 				continue
 			}
-			if n, e := CVSSBase(s.Score); e == nil && n > best {
+			if n, e := cvss(s.Score); e == nil && n > best {
 				best, vector = n, s.Score
 			}
 		}

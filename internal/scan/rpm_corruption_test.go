@@ -192,12 +192,17 @@ func TestRPMNDBDefenses(t *testing.T) {
 }
 
 func TestRPMWalkCapsHashesAndCorruption(t *testing.T) {
+	smallRPMTestLimits(t)
+	testRPMWalkCapsHashesAndCorruption(t)
+}
+
+func testRPMWalkCapsHashesAndCorruption(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		size   int64
 		broken bool
 	}{
-		{"small", 0, false}, {"large", 17 << 20, false}, {"cap", 256 << 20, false}, {"oversized", (256 << 20) + 1, false}, {"corrupt", 0, true},
+		{"small", 0, false}, {"large", maxFileMetadata + 4096, false}, {"cap", maxRPMDatabase, false}, {"oversized", maxRPMDatabase + 1, false}, {"corrupt", 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -223,7 +228,7 @@ func TestRPMWalkCapsHashesAndCorruption(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.size > 256<<20 {
+			if tc.size > maxRPMDatabase {
 				if len(r.Packages) != 0 || r.Scan.MetadataSkipped != 1 {
 					t.Fatalf("%+v", r.Scan)
 				}

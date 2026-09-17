@@ -1,0 +1,52 @@
+# Secrets: GITHUB_TOKEN is provided automatically (contents: write below).
+# Optional BONGSU_RELEASE_KEY: unencrypted Ed25519 PKCS#8 PEM private key.
+# Pin its public half in selfupdate.ReleasePublicKey before publishing binaries.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release assets
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$TAG" -o "dist/bscan_${TAG#v}_linux_x86_64" ./cmd/bscan
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=$TAG" -o "dist/bscan_${TAG#v}_linux_arm64" ./cmd/bscan
+          (cd dist && sha256sum "bscan_${TAG#v}_linux_x86_64" "bscan_${TAG#v}_linux_arm64" > SHA256SUMS)
+          cp LICENSE THIRD_PARTY_NOTICES.txt dist/
+      - name: Sign checksums when a release key is configured
+        env:
+          BONGSU_RELEASE_KEY: ${{ secrets.BONGSU_RELEASE_KEY }}
+        run: |
+          if [ -z "$BONGSU_RELEASE_KEY" ]; then
+            echo 'BONGSU_RELEASE_KEY is unset; publishing unsigned checksums.'
+            exit 0
+          fi
+          umask 077
+          BONGSU_HOME="$(mktemp -d)"
+          export BONGSU_HOME
+          trap 'rm -rf "$BONGSU_HOME"' EXIT
+          printf '%s\n' "$BONGSU_RELEASE_KEY" > "$BONGSU_HOME/signing.key"
+          unset BONGSU_RELEASE_KEY
+          openssl pkey -in "$BONGSU_HOME/signing.key" -pubout -out "$BONGSU_HOME/signing.pub"
+          "./dist/bscan_${TAG#v}_linux_x86_64" sign -o dist/SHA256SUMS.sig dist/SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" dist/*

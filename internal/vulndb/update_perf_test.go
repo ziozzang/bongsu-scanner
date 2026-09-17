@@ -17,6 +17,9 @@ import (
 // These opt-in workload tests leave production profiling and network behavior
 // untouched. Compile with go test -c, then use -test.cpuprofile/-test.memprofile.
 func TestPerformanceUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	home := os.Getenv("BSCAN_PERF_HOME")
 	if home == "" {
 		t.Skip("set BSCAN_PERF_HOME to run the real feed workload")
@@ -76,6 +79,9 @@ type performanceTransport func(*http.Request) (*http.Response, error)
 func (f performanceTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestPerformanceLookups(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	dir, out := os.Getenv("BSCAN_PERF_DB"), os.Getenv("BSCAN_PERF_DUMP")
 	if dir == "" || out == "" {
 		t.Skip("set BSCAN_PERF_DB and BSCAN_PERF_DUMP")
@@ -159,6 +165,9 @@ func BenchmarkOSVZipSQLite50K(b *testing.B) {
 // Conversion preserves ingestion times, allowing unnormalized, byte-for-byte
 // lookup comparisons against the original real catalog after builder changes.
 func TestPerformanceConvert(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	src, dst := os.Getenv("BSCAN_PERF_DB"), os.Getenv("BSCAN_PERF_CONVERT")
 	if src == "" || dst == "" {
 		t.Skip("set BSCAN_PERF_DB and BSCAN_PERF_CONVERT")

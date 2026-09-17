@@ -252,6 +252,9 @@ func TestLoadAndOutput(t *testing.T) {
 	}
 }
 func TestExistingHostSBOMs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	for _, name := range []string{"../../host.cdx.json", "../../host.spdx.json"} {
 		t.Run(name, func(t *testing.T) {
 			if _, e := os.Stat(name); os.IsNotExist(e) {
@@ -359,6 +362,9 @@ func TestSeverityAndFixedFilters(t *testing.T) {
 	}
 }
 func TestHostFixtureOSParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	for _, name := range []string{"../../host.cdx.json", "../../host.spdx.json"} {
 		if _, e := os.Stat(name); os.IsNotExist(e) {
 			t.Skip("host fixture absent")

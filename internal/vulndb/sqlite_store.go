@@ -262,7 +262,20 @@ func (s *sqliteStore) LookupContext(ctx context.Context, ecosystem, name string)
 // LookupFunc visits independently owned records in advisory-ID order. The
 // callback must not issue another query on this store's pinned connection.
 // Callers must discard partial results if the final integrity check fails.
-func (s *sqliteStore) LookupFunc(ctx context.Context, ecosystem, name string, fn func(*Record) error) (err error) {
+func (s *sqliteStore) LookupFunc(ctx context.Context, ecosystem, name string, fn func(*Record) error) error {
+	return s.lookupFunc(ctx, ecosystem, name, false, fn)
+}
+
+// LookupMatchingFunc borrows the Record and its outer Affected slice until the
+// callback returns. Nested values are independently owned: callers may retain
+// identities, text, and copies of individual Affected values. This lets the
+// matcher discard one decoded advisory before reading the next without repeated
+// allocation of large outer affected arrays. The ordinary visitor stays owning.
+func (s *sqliteStore) LookupMatchingFunc(ctx context.Context, ecosystem, name string, fn func(*Record) error) error {
+	return s.lookupFunc(ctx, ecosystem, name, true, fn)
+}
+
+func (s *sqliteStore) lookupFunc(ctx context.Context, ecosystem, name string, borrowed bool, fn func(*Record) error) (err error) {
 	defer func() {
 		if changed := s.checkUnmodified(); changed != nil {
 			err = errors.Join(err, changed)
@@ -274,16 +287,11 @@ func (s *sqliteStore) LookupFunc(ctx context.Context, ecosystem, name string, fn
 		return err
 	}
 	defer rows.Close()
-	decoder := sqliteReadDecoders.Get().(*sqliteReadDecoder)
-	defer func() {
-		decoder.input.Reset(nil)
-		// Do not retain unusually large advisory buffers in the pool.
-		if decoder.output.Cap() <= 1<<20 {
-			sqliteReadDecoders.Put(decoder)
-		}
-	}()
+	decoder := takeSQLiteReadDecoder()
+	defer func() { releaseSQLiteReadDecoder(decoder) }()
+	var scratch []Affected
 	for rows.Next() {
-		var b []byte
+		var b sql.RawBytes
 		if err = rows.Scan(&b); err != nil {
 			return err
 		}
@@ -291,8 +299,15 @@ func (s *sqliteStore) LookupFunc(ctx context.Context, ecosystem, name string, fn
 			return errors.New("SQLite advisory exceeds 64 MiB")
 		}
 		var r Record
+		if borrowed {
+			clear(scratch)
+			r.Affected = scratch[:0]
+		}
 		if err = decoder.decode(b, &r); err != nil {
 			return err
+		}
+		if borrowed {
+			scratch = r.Affected
 		}
 		if err = ctx.Err(); err != nil {
 			return err
@@ -408,7 +423,30 @@ type sqliteReadDecoder struct {
 	reader io.ReadCloser
 }
 
-var sqliteReadDecoders = sync.Pool{New: func() any { return new(sqliteReadDecoder) }}
+// A bounded pool prevents one decoder per scheduler P (and an occasional
+// oversized advisory buffer) from remaining resident after concurrent lookups.
+var sqliteReadDecoders = make(chan *sqliteReadDecoder, 2)
+
+func takeSQLiteReadDecoder() *sqliteReadDecoder {
+	select {
+	case d := <-sqliteReadDecoders:
+		return d
+	default:
+		return new(sqliteReadDecoder)
+	}
+}
+func releaseSQLiteReadDecoder(d *sqliteReadDecoder) {
+	d.input.Reset(nil)
+	if d.output.Cap() > 64<<10 {
+		d.output = bytes.Buffer{}
+	} else {
+		d.output.Reset()
+	}
+	select {
+	case sqliteReadDecoders <- d:
+	default:
+	}
+}
 
 func (d *sqliteReadDecoder) decode(data []byte, record *Record) error {
 	d.input.Reset(data)

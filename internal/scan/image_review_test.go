@@ -15,7 +15,11 @@ import (
 )
 
 func TestImageReviewOuterRetention(t *testing.T) {
-	blob := bytes.Repeat([]byte{0}, 8<<20)
+	testImageReviewOuterRetention(t, 64<<10)
+}
+
+func testImageReviewOuterRetention(t *testing.T, blobSize int) {
+	blob := bytes.Repeat([]byte{0}, blobSize)
 	var entries []tarEntry
 	for i := 0; i < 12; i++ {
 		entries = append(entries, tarEntry{name: fmt.Sprintf("blobs/sha256/%064x", i), data: blob})
@@ -23,6 +27,8 @@ func TestImageReviewOuterRetention(t *testing.T) {
 	layer := buildTar(t, []tarEntry{{name: "etc/os-release", data: []byte("ID=alpine\n")}})
 	entries = append(entries, tarEntry{name: "layer.tar", data: layer}, tarEntry{name: "config.json", data: []byte(`{"os":"linux","architecture":"amd64"}`)}, tarEntry{name: "manifest.json", data: mustJSON(t, []dockerManifest{{Config: "config.json", Layers: []string{"layer.tar"}}})})
 	p := writeTemp(t, "outer.gz", gzipBytes(t, buildTar(t, entries)))
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	a, err := indexOuter(context.Background(), p, formatGzip, true, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +37,7 @@ func TestImageReviewOuterRetention(t *testing.T) {
 	// Exercise retention separately from the cumulative decompression limit.
 	a.budget = 128
 	u := newUnpacker(context.Background(), Options{})
+	defer u.Close()
 	if _, _, err := u.unpackDockerArchive(a); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +56,10 @@ func TestImageReviewOuterRetention(t *testing.T) {
 	}
 	if string(u.fs["etc/os-release"].Data) != "ID=alpine\n" {
 		t.Fatal("selected layer lost")
+	}
+	a.Close()
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("retention cleanup leaked temporary files: %v, %v", entries, err)
 	}
 }
 

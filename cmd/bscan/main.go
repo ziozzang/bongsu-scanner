@@ -203,6 +203,7 @@ func cmdKey(args []string) error {
 }
 
 type scanFlags struct {
+	scanMatchFlags
 	format, output string
 	sign, noSign   bool
 	files          bool
@@ -230,6 +231,7 @@ type scanFlags struct {
 
 func addScanFlags(fs *flag.FlagSet) *scanFlags {
 	f := &scanFlags{}
+	addScanMatchFlags(fs, &f.scanMatchFlags)
 	fs.StringVar(&f.format, "format", "both", "spdx, cyclonedx, or both")
 	fs.StringVar(&f.output, "output", ".", "output directory")
 	fs.BoolVar(&f.sign, "sign", false, "sign SBOMs, or the SHA manifest for a local archive")
@@ -372,6 +374,13 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 	if f.maxFiles < 0 || f.timeout < 0 {
 		return nil, errors.New("--max-files and --timeout must not be negative")
 	}
+	matching, err := prepareScanMatch(ctx, f.scanMatchFlags)
+	if err != nil {
+		return nil, err
+	}
+	if matching != nil {
+		defer matching.store.Close()
+	}
 	if err := resolveScanSigning(&f); err != nil {
 		return nil, err
 	}
@@ -437,6 +446,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		return nil, err
 	}
 	var outputs []string
+	failed := false
 	for _, r := range results {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -446,10 +456,21 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 			return nil, err
 		}
 		outputs = append(outputs, written...)
+		if matching != nil {
+			paths, meetsThreshold, err := matching.write(ctx, written, f.outputPaths, r.Name)
+			outputs = append(outputs, paths...)
+			if err != nil {
+				return outputs, err
+			}
+			failed = failed || meetsThreshold
+		}
 		fmt.Printf("scan complete: %s (%d packages, %d files, %d layers)\n", r.Name, len(r.Packages), len(r.Files), len(r.Layers))
 	}
 	for _, out := range outputs {
 		fmt.Println(out)
+	}
+	if failed {
+		scanErr = errors.Join(scanErr, &findingsError{threshold: matching.threshold})
 	}
 	return outputs, scanErr
 }

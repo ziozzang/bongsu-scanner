@@ -12,6 +12,9 @@ import (
 // TestRealInputProfile is opt-in so ordinary tests need no external database.
 // go test -run TestRealInputProfile -cpuprofile cpu.out ./internal/match
 func TestRealInputProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	db, input := os.Getenv("MATCH_PROFILE_DB"), os.Getenv("MATCH_PROFILE_SBOM")
 	if db == "" || input == "" {
 		t.Skip("set MATCH_PROFILE_DB and MATCH_PROFILE_SBOM")

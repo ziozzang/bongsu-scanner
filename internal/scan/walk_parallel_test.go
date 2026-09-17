@@ -32,6 +32,9 @@ func compareWalkStates(t *testing.T, got, want *walkState) {
 // Run under -race: 50,000 files exercise concurrent probing, parsing,
 // exclusion accounting and a deliberately unsynchronized progress callback.
 func TestWalkParallel50000Equality(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	root := t.TempDir()
 	for dir := range 500 {
 		p := filepath.Join(root, fmt.Sprintf("dir-%03d", dir))

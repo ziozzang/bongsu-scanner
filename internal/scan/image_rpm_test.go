@@ -15,7 +15,7 @@ import (
 	"testing"
 )
 
-// Stream the fixture so the oversized case does not allocate a 257 MiB slice.
+// Stream the fixture so even the opt-in full-size case needs no large slice.
 func imageRPMLayer(t *testing.T, db, name string, links []tarEntry) ([]byte, string) {
 	t.Helper()
 	f, err := os.Open(db)
@@ -80,7 +80,12 @@ func assertImageRPM(t *testing.T, r Result, epoch int, source string) {
 }
 
 func TestImageRPMOCI(t *testing.T) {
-	for _, size := range []int64{0, 20 << 20, maxRPMDatabase + 1} {
+	smallRPMTestLimits(t)
+	testImageRPMOCI(t)
+}
+
+func testImageRPMOCI(t *testing.T) {
+	for _, size := range []int64{0, maxFileMetadata + 4096, maxRPMDatabase, maxRPMDatabase + 1} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			db := rpmTestSQLite(t, rpmTestHeader(2))
 			if size != 0 {
@@ -112,9 +117,10 @@ func TestImageRPMOCI(t *testing.T) {
 }
 
 func TestImageRPMLinksAndLayers(t *testing.T) {
+	smallRPMTestLimits(t)
 	const rpmPath = "var/lib/rpm/rpmdb.sqlite"
 	db := rpmTestSQLite(t, rpmTestHeader(2))
-	if err := os.Truncate(db, 20<<20); err != nil {
+	if err := os.Truncate(db, maxFileMetadata+4096); err != nil {
 		t.Fatal(err)
 	}
 	for _, typ := range []byte{tar.TypeSymlink, tar.TypeLink} {
@@ -211,8 +217,9 @@ func TestImageRPMCleanupFailure(t *testing.T) {
 }
 
 func TestImageRPMLargeSymlink(t *testing.T) {
+	smallRPMTestLimits(t)
 	db := rpmTestSQLite(t, rpmTestHeader(2))
-	if err := os.Truncate(db, 20<<20); err != nil {
+	if err := os.Truncate(db, maxFileMetadata+4096); err != nil {
 		t.Fatal(err)
 	}
 	const rpmPath = "var/lib/rpm/rpmdb.sqlite"
@@ -307,8 +314,9 @@ func (r *imageRPMCancelReader) Read(p []byte) (int, error) {
 }
 
 func TestImageRPMRootfs(t *testing.T) {
+	smallRPMTestLimits(t)
 	db := rpmTestSQLite(t, rpmTestHeader(2))
-	if err := os.Truncate(db, 20<<20); err != nil {
+	if err := os.Truncate(db, maxFileMetadata+4096); err != nil {
 		t.Fatal(err)
 	}
 	blob, _ := imageRPMLayer(t, db, "var/lib/rpm/rpmdb.sqlite", nil)

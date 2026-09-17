@@ -105,6 +105,9 @@ func largeResult(n int) scan.Result {
 }
 
 func TestStreamingByteIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	escaped := fixture()
 	escaped.Name = "<tag>&\"\n\t한글\u2028\u2029\xff"
 	escaped.Host = &scan.HostMetadata{Hostname: escaped.Name}
@@ -171,6 +174,9 @@ func checkRenderIdentity(t *testing.T, name string, r scan.Result) {
 // Optional integration check renders both implementations from exactly one
 // real Result; independent CLI scans have different timestamps and host state.
 func TestRealResultByteIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	target := os.Getenv("P4_REAL_TARGET")
 	if target == "" {
 		t.Skip("set P4_REAL_TARGET to compare a real scan")

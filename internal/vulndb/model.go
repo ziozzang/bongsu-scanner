@@ -130,9 +130,14 @@ func BaseEcosystem(e string) string {
 	return e
 }
 
-// EcosystemRelease returns the release suffix: "Alpine:v3.20" -> "v3.20".
+// EcosystemRelease returns the release used for indexing and matching:
+// "Alpine:v3.20" -> "v3.20", "Ubuntu:Pro:24.04:LTS" -> "24.04".
+// Affected.Ecosystem retains the original OSV spelling for display.
 func EcosystemRelease(e string) string {
 	if i := strings.IndexByte(e, ':'); i > 0 {
+		if e[:i] == "Ubuntu" {
+			return NormalizeUbuntuRelease(e[i+1:])
+		}
 		return e[i+1:]
 	}
 	return ""

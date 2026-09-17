@@ -26,6 +26,36 @@ func NormalizeDebianRelease(release string) string {
 	return release
 }
 
+// NormalizeUbuntuRelease maps SBOM distro values and OSV LTS/Pro (ESM)
+// suffixes to the same Ubuntu release. Unknown product streams, including
+// FIPS, retain their scope instead of matching ordinary Ubuntu packages.
+func NormalizeUbuntuRelease(release string) string {
+	release = strings.TrimSpace(release)
+	release = strings.TrimPrefix(release, "Ubuntu:")
+	release = strings.TrimPrefix(release, "ubuntu-")
+	switch release {
+	case "bionic":
+		return "18.04"
+	case "focal":
+		return "20.04"
+	case "jammy":
+		return "22.04"
+	case "noble":
+		return "24.04"
+	case "plucky":
+		return "25.04"
+	case "questing":
+		return "25.10"
+	case "resolute":
+		return "26.04"
+	}
+	version := strings.TrimSuffix(strings.TrimPrefix(release, "Pro:"), ":LTS")
+	if len(version) == 5 && version[2] == '.' && strings.Trim(version[:2]+version[3:], "0123456789") == "" {
+		return version
+	}
+	return release
+}
+
 func (debianSource) Name() string { return SourceDebian }
 
 func (debianSource) Feeds(opts *Options) ([]Feed, error) {

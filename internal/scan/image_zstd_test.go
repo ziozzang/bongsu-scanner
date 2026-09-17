@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -180,11 +181,16 @@ func TestZstdDockerAndRootfsReopen(t *testing.T) {
 }
 
 func TestZstdDecompressionBomb(t *testing.T) {
-	// Concatenated 1 MiB frames represent 20 GiB without allocating it, either
+	setTestLimit(t, &maxLayerBytes, 4<<20)
+	testZstdDecompressionBomb(t)
+}
+
+func testZstdDecompressionBomb(t *testing.T) {
+	// Concatenated 1 MiB frames exceed the budget without allocating it, either
 	// during fixture generation or decoding. The outer budget must stop early,
 	// including when the entire expansion is padding after tar EOF.
 	frame := zstdBytes(t, make([]byte, 1<<20))
-	const expanded int64 = 20 << 30
+	expanded := maxLayerBytes + maxLayerBytes/4
 	bomb := bytes.Repeat(frame, int(expanded/(1<<20)))
 	for _, padding := range []bool{false, true} {
 		var prefix []byte
@@ -193,24 +199,30 @@ func TestZstdDecompressionBomb(t *testing.T) {
 		} else {
 			var b bytes.Buffer
 			tw := tar.NewWriter(&b)
-			if err := tw.WriteHeader(&tar.Header{Name: "unused", Mode: 0600, Size: 8 << 30}); err != nil {
+			if err := tw.WriteHeader(&tar.Header{Name: "unused", Mode: 0600, Size: maxLayerBytes / 2}); err != nil {
 				t.Fatal(err)
 			}
 			prefix = b.Bytes()
 		}
 		data := append(zstdBytes(t, prefix), bomb...)
-		_, err := Archive(writeTemp(t, "bomb", data), Options{MaxTotalBytes: 2 << 20})
+		p := writeTemp(t, "bomb", data)
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
+		_, err := Archive(p, Options{MaxTotalBytes: 2 << 20})
 		if err == nil || !strings.Contains(err.Error(), "decompression limit exceeded") {
 			t.Fatalf("padding=%t: %v", padding, err)
 		}
+		if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+			t.Fatalf("failed decompression leaked temporary files: %v, %v", entries, err)
+		}
 	}
 	// A layer's full stream cap also covers concatenated frames after tar EOF.
-	// This really decodes through the 16 GiB cap, retaining only a small window.
+	// This decodes through the configured cap, retaining only a small window.
 	_, err := newUnpacker(context.Background(), Options{}).applyLayer(bytes.NewReader(bomb), int64(len(bomb)), layerCheck{name: "padding-bomb"})
 	if err == nil || !strings.Contains(err.Error(), "decompression limit exceeded") {
 		t.Fatalf("layer stream cap: %v", err)
 	}
-	// A 20 GiB file is also rejected by the existing per-layer cap, before its
+	// An oversized file is also rejected by the per-layer cap, before its
 	// payload is hashed or retained.
 	var b bytes.Buffer
 	tw := tar.NewWriter(&b)

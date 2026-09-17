@@ -12,6 +12,9 @@ import (
 // Opt-in comparison of schema builds using exactly the same real Records.
 // The source is read-only; the destination must not already exist.
 func TestSQLiteRealCatalogRebuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large fixture or external integration; run without -short")
+	}
 	source, destination := os.Getenv("BSCAN_SQLITE_SOURCE"), os.Getenv("BSCAN_SQLITE_DEST")
 	if source == "" || destination == "" {
 		t.Skip("set BSCAN_SQLITE_SOURCE and BSCAN_SQLITE_DEST for real-catalog measurement")

@@ -244,6 +244,9 @@ func sameOS(a, b *OSInfo) bool {
 		strings.TrimSpace(a.Codename) == strings.TrimSpace(b.Codename)
 }
 func release(eco, v string) string {
+	if eco == "Ubuntu" {
+		return vulndb.NormalizeUbuntuRelease(v)
+	}
 	// OSV distribution suffixes are not uniform. Rocky/Alma use major
 	// versions; openSUSE uses product names, and SUSE uses service packs.
 	// Red Hat additionally requires repository/product metadata absent
@@ -295,18 +298,13 @@ func release(eco, v string) string {
 		return ""
 	}
 	switch eco {
-	case "Debian", "Ubuntu", "Alpine":
+	case "Debian", "Alpine":
 	default:
 		return ""
 	}
 	v = strings.TrimPrefix(v, strings.ToLower(eco)+"-")
 	if eco == "Debian" {
 		if numeric := map[string]string{"buster": "10", "bullseye": "11", "bookworm": "12", "trixie": "13", "forky": "14", "sid": "sid", "unstable": "sid"}[v]; numeric != "" {
-			v = numeric
-		}
-	}
-	if eco == "Ubuntu" {
-		if numeric := map[string]string{"bionic": "18.04", "focal": "20.04", "jammy": "22.04", "noble": "24.04"}[v]; numeric != "" {
 			v = numeric
 		}
 	}

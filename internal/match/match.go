@@ -65,22 +65,24 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 	for _, id := range opts.IgnoreIDs {
 		ignored[strings.TrimSpace(id)] = true
 	}
-	cache := map[string][]preparedRecord{}
+	cache := newLookupCache[[]preparedRecord](32 << 20)
 	versions := newVersionCache()
-	canonicalCache := map[string]map[string]string{}
-	queryVersions := map[string]map[string]bool{}
-	queryReleases := map[string]map[string]bool{}
-	lastQuery := map[string]int{}
+	canonicalCache := newLookupCache[map[string]string](8 << 20)
+	plans := map[string]*lookupPlan{}
 	for i, s := range subjects {
+		if subjectSkip(s, coverage) != "" {
+			continue
+		}
 		for _, q := range subjectQueries(s) {
 			key := s.Ecosystem + "\x00" + vulndb.NormalizeName(s.Ecosystem, q.name)
-			if queryVersions[key] == nil {
-				queryVersions[key] = map[string]bool{}
-				queryReleases[key] = map[string]bool{}
+			plan := plans[key]
+			if plan == nil {
+				plan = new(lookupPlan)
+				plans[key] = plan
 			}
-			queryVersions[key][q.ver] = true
-			queryReleases[key][s.Release] = true
-			lastQuery[key] = i
+			plan.versions = appendDistinct(plan.versions, q.ver)
+			plan.releases = appendDistinct(plan.releases, s.Release)
+			plan.last = i
 		}
 	}
 	found := map[string]int{}
@@ -88,28 +90,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		if s.Ecosystem == "" {
-			report.Skipped["unknown-ecosystem"]++
-			continue
-		}
-		releases, present := coverage[s.Ecosystem]
-		if !present {
-			report.Skipped["ecosystem-not-in-database"]++
-			continue
-		}
-		if s.Release == "" && (!releases[""] || s.Ecosystem == "Debian" || s.Ecosystem == "Ubuntu" || s.Ecosystem == "Alpine") {
-			report.Skipped["release-unknown"]++
-			continue
-		}
-		if !releases[""] && !releases[s.Release] {
-			report.Skipped["release-not-in-database"]++
-			continue
-		}
-		// Distribution package subjects may carry only an upstream/source
-		// version. Keep those usable for the upstream query below; a binary
-		// version is not required when UpstreamVersion is present.
-		if s.Version == "" && s.UpstreamVersion == "" {
-			report.Skipped["missing-version"]++
+		if reason := subjectSkip(s, coverage); reason != "" {
+			report.Skipped[reason]++
 			continue
 		}
 		queries := subjectQueries(s)
@@ -118,13 +100,23 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		for qi, q := range queries {
 			queries[qi].name = vulndb.NormalizeName(s.Ecosystem, q.name)
 			key := s.Ecosystem + "\x00" + queries[qi].name
-			records, ok := cache[key]
+			records, ok := cache.get(key)
+			// Reuse duplicate upstream/binary queries even when an oversized
+			// result is deliberately excluded from the bounded shared cache.
+			for previous := 0; previous < qi; previous++ {
+				if queries[previous].name == queries[qi].name {
+					records, ok = queryRecords[previous], true
+					break
+				}
+			}
 			if !ok {
-				records, err = lookupPrepared(ctx, store, versions, opts.Details, s.Ecosystem, queries[qi].name, queryVersions[key], queryReleases[key])
+				records, err = lookupPrepared(ctx, store, versions, opts.Details, s.Ecosystem, queries[qi].name, stringSet(plans[key].versions), stringSet(plans[key].releases))
 				if err != nil {
 					return report, fmt.Errorf("lookup %s/%s: %w", s.Ecosystem, q.name, err)
 				}
-				cache[key] = records
+				if plans[key].last > si {
+					cache.put(key, records, preparedBytes(records))
+				}
 			}
 			if len(records) > 0 {
 				canonicalKey += key + "\x00"
@@ -133,11 +125,12 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		}
 		for _, q := range queries {
 			key := s.Ecosystem + "\x00" + q.name
-			if lastQuery[key] == si {
-				delete(cache, key)
+			if plan := plans[key]; plan != nil && plan.last == si {
+				cache.remove(key)
+				delete(plans, key)
 			}
 		}
-		canonical, ok := canonicalCache[canonicalKey]
+		canonical, ok := canonicalCache.get(canonicalKey)
 		if !ok {
 			var identities []advisoryIdentity
 			for _, records := range queryRecords {
@@ -146,7 +139,7 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 				}
 			}
 			canonical = aliasIdentityIDs(identities)
-			canonicalCache[canonicalKey] = canonical
+			canonicalCache.put(canonicalKey, canonical, canonicalBytes(canonical))
 		}
 		for qi, q := range queries {
 			for _, rec := range queryRecords[qi] {
@@ -164,21 +157,17 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 					continue
 				}
 				for _, prepared := range rec.affected {
-					a := prepared.affected
-					if prepared.ecosystem != s.Ecosystem {
+					if prepared.version != q.ver {
 						continue
 					}
 					if rel := prepared.release; rel != "" && rel != s.Release {
-						continue
-					}
-					if prepared.name != q.name {
 						continue
 					}
 					if !opts.IncludeUnimportant && prepared.unimportant {
 						report.Skipped["unimportant"]++
 						continue
 					}
-					result := prepared.matches[q.ver]
+					result := prepared.versionMatch
 					affected, fixed, low, reason := result.hit, result.fixed, result.low, result.reason
 					if !affected {
 						if reason != "" {
@@ -186,7 +175,8 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 						}
 						continue
 					}
-					sev, score, vector := prepared.severity, prepared.score, prepared.vector
+					a := prepared.detail.affected
+					sev, score, vector := prepared.detail.severity, prepared.detail.score, prepared.detail.vector
 					if opts.MinSeverity != "" && SeverityRank(sev) < SeverityRank(opts.MinSeverity) {
 						continue
 					}
@@ -228,6 +218,27 @@ func Run(ctx context.Context, store vulndb.Store, subjects []Subject, opts Optio
 		return a.Subject.Ref < b.Subject.Ref
 	})
 	return report, nil
+}
+
+func subjectSkip(s Subject, coverage map[string]map[string]bool) string {
+	if s.Ecosystem == "" {
+		return "unknown-ecosystem"
+	}
+	releases, present := coverage[s.Ecosystem]
+	if !present {
+		return "ecosystem-not-in-database"
+	}
+	if s.Release == "" && (!releases[""] || s.Ecosystem == "Debian" || s.Ecosystem == "Ubuntu" || s.Ecosystem == "Alpine") {
+		return "release-unknown"
+	}
+	if !releases[""] && !releases[s.Release] {
+		return "release-not-in-database"
+	}
+	// A source version is sufficient for distribution upstream queries.
+	if s.Version == "" && s.UpstreamVersion == "" {
+		return "missing-version"
+	}
+	return ""
 }
 
 type query struct{ name, by, ver string }

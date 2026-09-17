@@ -799,7 +799,7 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		return nil
 	}
 	probe := w.probe && mode&0o111 != 0 && size >= 4 && size <= maxGoBinary
-	fileLimit := int64(maxMetadata)
+	fileLimit := maxFileMetadata
 	if rpm {
 		fileLimit = maxRPMDatabase
 	}

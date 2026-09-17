@@ -1,10 +1,13 @@
 package match
 
 import (
+	"container/list"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/ziozzang/bongsu-scanner/internal/purl"
 	"github.com/ziozzang/bongsu-scanner/internal/version"
@@ -42,18 +45,26 @@ type preparedRecord struct {
 	Withdrawn string
 	summary   *RecordSummary
 	related   []string
-	affected  []preparedAffected
+	affected  []evaluatedAffected
+}
+
+// Only evaluated outcomes survive the visitor; parsed version ranges and maps
+// are scratch space for one affected entry. Quiet misses need no retained row.
+type evaluatedAffected struct {
+	version, release string
+	unimportant      bool
+	versionMatch
+	detail *findingAffected
+}
+type findingAffected struct {
+	affected         vulndb.Affected
+	severity, vector string
+	score            float64
 }
 type preparedAffected struct {
-	affected                 vulndb.Affected
-	ecosystem, release, name string
-	unimportant              bool
-	severity, vector         string
-	score                    float64
-	exact                    map[string]bool
-	anyValid                 bool
-	ranges                   []preparedRange
-	matches                  map[string]versionMatch
+	exact    map[string]bool
+	anyValid bool
+	ranges   []preparedRange
 }
 type versionMatch struct {
 	hit    bool
@@ -79,12 +90,14 @@ type comparison struct {
 
 // All caches belong to one Run. No global state or synchronization is needed.
 type versionCache struct {
-	versions    map[versionKey]versionInfo
-	comparisons map[comparisonKey]comparison
+	versions                      map[versionKey]versionInfo
+	comparisons                   map[comparisonKey]comparison
+	versionBytes, comparisonBytes int
+	cvss                          map[string]cvssResult
 }
 
 func newVersionCache() *versionCache {
-	return &versionCache{versions: make(map[versionKey]versionInfo), comparisons: make(map[comparisonKey]comparison)}
+	return &versionCache{versions: make(map[versionKey]versionInfo), comparisons: make(map[comparisonKey]comparison), cvss: make(map[string]cvssResult)}
 }
 func (c *versionCache) get(eco, value string) versionInfo {
 	key := versionKey{eco, value}
@@ -92,7 +105,15 @@ func (c *versionCache) get(eco, value string) versionInfo {
 		return v
 	}
 	v := versionInfo{version.Valid(eco, value), versionIdentifier(eco, value)}
-	c.versions[key] = v
+	size := 96 + len(eco) + len(value) + len(v.identifier)
+	if c.versionBytes+size > 1<<20 {
+		clear(c.versions)
+		c.versionBytes = 0
+	}
+	if size <= 1<<20 {
+		c.versions[key] = v
+		c.versionBytes += size
+	}
 	return v
 }
 func (c *versionCache) compare(eco, a, b string) (int, bool, bool) {
@@ -110,19 +131,19 @@ func (c *versionCache) compare(eco, a, b string) (int, bool, bool) {
 	if !result.ok && a == b {
 		result.ok = true
 	}
-	c.comparisons[key] = result
+	size := 96 + len(eco) + len(a) + len(b)
+	if c.comparisonBytes+size > 2<<20 {
+		clear(c.comparisons)
+		c.comparisonBytes = 0
+	}
+	if size <= 2<<20 {
+		c.comparisons[key] = result
+		c.comparisonBytes += size
+	}
 	return result.order, result.ok, result.low
 }
 func (c *versionCache) prepareAffected(eco string, a vulndb.Affected) preparedAffected {
-	out := preparedAffected{affected: a, ecosystem: vulndb.BaseEcosystem(a.Ecosystem), release: vulndb.EcosystemRelease(a.Ecosystem)}
-	name := a.Package
-	if name == "" && a.PURL != "" {
-		if p, err := purl.Parse(a.PURL); err == nil {
-			name = p.FullName()
-		}
-	}
-	out.name = vulndb.NormalizeName(eco, name)
-	out.unimportant = strings.EqualFold(fmt.Sprint(a.Database["urgency"]), "unimportant")
+	out := preparedAffected{}
 	if len(a.Versions) > 0 {
 		out.exact = make(map[string]bool)
 	}
@@ -135,7 +156,6 @@ func (c *versionCache) prepareAffected(eco string, a vulndb.Affected) preparedAf
 		}
 		out.exact[v.identifier] = valid
 	}
-	out.affected.Versions = nil
 	for _, r := range a.Ranges {
 		cmpEco := eco
 		if r.Type == "SEMVER" {
@@ -151,9 +171,20 @@ func (c *versionCache) prepareAffected(eco string, a vulndb.Affected) preparedAf
 // existing API; preparation never modifies their shared records.
 func lookupPrepared(ctx context.Context, store vulndb.Store, cache *versionCache, details bool, eco, name string, versions, releases map[string]bool) ([]preparedRecord, error) {
 	var out []preparedRecord
+	orderedVersions := make([]string, 0, len(versions))
+	for v := range versions {
+		orderedVersions = append(orderedVersions, v)
+	}
+	sort.Strings(orderedVersions)
 	visit := func(r *vulndb.Record) error {
-		out = append(out, prepareRecord(*r, cache, details, eco, name, versions, releases))
+		out = append(out, prepareRecord(*r, cache, details, eco, name, orderedVersions, releases))
 		return nil
+	}
+	if reader, ok := store.(interface {
+		LookupMatchingFunc(context.Context, string, string, func(*vulndb.Record) error) error
+	}); ok {
+		err := reader.LookupMatchingFunc(ctx, eco, name, visit)
+		return out, err
 	}
 	if reader, ok := store.(interface {
 		LookupFunc(context.Context, string, string, func(*vulndb.Record) error) error
@@ -175,8 +206,11 @@ func lookupPrepared(ctx context.Context, store vulndb.Store, cache *versionCache
 	return out, nil
 }
 
-func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name string, versions, releases map[string]bool) preparedRecord {
+func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name string, versions []string, releases map[string]bool) preparedRecord {
 	rec := preparedRecord{ID: r.ID, Aliases: r.Aliases, Withdrawn: r.Withdrawn}
+	if r.Withdrawn != "" {
+		return rec
+	}
 	anyHit := false
 	for _, a := range r.Affected {
 		if vulndb.BaseEcosystem(a.Ecosystem) != eco {
@@ -194,22 +228,27 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		if vulndb.NormalizeName(eco, packageName) != name {
 			continue
 		}
-		prepared := cache.prepareAffected(vulndb.BaseEcosystem(a.Ecosystem), a)
-		prepared.matches = make(map[string]versionMatch, len(versions))
-		entryHit := false
-		for v := range versions {
+		prepared := cache.prepareAffected(eco, a)
+		release := vulndb.EcosystemRelease(a.Ecosystem)
+		unimportant := strings.EqualFold(fmt.Sprint(a.Database["urgency"]), "unimportant")
+		var detail *findingAffected
+		for _, v := range versions {
 			hit, fixed, low, reason := cache.affectedVersion(eco, v, prepared)
-			prepared.matches[v] = versionMatch{hit, fixed, low, reason}
-			entryHit = entryHit || hit
+			if !hit && reason == "" && !unimportant {
+				continue
+			}
+			if hit && detail == nil {
+				a.Versions = nil
+				sev, score, vector := cache.severity(r, a)
+				detail = &findingAffected{affected: a, severity: sev, score: score, vector: vector}
+			}
+			result := evaluatedAffected{version: v, release: release, unimportant: unimportant, versionMatch: versionMatch{hit, fixed, low, reason}}
+			if hit {
+				result.detail = detail
+			}
+			rec.affected = append(rec.affected, result)
+			anyHit = anyHit || hit
 		}
-		anyHit = anyHit || entryHit
-		if !entryHit {
-			prepared.affected = vulndb.Affected{}
-		} else {
-			prepared.severity, prepared.score, prepared.vector = severity(r, a)
-		}
-		prepared.exact, prepared.ranges = nil, nil
-		rec.affected = append(rec.affected, prepared)
 	}
 	if anyHit {
 		summary := r.Summary
@@ -228,7 +267,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		}
 		rec.related = unique(append([]string{r.ID}, r.Aliases...))
 		rec.summary = &RecordSummary{ID: r.ID, Aliases: r.Aliases, Summary: summary, Published: r.Published, Modified: r.Modified, Source: r.Source, Withdrawn: r.Withdrawn}
-		rec.summary.Severity, rec.summary.Score, rec.summary.Vector = severity(r, vulndb.Affected{})
+		rec.summary.Severity, rec.summary.Score, rec.summary.Vector = cache.severity(r, vulndb.Affected{})
 		rec.summary.assessmentText = &advisoryText{r.Summary, r.Details, vulndb.DetailsMayBeTruncated(r), r.References}
 		if details {
 			rec.summary.Details = r.Details
@@ -243,4 +282,151 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 
 	}
 	return rec
+}
+
+// Plans normally contain one version and release. Slices avoid two hash tables
+// per SBOM package; maps are only constructed when a lookup actually runs.
+type lookupPlan struct {
+	versions, releases []string
+	last               int
+}
+
+func appendDistinct(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
+}
+
+// LRU order depends solely on subject/query order. Costs include referenced
+// payloads, conservatively counting shared data more than once. Oversize
+// lookups are consumed by the caller but never pinned in the cache.
+type lookupCache[T any] struct {
+	entries      map[string]*list.Element
+	lru          list.List
+	bytes, limit int64
+}
+type lookupCacheEntry[T any] struct {
+	key   string
+	value T
+	bytes int64
+}
+
+func newLookupCache[T any](limit int64) *lookupCache[T] {
+	return &lookupCache[T]{entries: make(map[string]*list.Element), limit: limit}
+}
+func (c *lookupCache[T]) get(key string) (T, bool) {
+	if e := c.entries[key]; e != nil {
+		c.lru.MoveToFront(e)
+		return e.Value.(lookupCacheEntry[T]).value, true
+	}
+	var zero T
+	return zero, false
+}
+func (c *lookupCache[T]) remove(key string) {
+	if e := c.entries[key]; e != nil {
+		c.bytes -= e.Value.(lookupCacheEntry[T]).bytes
+		delete(c.entries, key)
+		c.lru.Remove(e)
+	}
+}
+func (c *lookupCache[T]) put(key string, value T, size int64) {
+	c.remove(key)
+	size += int64(len(key)) + 128 // map slot, entry and list links
+	if size > c.limit {
+		return
+	}
+	for c.bytes+size > c.limit {
+		c.remove(c.lru.Back().Value.(lookupCacheEntry[T]).key)
+	}
+	c.entries[key] = c.lru.PushFront(lookupCacheEntry[T]{key, value, size})
+	c.bytes += size
+}
+func stringBytes(values []string) int64 {
+	n := int64(cap(values)) * 16
+	for _, value := range values {
+		n += int64(len(value))
+	}
+	return n
+}
+func jsonValueBytes(value any) int64 { return jsonValueBytesDepth(value, 0) }
+func jsonValueBytesDepth(value any, depth int) int64 {
+	// Foreign Store implementations can supply deeply nested or cyclic values.
+	// Refuse to cache them instead of recursing without a bound.
+	if depth > 64 {
+		return 1 << 40
+	}
+	switch v := value.(type) {
+	case string:
+		return 16 + int64(len(v))
+	case []any:
+		n := int64(cap(v)) * 16
+		for _, x := range v {
+			n += jsonValueBytesDepth(x, depth+1)
+		}
+		return n
+	case map[string]any:
+		n := int64(64 + len(v)*64)
+		for k, x := range v {
+			n += int64(len(k)) + jsonValueBytesDepth(x, depth+1)
+		}
+		return n
+	default:
+		return 16
+	}
+}
+func affectedBytes(a vulndb.Affected) int64 {
+	n := int64(unsafe.Sizeof(a)) + int64(len(a.Ecosystem)+len(a.Package)+len(a.PURL))
+	n += stringBytes(a.Versions) + jsonValueBytes(a.Database) + jsonValueBytes(a.Specific)
+	n += int64(cap(a.Ranges)) * int64(unsafe.Sizeof(vulndb.Range{}))
+	for _, r := range a.Ranges {
+		n += int64(len(r.Type)+len(r.Repo)) + int64(cap(r.Events))*int64(unsafe.Sizeof(vulndb.Event{}))
+		for _, e := range r.Events {
+			n += int64(len(e.Introduced) + len(e.Fixed) + len(e.LastAffected) + len(e.Limit))
+		}
+	}
+	n += int64(cap(a.Severity)) * 32
+	for _, sev := range a.Severity {
+		n += int64(len(sev.Type) + len(sev.Score))
+	}
+	return n
+}
+func preparedBytes(records []preparedRecord) int64 {
+	n := int64(cap(records)) * int64(unsafe.Sizeof(preparedRecord{}))
+	for _, r := range records {
+		n += int64(len(r.ID)+len(r.Withdrawn)) + stringBytes(r.Aliases) + stringBytes(r.related)
+		n += int64(cap(r.affected)) * int64(unsafe.Sizeof(evaluatedAffected{}))
+		for _, a := range r.affected {
+			n += int64(len(a.version)+len(a.release)+len(a.reason)) + stringBytes(a.fixed)
+			if a.detail != nil {
+				n += affectedBytes(a.detail.affected) + 40 + int64(len(a.detail.severity)+len(a.detail.vector))
+			}
+		}
+		if s := r.summary; s != nil {
+			n += int64(unsafe.Sizeof(*s)) + int64(len(s.ID)+len(s.Summary)+len(s.Details)+len(s.Published)+len(s.Modified)+len(s.Severity)+len(s.Vector)+len(s.Source)+len(s.Withdrawn)) + stringBytes(s.Aliases) + stringBytes(s.References)
+			if a := s.assessmentText; a != nil {
+				n += int64(unsafe.Sizeof(*a)) + int64(len(a.summary)+len(a.details)) + int64(cap(a.references))*32
+				for _, ref := range a.references {
+					n += int64(len(ref.Type) + len(ref.URL))
+				}
+			}
+		}
+	}
+	return n
+}
+func canonicalBytes(values map[string]string) int64 {
+	n := int64(64 + len(values)*96)
+	for k, v := range values {
+		n += int64(len(k) + len(v))
+	}
+	return n
 }

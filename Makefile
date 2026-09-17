@@ -1,7 +1,7 @@
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test release release-sign clean
+.PHONY: build test test-short ci release release-sign clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan ./cmd/bscan
@@ -10,6 +10,15 @@ test:
 	@files="$$(gofmt -l .)" || exit 1; if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files"; exit 1; fi
 	go test -race -count=1 ./...
 	go vet ./...
+
+test-short:
+	@files="$$(gofmt -l .)" || exit 1; if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files"; exit 1; fi
+	go vet ./...
+	go test -short -race -count=1 ./...
+
+ci: test-short
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan_$(VERSION)_linux_x86_64 ./cmd/bscan
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan_$(VERSION)_linux_arm64 ./cmd/bscan
 
 release: dist/SHA256SUMS
 

@@ -106,7 +106,24 @@ bscan scan --verbose --output ./scan-results /path/to/rootfs
 
 # Scan the local host filesystem; reuse the invoking user's signing identity
 sudo BONGSU_HOME="$HOME/.bongsu" bscan scan --output ./host-scan host
+
+# Scan, match the local catalog, and report in one command (exit 2 for HIGH+)
+bscan scan --match --report html,sarif --fail-on HIGH --output ./scan-results .
 ```
+
+`--match` writes `<base>.findings.json` next to each result's SBOMs, using
+CycloneDX when both formats are written (SPDX for `--format spdx`).
+`--report html,markdown,csv,sarif` requires `--match` and writes
+`<base>.report.html`, `.report.md`, `.report.csv`, and `.report.sarif`.
+The local catalog must already exist; otherwise the command stops before
+scanning and asks you to run `bscan db update`. Use `--db DIR` and
+`--db-isolation auto|copy|none` to select the catalog and reader isolation.
+`--min-severity`, `--only-fixed`, and `--include-unimportant` use the same
+filters as `match`; `--fail-on LEVEL` returns exit code 2 when the filtered
+findings meet the threshold, after all results have been written.
+These flags also work with `batch`. With `host --containers`, the host and
+each container receive their own findings and reports. Findings and report
+files are **not signed**, even when SBOM signing is enabled.
 
 Normal mode prints each major phase—source detection, filesystem walk or
 archive/layer processing, package cataloging, SBOM creation, hashing, and
@@ -399,6 +416,13 @@ distinct CVE aliases retain their original advisory IDs. Use `--min-severity LEV
 Multiple inputs produce separate table sections or a JSON report array;
 CycloneDX output requires one input and adds vulnerability references.
 The enriched output is a new artifact and must be signed separately if needed.
+
+Ubuntu matching normalizes distro qualifiers (such as `ubuntu-24.04`), bare
+`VERSION_ID` values, and codenames (`bionic`, `focal`, `jammy`, `noble`, `plucky`,
+`questing`, `resolute`) to numeric releases. OSV LTS and Pro/ESM advisories match
+the same release: `Ubuntu:24.04:LTS` and `Ubuntu:Pro:24.04:LTS` both use `24.04`,
+while retaining the original ecosystem for display. FIPS-specific streams
+remain separate from ordinary Ubuntu releases.
 
 CVSS v3 and v2 base scores are calculated from their vectors. CVSS v4 vectors
 are preserved without estimating a numeric score. Withdrawn advisories, GIT-only

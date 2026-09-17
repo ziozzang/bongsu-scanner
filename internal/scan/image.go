@@ -29,9 +29,15 @@ import (
 
 // maxGoBinary bounds how large an ELF executable may be before it is skipped
 // for Go build-info extraction (the file is still hashed).
-const maxGoBinary = 64 << 20
+var maxGoBinary int64 = 64 << 20
 
-const maxLayerBytes int64 = 16 << 30
+// These limits are variables so serial tests can exercise the same boundaries
+// with small inputs. Tests must restore them before returning.
+var maxLayerBytes int64 = 16 << 30
+
+// maxFileMetadata bounds image retention and walk metadata reads. The source
+// readers retain maxMetadata as their production upper bound.
+var maxFileMetadata int64 = maxMetadata
 
 // Bound the zstd history window independently of the decompressed byte limits.
 const maxZstdMemory = 256 << 20
@@ -490,7 +496,7 @@ func (a *outerArchive) retain(names []string) error {
 			return errors.New("outer archive has no decompressed spool")
 		}
 		e := a.entries[names[0]]
-		if e.Size <= maxMetadata && e.Size <= a.budget-a.retained {
+		if e.Size <= maxFileMetadata && e.Size <= a.budget-a.retained {
 			data := make([]byte, e.Size)
 			if _, err := io.ReadFull(contextReader{a.ctx, io.NewSectionReader(a.spool, e.offset, e.Size)}, data); err != nil {
 				return err
@@ -513,7 +519,7 @@ func (a *outerArchive) bytes(name string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("entry %q missing", name)
 	}
-	if e.Size > maxMetadata {
+	if e.Size > maxFileMetadata {
 		return nil, fmt.Errorf("entry %q too large (%d bytes)", name, e.Size)
 	}
 	if e.data != nil {
@@ -1124,7 +1130,7 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 	r = contextReader{u.ctx, r}
 	sum := sha256.New()
 	rpm := isRPMDatabase(name)
-	keep := size <= maxMetadata && interesting(name) && !rpm
+	keep := size <= maxFileMetadata && interesting(name) && !rpm
 	probe := goBinaryCandidate(name, h.Mode, size)
 	var data []byte
 	switch {
@@ -1214,7 +1220,7 @@ func (u *unpacker) finish() error {
 
 // restoreMetadataLinks rereads only sources containing final metadata aliases.
 // Discarded files stay out of memory; each selected entry is bounded by
-// maxMetadata (or maxRPMDatabase on disk), and aliases share their contents.
+// maxFileMetadata (or maxRPMDatabase on disk), and aliases share their contents.
 func (u *unpacker) restoreMetadataLinks() error {
 	// Aliases may cross between an in-memory metadata file and a disk-backed
 	// RPM database. Preserve the destination's retention policy in either case.
@@ -1230,7 +1236,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 			u.rpmFiles[name] = diskPath
 			rec.Data = nil
 			u.fs[name] = rec
-		} else if !isRPMDatabase(name) && rec.Data == nil && rec.Size <= maxMetadata && u.rpmFiles[name] != "" {
+		} else if !isRPMDatabase(name) && rec.Data == nil && rec.Size <= maxFileMetadata && u.rpmFiles[name] != "" {
 			data, err := os.ReadFile(u.rpmFiles[name])
 			if err != nil {
 				return err
@@ -1241,7 +1247,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 	}
 	wanted := map[int]map[int][]string{}
 	for name, content := range u.contents {
-		if !interesting(name) || (!isRPMDatabase(name) && u.fs[name].Size > maxMetadata) {
+		if !interesting(name) || (!isRPMDatabase(name) && u.fs[name].Size > maxFileMetadata) {
 			continue
 		}
 		if wanted[content.source] == nil {
@@ -1296,7 +1302,7 @@ func (u *unpacker) restoreSource(reopen archiveSource, entries map[int][]string)
 				return err
 			}
 			if hasMetadata {
-				if h.Size > maxMetadata {
+				if h.Size > maxFileMetadata {
 					return fmt.Errorf("source entry for %s changed", names[0])
 				}
 				data, err = os.ReadFile(diskPath)
@@ -1305,7 +1311,7 @@ func (u *unpacker) restoreSource(reopen archiveSource, entries map[int][]string)
 				}
 			}
 		} else {
-			if h.Size > maxMetadata {
+			if h.Size > maxFileMetadata {
 				return fmt.Errorf("source entry for %s changed", names[0])
 			}
 			data = make([]byte, h.Size)

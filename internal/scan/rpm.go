@@ -16,10 +16,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// maxRPMDatabase is overridable by serial tests; production keeps 256 MiB.
+var maxRPMDatabase int64 = 256 << 20
+
 const (
-	maxRPMDatabase = 256 << 20
-	maxRPMHeader   = 16 << 20
-	maxRPMPages    = 1 << 20
+	maxRPMHeader = 16 << 20
+	maxRPMPages  = 1 << 20
 )
 
 func isRPMDatabase(p string) bool {
@@ -152,7 +154,7 @@ func scanRPMDatabase(f File, diskPath string, add func(Package)) int {
 			add(h.pkg(f.Path, f.Layer))
 		}
 	}
-	if len(f.Data) > maxRPMDatabase {
+	if int64(len(f.Data)) > maxRPMDatabase {
 		return 1
 	}
 	if path.Base(normPath(f.Path)) == "rpmdb.sqlite" {
