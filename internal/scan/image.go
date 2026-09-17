@@ -830,9 +830,13 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 	var meta ScanMetadata
 	for _, f := range files {
 		switch {
-		case isRPMDatabase(f.Path) && f.Size > maxRPMDatabase:
+		case diskMetadataLimit(f.Path) != 0 && f.Size > diskMetadataLimit(f.Path):
 			meta.MetadataSkipped++
 			report(opts, "catalog", f.Path+": metadata size limit", true)
+		case isJavaArchive(f.Path):
+			skipped, failures := scanJavaFile(f, rpmFiles[f.Path], c.addPackage)
+			meta.MetadataSkipped += skipped
+			meta.SkippedErrors += failures
 		case isRPMDatabase(f.Path) && rpmFiles[f.Path] != "":
 			count := c.addRPMFile(f, rpmFiles[f.Path])
 			meta.SkippedErrors += count
@@ -843,6 +847,7 @@ func assembleRPMResult(name, source, kind string, fs store, layers []File, image
 			c.addFile(f)
 		}
 	}
+	meta.MetadataSkipped += c.metadataSkipped
 	c.addPackages(extra)
 	r.Packages, r.OS = c.finish()
 	if meta.MetadataSkipped != 0 || meta.SkippedErrors != 0 {
@@ -870,7 +875,7 @@ type unpacker struct {
 	kinds    map[string]byte
 	contents map[string]archiveContent
 	sources  []archiveSource
-	rpmFiles map[string]string // final filesystem paths to disk-backed RPM contents
+	rpmFiles map[string]string // final filesystem paths to disk-backed RPM/Java archive contents
 	tempDir  string
 }
 
@@ -888,7 +893,7 @@ func newUnpacker(ctx context.Context, opts Options) *unpacker {
 	return &unpacker{ctx: ctx, opts: opts, fs: store{}, kinds: map[string]byte{}, symlinks: map[string]symlinkRec{}, binaries: map[string][]Package{}, contents: map[string]archiveContent{}, rpmFiles: map[string]string{}}
 }
 
-// Close releases RPM contents on success, error, and cancellation.
+// Close releases RPM/Java archive contents on success, error, and cancellation.
 func (u *unpacker) Close() {
 	if u.tempDir != "" {
 		_ = os.RemoveAll(u.tempDir)
@@ -896,7 +901,8 @@ func (u *unpacker) Close() {
 	}
 }
 
-// spoolRPM copies through the caller's bounded reader; no database byte slice
+// spoolRPM copies RPM databases and Java archives through the bounded reader;
+// no contents byte slice
 // is retained. The unpacker owns successful copies until cataloging finishes.
 func (u *unpacker) spoolRPM(r io.Reader, size int64) (string, error) {
 	if u.tempDir == "" {
@@ -1082,7 +1088,7 @@ func (u *unpacker) applyTarSource(rd io.Reader, layer string, reopen archiveSour
 				return fmt.Errorf("%s: %w", name, err)
 			}
 			u.fs[name] = rec
-			if rec.Data == nil && u.rpmFiles[name] == "" && h.Size <= maxRPMDatabase && reopen != nil {
+			if rec.Data == nil && u.rpmFiles[name] == "" && h.Size <= max(maxRPMDatabase, maxJavaArchive) && reopen != nil {
 				u.contents[name] = archiveContent{source: source, entry: entry}
 			}
 			added[name] = true
@@ -1129,12 +1135,12 @@ func (u *unpacker) readEntry(name string, r io.Reader, h *tar.Header, layer stri
 	}
 	r = contextReader{u.ctx, r}
 	sum := sha256.New()
-	rpm := isRPMDatabase(name)
-	keep := size <= maxFileMetadata && interesting(name) && !rpm
+	diskLimit := diskMetadataLimit(name)
+	keep := size <= maxFileMetadata && interesting(name) && diskLimit == 0
 	probe := goBinaryCandidate(name, h.Mode, size)
 	var data []byte
 	switch {
-	case rpm && size <= maxRPMDatabase:
+	case diskLimit != 0 && size <= diskLimit:
 		diskPath, err := u.spoolRPM(io.TeeReader(r, sum), size)
 		if err != nil {
 			return File{}, err
@@ -1220,15 +1226,15 @@ func (u *unpacker) finish() error {
 
 // restoreMetadataLinks rereads only sources containing final metadata aliases.
 // Discarded files stay out of memory; each selected entry is bounded by
-// maxFileMetadata (or maxRPMDatabase on disk), and aliases share their contents.
+// metadataFileLimit, and aliases share their contents.
 func (u *unpacker) restoreMetadataLinks() error {
 	// Aliases may cross between an in-memory metadata file and a disk-backed
-	// RPM database. Preserve the destination's retention policy in either case.
+	// RPM database or Java archive. Preserve the destination's retention policy.
 	for name, rec := range u.fs {
 		if !interesting(name) {
 			continue
 		}
-		if isRPMDatabase(name) && rec.Data != nil {
+		if diskMetadataLimit(name) != 0 && rec.Data != nil && rec.Size <= diskMetadataLimit(name) {
 			diskPath, err := u.spoolRPM(bytes.NewReader(rec.Data), rec.Size)
 			if err != nil {
 				return err
@@ -1236,7 +1242,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 			u.rpmFiles[name] = diskPath
 			rec.Data = nil
 			u.fs[name] = rec
-		} else if !isRPMDatabase(name) && rec.Data == nil && rec.Size <= maxFileMetadata && u.rpmFiles[name] != "" {
+		} else if diskMetadataLimit(name) == 0 && rec.Data == nil && rec.Size <= maxFileMetadata && u.rpmFiles[name] != "" {
 			data, err := os.ReadFile(u.rpmFiles[name])
 			if err != nil {
 				return err
@@ -1247,7 +1253,7 @@ func (u *unpacker) restoreMetadataLinks() error {
 	}
 	wanted := map[int]map[int][]string{}
 	for name, content := range u.contents {
-		if !interesting(name) || (!isRPMDatabase(name) && u.fs[name].Size > maxFileMetadata) {
+		if !interesting(name) || u.fs[name].Size > metadataFileLimit(name) {
 			continue
 		}
 		if wanted[content.source] == nil {
@@ -1282,12 +1288,12 @@ func (u *unpacker) restoreSource(reopen archiveSource, entries map[int][]string)
 		if len(names) == 0 {
 			continue
 		}
-		if !isRegular(h) || h.Size < 0 || h.Size > maxRPMDatabase {
+		if !isRegular(h) || h.Size < 0 || h.Size > max(maxRPMDatabase, maxJavaArchive) {
 			return fmt.Errorf("source entry for %s changed", names[0])
 		}
 		hasRPM, hasMetadata := false, false
 		for _, name := range names {
-			if isRPMDatabase(name) {
+			if diskMetadataLimit(name) != 0 {
 				hasRPM = true
 			} else {
 				hasMetadata = true
@@ -1325,7 +1331,7 @@ func (u *unpacker) restoreSource(reopen archiveSource, entries map[int][]string)
 			if rec.Size != h.Size || rec.SHA256 != hex.EncodeToString(sum.Sum(nil)) {
 				return fmt.Errorf("source content for %s changed", name)
 			}
-			if isRPMDatabase(name) {
+			if diskMetadataLimit(name) != 0 {
 				u.rpmFiles[name] = diskPath
 				rec.Data = nil
 			} else {

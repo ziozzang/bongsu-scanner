@@ -799,10 +799,7 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		return nil
 	}
 	probe := w.probe && mode&0o111 != 0 && size >= 4 && size <= maxGoBinary
-	fileLimit := maxFileMetadata
-	if rpm {
-		fileLimit = maxRPMDatabase
-	}
+	fileLimit := metadataFileLimit(rel)
 	// Reserve before reading. If the shared budget cannot cover this file,
 	// cancel and replay sequentially rather than change which paths fit.
 	if w.parallel != nil && keep && size <= fileLimit && !exempt {
@@ -824,6 +821,16 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		w.skipMetadata(p, "metadata budget")
 		keep = false
 	}
+	if keep && isInstalledNPMPackage(rel) {
+		if w.parallel != nil {
+			if w.parallel.npmFiles.Add(1) > int64(maxInstalledNPM) {
+				return errParallelBudget
+			}
+		} else if w.catalog.npmFiles >= maxInstalledNPM {
+			w.skipMetadata(p, "installed npm file count limit")
+			keep = false
+		}
+	}
 	if !keep && !w.hashFiles && !probe {
 		return w.checkCtx()
 	}
@@ -843,6 +850,39 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		}
 	}
 	switch {
+	case keep && isJavaArchive(rel):
+		if openedInfo.Size() > min(size, allowed) {
+			w.skipMetadata(p, "metadata grew beyond read limit")
+			return nil
+		}
+		rec := File{Path: rel, Size: openedInfo.Size()}
+		skipped, failures, err := w.catalogJava(rec, walkContextReaderAt{w.ctx, f})
+		if err != nil {
+			return err
+		}
+		w.meta.MetadataSkipped += skipped
+		w.meta.SkippedErrors += failures
+		if !exempt {
+			w.parsedBytes += rec.Size
+		}
+		if w.hashFiles {
+			h := sha256.New()
+			n, err := io.Copy(h, io.LimitReader(walkContextReader{w.ctx, f}, rec.Size+1))
+			if err != nil {
+				w.skip(p, err)
+				return w.checkCtx()
+			}
+			if n != rec.Size {
+				w.skipMetadata(p, "metadata changed while hashing")
+				return nil
+			}
+			rec.SHA256 = hex.EncodeToString(h.Sum(nil))
+			w.fs[rel] = rec
+		}
+		w.indexed++
+		if w.parallel != nil {
+			w.parallel.indexed.Add(1)
+		}
 	case keep && rpm:
 		// Copy from the confined descriptor rather than reopening a mutable
 		// host pathname. Large databases never enter a metadata byte slice.
@@ -1051,6 +1091,7 @@ type parallelWalk struct {
 	tasks      sync.WaitGroup
 	visited    atomic.Int64
 	indexed    atomic.Int64
+	npmFiles   atomic.Int64
 	bytes      atomic.Int64
 	maxBytes   int64
 	mu         sync.Mutex
@@ -1348,4 +1389,22 @@ func (w *walkState) walkParallel(root string) error {
 		}
 	}
 	return nil
+}
+
+func (w *walkState) catalogJava(f File, rd io.ReaderAt) (int, int, error) {
+	if w.parallel == nil {
+		skipped, failures := scanJavaArchive(rd, f.Size, f, w.catalog.addPackage)
+		return skipped, failures, nil
+	}
+	c := walkCatalog{path: f.Path}
+	var err error
+	skipped, failures := scanJavaArchive(rd, f.Size, f, func(pkg Package) {
+		if err == nil {
+			err = w.spoolPackage(&c, pkg)
+		}
+	})
+	if err == nil {
+		w.parallel.record(c)
+	}
+	return skipped, failures, err
 }

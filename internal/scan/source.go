@@ -434,6 +434,9 @@ func clean(p string) string {
 }
 
 func interesting(p string) bool {
+	if isJavaArchive(p) || isInstalledNPMPackage(p) || isInstalledGemspec(p) {
+		return true
+	}
 	p = strings.TrimPrefix(strings.ToLower(p), "/")
 	base := path.Base(p)
 	switch p {

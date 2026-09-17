@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -69,13 +70,27 @@ func findOSRelease(files []File) *OSRelease {
 // os-release has the same effect as the archive catalog's original two passes.
 // The zero value is ready for use.
 type cataloger struct {
-	osr    *OSRelease
-	osRank int
-	seen   map[string]Package
-	order  []string
+	osr             *OSRelease
+	osRank          int
+	seen            map[string]Package
+	order           []string
+	npmFiles        int
+	metadataSkipped int
 }
 
 func (c *cataloger) addFile(f File) {
+	if isInstalledNPMPackage(f.Path) {
+		if c.npmFiles >= maxInstalledNPM {
+			c.metadataSkipped++
+			return
+		}
+		c.npmFiles++
+	}
+	if isJavaArchive(f.Path) {
+		skipped, _ := scanJavaFile(f, "", c.addPackage)
+		c.metadataSkipped += skipped
+		return
+	}
 	if len(f.Data) == 0 {
 		return
 	}
@@ -130,6 +145,11 @@ func (c *cataloger) addPackage(p Package) {
 		p.PURL = buildPURL(p)
 	}
 	key := packageKey(p)
+	if isJavaRuntimePackage(p) {
+		// Runtime manifests can omit the vendor; merge those with a more
+		// specific OpenJDK discovery instead of emitting one per JAR.
+		key = "java-runtime\x00" + p.Version
+	}
 	if isOS && p.Namespace == "" {
 		// An unspecified namespace may resolve differently from an explicit
 		// debian/alpine namespace when os-release arrives later.
@@ -168,6 +188,7 @@ func clonePackage(p Package) Package {
 	p.SourceName = strings.Clone(p.SourceName)
 	p.SourceVersion = strings.Clone(p.SourceVersion)
 	p.Layer = strings.Clone(p.Layer)
+	p.Evidence = strings.Clone(p.Evidence)
 	return p
 }
 
@@ -234,6 +255,7 @@ func catalog(files []File, extra []Package) ([]Package, *OSRelease) {
 // kept, additional distinct paths are appended with ';' (up to
 // maxPackageSources), and empty descriptive fields are filled in.
 func mergePackage(prev *Package, p Package) {
+	mergeJavaEvidence(prev, p)
 	if p.Source != "" {
 		srcs := strings.Split(prev.Source, ";")
 		dup := false
@@ -284,6 +306,12 @@ func scanFile(f File, add func(Package)) {
 	base := path.Base(p)
 	src, layer := f.Path, f.Layer
 	switch {
+	case isJavaArchive(f.Path):
+		scanJavaFile(f, "", add)
+	case isInstalledNPMPackage(f.Path):
+		scanInstalledNPM(f, add)
+	case isInstalledGemspec(f.Path):
+		scanInstalledGemspec(f, add)
 	case isRPMDatabase(p):
 		scanRPMDatabase(f, "", add)
 	case p == "var/lib/dpkg/status", strings.HasPrefix(p, "var/lib/dpkg/status.d/"):
@@ -1093,3 +1121,46 @@ func keyValues(b []byte, sep string) map[string]string {
 }
 
 func trimQuotes(s string) string { return strings.Trim(s, `"'`) }
+
+// A scan-wide count complements the byte budget for tiny installed manifests.
+var maxInstalledNPM = 50000
+
+func isInstalledNPMPackage(p string) bool {
+	return path.Base(p) == "package.json" && strings.Contains("/"+p, "/node_modules/")
+}
+func scanInstalledNPM(f File, add func(Package)) {
+	var v struct {
+		Name    string
+		Version string
+		Link    bool
+	}
+	if json.Unmarshal(f.Data, &v) != nil || v.Link || strings.TrimSpace(v.Name) == "" || !npmVersionOK(strings.TrimSpace(v.Version)) {
+		return
+	}
+	pkg := npmPackage(v.Name, v.Version, f.Path, f.Layer, false)
+	pkg.Evidence = "package.json"
+	add(pkg)
+}
+func isInstalledGemspec(p string) bool {
+	if !strings.HasSuffix(p, ".gemspec") {
+		return false
+	}
+	dir := path.Dir(p)
+	return path.Base(dir) == "specifications" || (path.Base(dir) == "default" && path.Base(path.Dir(dir)) == "specifications")
+}
+
+var gemspecAssignment = regexp.MustCompile(`(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\.(name|version)\s*=\s*(?:Gem::Version\.new\(\s*)?["']([^"'\r\n]+)["']`)
+
+func scanInstalledGemspec(f File, add func(Package)) {
+	name, version := archiveNameVersion(path.Base(f.Path))
+	for _, m := range gemspecAssignment.FindAllSubmatch(f.Data, -1) {
+		if string(m[1]) == "name" {
+			name = string(m[2])
+		} else {
+			version = string(m[2])
+		}
+	}
+	if name != "" && version != "" {
+		add(Package{Name: name, Version: version, Type: "gem", Source: f.Path, Layer: f.Layer, Evidence: "gemspec"})
+	}
+}

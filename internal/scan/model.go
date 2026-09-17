@@ -38,6 +38,7 @@ type Package struct {
 	Indirect      bool   `json:"indirect,omitempty"`
 	Dev           bool   `json:"dev,omitempty"`
 	Layer         string `json:"layer,omitempty"`
+	Evidence      string `json:"evidence,omitempty"`
 }
 
 // OSRelease is the parsed /etc/os-release of the scanned root.

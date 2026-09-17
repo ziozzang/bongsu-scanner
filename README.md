@@ -172,9 +172,14 @@ Outer archives support gzip, bzip2, and zstd compression; bzip2 layers remain
 unsupported. Zstd decoding uses `klauspost/compress` with a maximum 256 MiB
 window and the same decompression budgets and layer size limits as gzip.
 
-Embedded catalogers currently cover Debian dpkg, Alpine apk, npm lockfiles,
-Go modules, Python requirements/dist-info, Cargo lockfiles, and Maven
-`pom.properties`.
+Embedded catalogers currently cover Debian dpkg, Alpine apk, npm lockfiles
+and installed `node_modules/**/package.json` (up to 50,000 per scan), Go modules,
+Python requirements/dist-info, Cargo lockfiles, Maven `pom.properties`, Java
+archives (`.jar`, `.war`, `.ear`, `.jpi`, `.hpi`, including nested archives),
+and Ruby `Gemfile.lock` and installed `specifications/*.gemspec` (including
+`specifications/default`). Java archives use Maven metadata, manifest attributes,
+or artifact-version filenames; nesting is limited to three levels, with a
+512 MiB archive cap and a cumulative 512 MiB decompression budget per archive.
 
 RPM databases (rpmdb.sqlite, BerkeleyDB Packages, ndb Packages.db) are inventoried for Rocky, AlmaLinux, RHEL/CentOS, Fedora, Amazon Linux and SUSE-based hosts and images; purls use pkg:rpm/<distro>/... with arch, distro, epoch and upstream (source RPM) qualifiers.
 

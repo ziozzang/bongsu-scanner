@@ -252,6 +252,9 @@ func spdxPackageFor(p scan.Package, id string) spdxPackage {
 		pkg.ExternalRefs = append(pkg.ExternalRefs, spdxRef{ReferenceCategory: "SECURITY", ReferenceType: "cpe23Type", ReferenceLocator: p.CPE})
 	}
 	var notes []string
+	if p.Evidence != "" {
+		notes = append(notes, "evidence="+p.Evidence)
+	}
 	if isBinarySource(p) {
 		notes = append(notes, "source-kind=binary")
 	}
