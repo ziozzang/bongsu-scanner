@@ -119,7 +119,7 @@ func ConvertOSV(v *osvVuln, source string) (*Record, bool) {
 			if len(rg.Events) == 0 {
 				continue
 			}
-			out.Ranges = append(out.Ranges, Range{Type: rg.Type, Repo: rg.Repo, Events: rg.Events})
+			out.Ranges = append(out.Ranges, Range(rg))
 		}
 		if len(a.Specific) > 0 {
 			for k := range droppedSpecificKeys {
@@ -194,19 +194,15 @@ func boundedOSVVersions(versions []string) []string {
 	return out
 }
 
-// parseOSVZip walks a zip of OSV JSON files. accept filters member names
-// (nil accepts every *.json). Corrupt or oversized members fail the feed so
-// an update cannot install a silently incomplete replacement database.
-func parseOSVZip(ctx context.Context, zipPath string, source string, accept func(name string) bool, emit Emit, progress func(string)) (int, error) {
-	return parseOSVZipBounded(ctx, zipPath, source, accept, emit, progress, osvMaxEntries, osvMaxUncompressedBytes)
-}
-
 func parseOSVZipBounded(ctx context.Context, zipPath string, source string, accept func(name string) bool, emit Emit, progress func(string), maxEntries int, maxBytes uint64) (int, error) {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return 0, fmt.Errorf("open zip: %w", err)
 	}
-	defer zr.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = zr.Close()
+	}()
 	if len(zr.File) > maxEntries {
 		return 0, fmt.Errorf("OSV zip exceeds %d entries", maxEntries)
 	}
@@ -260,7 +256,10 @@ func decodeOSVMember(f *zip.File, source string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rc.Close()
+	}()
 	// Reading through EOF checks ZIP CRC/size errors; decoding just the first
 	// object can miss both corruption after the object and trailing JSON.
 	// The checked ZIP size lets us allocate once. The extra byte forces a

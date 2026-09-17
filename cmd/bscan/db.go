@@ -32,7 +32,7 @@ func dbPublicKey(spec string) (ed25519.PublicKey, error) {
 	return resolvePublic(cfg, spec)
 }
 
-func cmdDB(ctx context.Context, args []string) error {
+func cmdDB(ctx context.Context, args []string) (resultErr error) {
 	if len(args) == 0 {
 		return errors.New("db requires update, status, lookup, show, verify, export, import, or convert")
 	}
@@ -170,7 +170,7 @@ func cmdDB(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer store.Close()
+		defer closeCommandCatalog(store, &resultErr)
 		if args[0] == "lookup" || args[0] == "show" {
 			var records []vulndb.Record
 			var err error
@@ -195,7 +195,7 @@ func cmdDB(ctx context.Context, args []string) error {
 			return err
 		}
 		var size int64
-		err = filepath.WalkDir(*db, func(path string, entry os.DirEntry, walkErr error) error {
+		err = filepath.WalkDir(*db, func(path string, entry os.DirEntry, walkErr error) error { // #nosec G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 			if walkErr != nil {
 				return walkErr
 			}
@@ -212,7 +212,7 @@ func cmdDB(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Printf("Disk size: %s\n", vulndb.FormatBytes(size))
-		if _, err := os.Stat(filepath.Join(*db, "manifest.sha256.sig")); err == nil {
+		if _, err := os.Stat(filepath.Join(*db, "manifest.sha256.sig")); err == nil { // #nosec G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 			fmt.Println("Signature: valid; use 'db verify --pubkey KEY' to pin provenance")
 		} else {
 			fmt.Println("Signature: unsigned (checksums verified)")
@@ -245,12 +245,19 @@ func printDBMeta(meta vulndb.Meta) error {
 	return printDBMetaTo(os.Stdout, meta)
 }
 
+// Close also checks whether an in-place catalog changed during the command.
+func closeCommandCatalog(store vulndb.Store, resultErr *error) {
+	*resultErr = errors.Join(*resultErr, store.Close())
+}
+
 func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 	ecosystems := make([]string, len(meta.Ecosystems))
 	for i, ecosystem := range meta.Ecosystems {
 		ecosystems[i] = httpx.Sanitize(ecosystem)
 	}
-	fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", "))
+	if _, err := fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), strings.Join(ecosystems, ", ")); err != nil {
+		return err
+	}
 	for _, source := range meta.Sources {
 		name := httpx.Sanitize(source.Name)
 		feed := strings.Join(source.Ecosystems, ", ")
@@ -260,7 +267,9 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 		if feed != "" {
 			name += " [" + httpx.Sanitize(feed) + "]"
 		}
-		fmt.Fprintf(w, "%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag))
+		if _, err := fmt.Fprintf(w, "%s: %s records (%s); fetched %s; ETag=%s\n", name, vulndb.FormatCount(source.Records), vulndb.FormatBytes(source.Bytes), source.FetchedAt.UTC().Format(time.RFC3339), httpx.Sanitize(source.ETag)); err != nil {
+			return err
+		}
 		if source.Error != "" {
 			warnf("db:error", "%s: %s\n", httpx.Sanitize(source.Name), httpx.Sanitize(source.Error))
 		}
@@ -343,7 +352,7 @@ func setDBSigning(cfg config.Config, opts *vulndb.Options) error {
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}

@@ -44,7 +44,8 @@ func cmdReport(ctx context.Context, args []string) error {
 	}
 	reader := bufio.NewReader(f)
 	if err := rejectMatchArray(reader); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return err
 	}
 	r, readErr := report.LoadMatchJSON(reader)
@@ -85,7 +86,10 @@ func writeReportFile(path string, render func(io.Writer) error) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
 	err = render(f)
 	closeErr := f.Close()
 	if err != nil {

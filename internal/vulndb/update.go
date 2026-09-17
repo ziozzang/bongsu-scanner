@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +54,10 @@ func Update(ctx context.Context, dir string, opts Options, nvd ...NVDOptions) (M
 	if err != nil {
 		return meta, err
 	}
-	defer os.RemoveAll(stage)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.RemoveAll(stage)
+	}()
 	var old Meta
 	if _, err = os.Stat(dir); err == nil {
 		if err := Verify(dir, nil); err != nil {
@@ -343,7 +346,10 @@ func feedExpandedBytes(ctx context.Context, filename string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer zr.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = zr.Close()
+	}()
 	var expanded uint64
 	for _, f := range zr.File {
 		if err := ctx.Err(); err != nil {
@@ -363,32 +369,29 @@ func feedExpandedBytes(ctx context.Context, filename string) (uint64, error) {
 func feedCacheLimit(source string, opts Options) int64 {
 	limit := int64(1 << 30)
 	if source == SourceOSV || source == SourceGHSA {
-		limit = max(limit, int64(opts.maxFeedUncompressedBytes()))
+		limit = max(limit, int64(opts.maxFeedUncompressedBytes())) // #nosec G115 -- maxFeedUncompressedBytes returns a positive int64 option or the 16 GiB default.
 	}
 	// readRecordsBounded reserves one extra byte to detect an exceeded limit.
 	return min(limit, math.MaxInt64-1)
 }
 
 func readFeedCache(path string, maxBytes int64, emit Emit) error {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	return readRecordsBounded(f, emit, maxBytes, 64<<20)
 }
 
-// streamFeedCache applies the caller's expanded-byte budget and per-record
-// bound while parsing. Nothing is retained in a per-feed record slice.
-func streamFeedCache(ctx context.Context, feed Feed, rawPath, cachePath string, size int64, progress func(string), maxBytes int64, maxRecord int) (count int, err error) {
-	return streamFeedCacheSpool(ctx, feed, rawPath, cachePath, size, progress, maxBytes, maxRecord, nil)
-}
-
 func streamFeedCacheSpool(ctx context.Context, feed Feed, rawPath, cachePath string, size int64, progress func(string), maxBytes int64, maxRecord int, spool func(string, []byte) error) (count int, err error) {
-	if err = os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 		return
 	}
-	f, err := os.Create(cachePath)
+	f, err := os.Create(cachePath) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return 0, err
 	}
@@ -431,105 +434,22 @@ func streamFeedCacheSpool(ctx context.Context, feed Feed, rawPath, cachePath str
 	return
 }
 
-func buildLegacyIndexes(dir string, records map[string]*Record, meta *Meta) error {
-	groups := map[string][]*Record{}
-	ecos := map[string]bool{}
-	paths := map[string]string{}
-	for _, r := range records {
-		seen := map[string]bool{}
-		sortAffected(r.Affected)
-		for _, a := range r.Affected {
-			eco := BaseEcosystem(a.Ecosystem)
-			if eco == "" {
-				continue
-			}
-			if _, ok := affectedIndexName(a); !ok {
-				continue
-			}
-			key := safeName(eco)
-			if p, ok := paths[key]; ok && p != eco {
-				return fmt.Errorf("ecosystem path collision: %q and %q", p, eco)
-			}
-			paths[key] = eco
-			ecos[a.Ecosystem] = true
-			if !seen[eco] {
-				groups[eco] = append(groups[eco], r)
-				seen[eco] = true
-			}
-		}
-	}
-	for eco, rs := range groups {
-		firstName := func(r *Record) string {
-			var names []string
-			for _, a := range r.Affected {
-				if BaseEcosystem(a.Ecosystem) == eco {
-					if n, ok := affectedIndexName(a); ok {
-						names = append(names, n)
-					}
-				}
-			}
-			if len(names) == 0 {
-				return ""
-			}
-			sort.Strings(names)
-			return names[0]
-		}
-		sort.Slice(rs, func(i, j int) bool {
-			a, b := firstName(rs[i]), firstName(rs[j])
-			if a == b {
-				return rs[i].ID < rs[j].ID
-			}
-			return a < b
-		})
-		names := map[string][]int{}
-		for i, r := range rs {
-			seen := map[string]bool{}
-			for _, a := range r.Affected {
-				if BaseEcosystem(a.Ecosystem) != eco {
-					continue
-				}
-				n, ok := affectedIndexName(a)
-				if !ok {
-					continue
-				}
-				if !seen[n] {
-					names[n] = append(names[n], i)
-					seen[n] = true
-				}
-			}
-		}
-		base := filepath.Join(dir, "index", safeName(eco))
-		if err := writeRecords(filepath.Join(base, "records.jsonl.gz"), rs); err != nil {
-			return err
-		}
-		if err := writeJSON(filepath.Join(base, "names.json"), names); err != nil {
-			return err
-		}
-	}
-	meta.Records = len(records)
-	for e := range ecos {
-		meta.Ecosystems = append(meta.Ecosystems, e)
-	}
-	sort.Strings(meta.Ecosystems)
-	return nil
-}
-func copyFile(src, dst string) error {
-	return copyFileContext(context.Background(), src, dst)
-}
-
 func copyFileContext(ctx context.Context, src, dst string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 		return err
 	}
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.Create(dst)
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = in.Close()
+	}()
+	out, err := os.Create(dst) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
@@ -542,16 +462,10 @@ func copyFileContext(ctx context.Context, src, dst string) error {
 	return nil
 }
 func lockDatabase(dir string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 		return nil, err
 	}
 	return acquireDatabaseLock(dir + ".lock")
-}
-
-// recoverDatabase restores the last verified generation if installation was
-// interrupted between its two renames. Callers must hold the writer lock.
-func recoverDatabase(dir string) error {
-	return recoverDatabaseContext(context.Background(), dir)
 }
 
 func recoverDatabaseContext(ctx context.Context, dir string) error {
@@ -579,10 +493,6 @@ func recoverDatabaseContext(ctx context.Context, dir string) error {
 		return fmt.Errorf("restore previous database: %w", err)
 	}
 	return nil
-}
-
-func installDatabase(stage, dir string) error {
-	return installDatabaseContext(context.Background(), stage, dir)
 }
 
 func installDatabaseContext(ctx context.Context, stage, dir string) error {

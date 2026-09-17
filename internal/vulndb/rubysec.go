@@ -64,7 +64,10 @@ func parseRubysecZip(ctx context.Context, filename string, emit Emit) error {
 	if err != nil {
 		return err
 	}
-	defer zr.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = zr.Close()
+	}()
 	if len(zr.File) > rubysecMaxEntries {
 		return fmt.Errorf("rubysec archive exceeds %d entries", rubysecMaxEntries)
 	}
@@ -303,10 +306,10 @@ func rubysecUnquote(s string) (string, error) {
 			return "", fmt.Errorf("incomplete YAML Unicode escape")
 		}
 		r, err := strconv.ParseUint(s[i+1:i+1+n], 16, 32)
-		if err != nil || !utf8.ValidRune(rune(r)) {
+		if err != nil || !utf8.ValidRune(rune(r)) { // #nosec G115 -- ParseUint is limited to 32 bits; ValidRune rejects wrapped negatives and values above MaxRune.
 			return "", fmt.Errorf("invalid YAML Unicode escape")
 		}
-		b.WriteRune(rune(r))
+		b.WriteRune(rune(r)) // #nosec G115 -- ParseUint is limited to 32 bits; ValidRune rejects wrapped negatives and values above MaxRune.
 		i += n
 	}
 	return b.String(), nil

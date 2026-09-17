@@ -97,10 +97,6 @@ func newReleaseUpdater(cfg config.Config, repo string, requireSignature bool) (*
 	}, source, nil
 }
 
-func cmdUpdate(ctx context.Context, args []string) error {
-	return cmdUpdateNamed(ctx, args, "update")
-}
-
 func cmdUpdateNamed(ctx context.Context, args []string, commandName string) error {
 	fs := flag.NewFlagSet(commandName, flag.ContinueOnError)
 	check := fs.Bool("check", false, "check without installing")
@@ -166,7 +162,8 @@ func cmdUpdateNamed(ctx context.Context, args []string, commandName string) erro
 	}
 	dest, err := selfupdate.Replace(tmp, exe)
 	if err != nil {
-		os.Remove(tmp)
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmp) // #nosec G703 -- Download returns a newly created temporary file beside the executable.
 		return err
 	}
 	fmt.Printf("updated %s to %s\n", dest, latest)
@@ -179,7 +176,8 @@ func printUpdateSignature(w io.Writer, keySource string, sums *selfupdate.Checks
 		if !sums.Authenticated {
 			signer += " (unauthenticated: v1 record)"
 		}
-		fmt.Fprintf(w, "[update] SHA256SUMS signature verified (key=%s signer=%s)\n", keySource, signer)
+		// Diagnostic output is best effort; it does not determine command success.
+		_, _ = fmt.Fprintf(w, "[update] SHA256SUMS signature verified (key=%s signer=%s)\n", keySource, signer)
 	}
 }
 
@@ -249,7 +247,7 @@ func updateCacheStale(c updateCache, now time.Time) bool {
 // break or spoof startup.
 func readUpdateCache(path string) (updateCache, bool) {
 	var c updateCache
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return c, false
 	}
@@ -279,16 +277,20 @@ func writeUpdateCache(path string, c updateCache) error {
 		return err
 	}
 	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = tmp.Close()
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		os.Remove(tmp.Name())
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return nil

@@ -40,12 +40,6 @@ func licenseExpression(s string) (string, bool) {
 	return p.out.String(), true
 }
 
-// validLicenseExpression reports whether s parses as an SPDX expression.
-func validLicenseExpression(s string) bool {
-	_, ok := licenseExpression(s)
-	return ok
-}
-
 func tokenizeLicense(s string) ([]string, bool) {
 	if len(s) > maxLicenseExpressionBytes {
 		return nil, false

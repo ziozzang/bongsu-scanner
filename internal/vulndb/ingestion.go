@@ -15,27 +15,7 @@ import (
 	"time"
 )
 
-// setIngestionTimes preserves the first known local ingestion, including an
-// unknown zero value for pre-timestamp catalogs. Only newly seen IDs acquire
-// an AddedAt timestamp. The map is loaded once, not queried for every record.
-func setIngestionTimes(ctx context.Context, dir string, old Meta, records map[string]*Record, now time.Time) error {
-	previous, err := previousIngestionTimes(ctx, dir, old)
-	if err != nil {
-		return err
-	}
-
-	for id, r := range records {
-		if added, exists := previous[id]; exists {
-			r.AddedAt = added
-		} else {
-			r.AddedAt = now
-		}
-		r.LastSeenAt = now
-	}
-	return ctx.Err()
-}
-
-func previousIngestionTimes(ctx context.Context, dir string, old Meta) (map[string]time.Time, error) {
+func previousIngestionTimes(ctx context.Context, dir string, old Meta) (_ map[string]time.Time, resultErr error) {
 	previous := map[string]time.Time{}
 	if old.SchemaVersion != 0 {
 		st, err := openVerifiedSnapshotContext(ctx, dir, nil)
@@ -50,7 +30,7 @@ func previousIngestionTimes(ctx context.Context, dir string, old Meta) (map[stri
 		if st == nil {
 			// no usable previous catalog
 		} else if sqlite, ok := st.(*sqliteStore); ok {
-			defer st.Close()
+			defer func() { resultErr = errors.Join(resultErr, st.Close()) }()
 			rows, err := sqlite.conn.QueryContext(ctx, "SELECT id,added_at FROM records")
 			if err != nil {
 				return nil, err
@@ -59,26 +39,29 @@ func previousIngestionTimes(ctx context.Context, dir string, old Meta) (map[stri
 				var id string
 				var added sql.NullString
 				if err = rows.Scan(&id, &added); err != nil {
-					rows.Close()
+					// Cleanup only; read errors or the primary operation error are handled separately.
+					_ = rows.Close()
 					return nil, err
 				}
 				var at time.Time
 				if added.Valid && added.String != "" {
 					at, err = time.Parse(time.RFC3339Nano, added.String)
 					if err != nil {
-						rows.Close()
+						// Cleanup only; read errors or the primary operation error are handled separately.
+						_ = rows.Close()
 						return nil, err
 					}
 				}
 				previous[id] = at
 			}
 			err = rows.Err()
-			rows.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = rows.Close()
 			if err != nil {
 				return nil, err
 			}
 		} else {
-			defer st.Close()
+			defer func() { resultErr = errors.Join(resultErr, st.Close()) }()
 			if err := visitStoreRecords(ctx, st, func(r *Record) error { previous[r.ID] = r.AddedAt; return nil }); err != nil {
 				return nil, err
 			}
@@ -129,9 +112,6 @@ func (s *ingestionSpool) close() error {
 		}
 	}
 	return errors.Join(failures...)
-}
-func (s *ingestionSpool) visit(ctx context.Context, previous map[string]time.Time, now time.Time, emit Emit) error {
-	return visitIngestionSpools(ctx, []*ingestionSpool{s}, previous, now, emit)
 }
 
 func visitIngestionSpools(ctx context.Context, spools []*ingestionSpool, previous map[string]time.Time, now time.Time, emit Emit) error {
@@ -221,14 +201,17 @@ func applyDebianStatusMarkers(r *Record) {
 
 func (s *ingestionSpool) loadPartition(ctx context.Context, i int, records map[string]*Record) error {
 	path := filepath.Join(s.dir, fmt.Sprint(i))
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64<<10), 64<<20)
 	for scanner.Scan() {

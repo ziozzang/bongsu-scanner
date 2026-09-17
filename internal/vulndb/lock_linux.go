@@ -24,7 +24,7 @@ func verificationStat(info os.FileInfo) (catalogStat, bool) {
 
 func trustedVerificationMarker(info os.FileInfo) bool {
 	s, ok := info.Sys().(*syscall.Stat_t)
-	return ok && info.Mode() == 0600 && s.Uid == uint32(os.Getuid())
+	return ok && info.Mode() == 0600 && s.Uid == uint32(os.Getuid()) // #nosec G115 -- Linux getuid returns an unsigned 32-bit UID in a nonnegative int on supported 64-bit targets.
 }
 
 func openVerificationMarker(path string) (*os.File, error) {
@@ -35,7 +35,8 @@ func openVerificationMarker(path string) (*os.File, error) {
 	f := os.NewFile(uintptr(fd), path)
 	info, err := f.Stat()
 	if err != nil || !trustedVerificationMarker(info) {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, errors.New("untrusted verification marker")
 	}
 	return f, nil
@@ -59,7 +60,8 @@ func acquireDatabaseFlock(path string, mode int) (func(), error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	if err := syscall.Flock(fd, mode|syscall.LOCK_NB); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, fmt.Errorf("database is locked or unavailable: %w", err)
 	}
 	var once sync.Once
@@ -74,7 +76,8 @@ func acquireReaderGuard(path string) (func(), error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	if err = syscall.Flock(fd, syscall.LOCK_EX); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, err
 	}
 	return func() { _ = f.Close() }, nil

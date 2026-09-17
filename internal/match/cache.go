@@ -202,7 +202,8 @@ func lookupPrepared(ctx context.Context, store vulndb.Store, cache *versionCache
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		visit(&records[i])
+		// This local visitor only appends records and always returns nil.
+		_ = visit(&records[i])
 	}
 	return out, nil
 }
@@ -265,7 +266,7 @@ func prepareRecord(r vulndb.Record, cache *versionCache, details bool, eco, name
 		}
 	}
 	if anyHit {
-		summary := r.Summary
+		var summary string
 		// A bounded rune walk also handles one-byte and malformed input safely.
 		for n, at := 0, 0; ; n++ {
 			if n == 500 {

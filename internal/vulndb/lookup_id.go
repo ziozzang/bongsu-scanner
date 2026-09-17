@@ -73,7 +73,10 @@ func (s *sqliteStore) lookupIDContext(ctx context.Context, id string) (out []Rec
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rows.Close()
+	}()
 	for rows.Next() {
 		var data []byte
 		if err = rows.Scan(&data); err != nil {

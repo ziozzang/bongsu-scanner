@@ -56,7 +56,7 @@ func exitCode(err error) int {
 	}
 	var found *findingsError
 	if errors.As(err, &found) {
-		return 2
+		return findingsExitCode
 	}
 	var partial *partialScanError
 	if errors.As(err, &partial) {
@@ -110,7 +110,8 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 				visible.Lookup(f.Name).DefValue = f.DefValue
 			}
 		})
-		fmt.Fprintln(fs.Output(), "Usage of match:")
+		// Diagnostic output is best effort; it does not determine command success.
+		_, _ = fmt.Fprintln(fs.Output(), "Usage of match:")
 		visible.PrintDefaults()
 	}
 	db := fs.String("db", dir, "local vulnerability database directory")
@@ -119,7 +120,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	out := fs.String("o", "", "output file (default stdout)")
 	severitySource := fs.String("severity-source", "distro", "severity policy: cvss, distro, or max")
 	minimum := fs.String("min-severity", "", "minimum severity to include")
-	fail := fs.String("fail-on", "", "exit 2 when a finding meets this severity")
+	fail := fs.String("fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity")
 	ignore := fs.String("ignore", "", "comma-separated advisory IDs to ignore")
 	addDeprecatedIncludeUnimportant(fs)
 	excludeUnimportant := fs.Bool("exclude-unimportant", false, "exclude Debian unimportant advisories")
@@ -214,7 +215,8 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 			return err
 		}
 		if err := pprof.StartCPUProfile(f); err != nil {
-			f.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
 			return err
 		}
 		defer func() { pprof.StopCPUProfile(); resultErr = errors.Join(resultErr, f.Close()) }()
@@ -238,7 +240,7 @@ func cmdMatch(ctx context.Context, args []string) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeCommandCatalog(store, &resultErr)
 	var reports []matcher.Report
 	var output bytes.Buffer
 	failed := false
@@ -329,15 +331,19 @@ func writeCommandOutput(path string, data []byte) error {
 	if info, err := os.Stat(path); err == nil && !info.Mode().IsRegular() {
 		// Devices, pipes and sockets (e.g. /dev/null) cannot be replaced by
 		// rename; write through them directly.
-		return os.WriteFile(path, data, 0o644)
+		return os.WriteFile(path, data, 0o644) // #nosec G306 -- This branch writes an existing non-regular sink; its permissions are unchanged.
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".bscan-output-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
 	if _, err = io.Copy(f, bytes.NewReader(data)); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return err
 	}
 	if err = f.Close(); err != nil {

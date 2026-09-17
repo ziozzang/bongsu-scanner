@@ -128,7 +128,7 @@ func TestScanMatchHostContainersFinishAllReports(t *testing.T) {
 case "$1 $2" in
   "ps "*) printf 'first\tfirst\nsecond\tsecond\n' ;;
   "container inspect") printf 'abcdef0123456789|sha256:abc|/fixture|running\n' ;;
-  "export "*) cp "$SCAN_MATCH_EXPORT" "$3" ;;
+  "export "*) cat "$SCAN_MATCH_EXPORT" ;;
   "image inspect") printf '{"Id":"sha256:abc","Os":"linux","Architecture":"amd64"}\n' ;;
   *) exit 2 ;;
 esac

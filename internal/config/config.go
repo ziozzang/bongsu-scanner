@@ -154,7 +154,7 @@ func LoadWithWarnings() (Config, string, []string, error) {
 	if err != nil {
 		return cfg, "", warnings, err
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if os.IsNotExist(err) {
 		return cfg, path, warnings, nil
 	}
@@ -483,7 +483,7 @@ func InitTemplate() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return path, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return path, err
 	}

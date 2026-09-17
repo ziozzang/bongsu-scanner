@@ -137,7 +137,10 @@ func loadMounts() []mountEntry {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	return parseMountInfo(f)
 }
 
@@ -344,7 +347,10 @@ func newWalkState(ctx context.Context, root string, opts Options, hostPolicy boo
 		if err != nil {
 			return false
 		}
-		defer r.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = r.Close()
+		}()
 		info, err := r.Stat(dir)
 		return err == nil && info.IsDir()
 	}
@@ -458,7 +464,8 @@ func walkTree(ctx context.Context, root string, opts Options, w *walkState) erro
 	}
 	defer func() {
 		if w.safeRoot != nil {
-			w.safeRoot.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = w.safeRoot.Close()
 			w.safeRoot = nil
 		}
 	}()
@@ -473,7 +480,8 @@ func walkTree(ctx context.Context, root string, opts Options, w *walkState) erro
 		if errors.Is(err, errParallelBudget) {
 			// Parallel reservations cannot choose the same budget-limited DFS
 			// prefix. Drain first, discard speculative results, then replay.
-			w.safeRoot.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = w.safeRoot.Close()
 			fresh := newWalkState(ctx, root, opts, w.hostPolicy)
 			// Speculative probes also spend this scan's binary budget.
 			fresh.binaryBudget = w.binaryBudget
@@ -522,7 +530,10 @@ func (w *walkState) preloadInventory(rel string) error {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	if w.opts.OneFileSystem && w.rootDev != 0 && deviceOf(info) != 0 && deviceOf(info) != w.rootDev {
 		return nil
 	}
@@ -565,7 +576,8 @@ func (w *walkState) walkDir(dir string) error {
 		return nil
 	}
 	if w.opts.OneFileSystem && w.rootDev != 0 && deviceOf(info) != 0 && deviceOf(info) != w.rootDev {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		w.exclude("onefs", dir)
 		return nil
 	}
@@ -590,9 +602,13 @@ func (w *walkState) walkOpenedDir(dir string, f *os.File) error {
 	if runtime.GOOS == "linux" && w.openDirs < 64 {
 		w.currentDir, w.currentPath = f, dir
 		w.openDirs++
-		defer func() { f.Close(); w.openDirs-- }()
+		defer func() { // Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
+			w.openDirs--
+		}()
 	} else {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 	}
 	defer func() { w.currentDir, w.currentPath = parent, parentPath }()
 	if err != nil {
@@ -768,7 +784,10 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 		w.skip(p, err)
 		return nil
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	if w.opts.OneFileSystem && w.rootDev != 0 {
 		if dev := deviceOf(openedInfo); dev != 0 && dev != w.rootDev {
 			w.exclude("onefs", p)
@@ -817,7 +836,10 @@ func (w *walkState) visitFileWithBudget(p string, d fs.DirEntry, exempt bool) er
 			w.skip(p, err)
 			return nil
 		}
-		defer os.Remove(tmp.Name())
+		defer func() {
+			// Best-effort removal of temporary state; preserve the operation result.
+			_ = os.Remove(tmp.Name())
+		}()
 		h := sha256.New()
 		var dst io.Writer = tmp
 		if w.hashFiles {
@@ -1124,7 +1146,8 @@ func (w *walkState) spoolPackage(c *walkCatalog, pkg Package) error {
 			return fmt.Errorf("walk result spool: %w", err)
 		}
 		if err := os.Remove(f.Name()); err != nil {
-			f.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
 			return fmt.Errorf("unlink walk result spool: %w", err)
 		}
 		w.spool = &walkSpool{file: f, buffer: bufio.NewWriterSize(f, 64<<10)}
@@ -1206,12 +1229,14 @@ func (w *walkState) walkParallel(root string) error {
 	states := make([]*walkState, w.workers-1)
 	defer func() {
 		if w.spool != nil {
-			w.spool.file.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = w.spool.file.Close()
 			w.spool = nil
 		}
 		for _, local := range states {
 			if local.spool != nil {
-				local.spool.file.Close()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = local.spool.file.Close()
 			}
 		}
 	}()
@@ -1233,7 +1258,8 @@ func (w *walkState) walkParallel(root string) error {
 				if err == nil {
 					err = local.walkOpenedDir(task.path, task.file)
 				} else {
-					task.file.Close()
+					// Cleanup only; read errors or the primary operation error are handled separately.
+					_ = task.file.Close()
 				}
 				if err != nil {
 					p.mu.Lock()
@@ -1256,7 +1282,8 @@ func (w *walkState) walkParallel(root string) error {
 		w.skip(root, err)
 		err = nil
 	} else if w.opts.OneFileSystem && w.rootDev != 0 && deviceOf(info) != 0 && deviceOf(info) != w.rootDev {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		w.exclude("onefs", root)
 	} else {
 		err = w.walkOpenedDir(root, f)

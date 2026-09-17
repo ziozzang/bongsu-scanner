@@ -138,7 +138,8 @@ func (u *Updater) warnf(format string, args ...any) {
 	if w == nil {
 		w = os.Stderr
 	}
-	fmt.Fprintf(w, format, args...)
+	// Diagnostic output is best effort; it does not determine command success.
+	_, _ = fmt.Fprintf(w, format, args...)
 }
 
 func (u *Updater) client() (*httpx.Client, error) {
@@ -315,8 +316,10 @@ func (u *Updater) Download(ctx context.Context, asset Asset, wantSHA256, dir str
 	ok := false
 	defer func() {
 		if !ok {
-			f.Close()
-			os.Remove(tmp)
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
+			// Best-effort removal of temporary state; preserve the operation result.
+			_ = os.Remove(tmp)
 		}
 	}()
 	h := sha256.New()
@@ -373,7 +376,8 @@ func Replace(src, exe string) (string, error) {
 	}
 	if d, err := os.Open(filepath.Dir(real)); err == nil {
 		_ = d.Sync()
-		d.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = d.Close()
 	}
 	return real, nil
 }

@@ -188,8 +188,3 @@ func buildPURL(p Package) string {
 	}
 	return b.String()
 }
-
-// makePURL is kept for callers that only know type, name and version.
-func makePURL(kind, name, version string) string {
-	return buildPURL(Package{Type: kind, Name: name, Version: version})
-}

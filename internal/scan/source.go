@@ -422,21 +422,6 @@ func readFileForWalk(ctx context.Context, name string, r io.Reader, size, allowe
 	return File{Path: name, Size: size, SHA256: hex.EncodeToString(digest[:]), Data: data}, nil
 }
 
-func readFile(name string, r io.Reader, size int64, layer string) (File, error) {
-	h := sha256.New()
-	var data []byte
-	if size <= maxMetadata && interesting(name) {
-		b, err := io.ReadAll(io.TeeReader(r, h))
-		if err != nil {
-			return File{}, err
-		}
-		data = b
-	} else if _, err := io.Copy(h, r); err != nil {
-		return File{}, err
-	}
-	return File{Path: name, Size: size, SHA256: hex.EncodeToString(h.Sum(nil)), Data: data, Layer: layer}, nil
-}
-
 // clean normalizes an archive entry name to a root-relative slash path:
 // backslashes become slashes, leading "/" and "./" are dropped, and "." (the
 // root itself) becomes "". Names that still start with ".." escape the root
@@ -475,24 +460,4 @@ func interesting(p string) bool {
 		return true
 	}
 	return strings.HasSuffix(p, ".dist-info/metadata") || strings.HasSuffix(p, ".egg-info") || strings.HasSuffix(base, ".deps.json")
-}
-
-// buildResult catalogs a merged filesystem without image metadata; extra
-// carries packages found outside metadata files (Go binary build info).
-// Image and archive scans use assembleResult (image.go) directly.
-func buildResult(name, source, kind string, fs store, layers []File, extra []Package, now time.Time, opts Options) Result {
-	return assembleResult(name, source, kind, fs, layers, nil, extra, now, opts)
-}
-
-func digestFile(file string) (string, error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

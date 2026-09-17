@@ -40,12 +40,23 @@ func ExportVerified(dir, archivePath string, pub ed25519.PublicKey) error {
 	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("export archive must be outside the database")
 	}
+	archiveRoot, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = archiveRoot.Close() }() // Read-only directory handle.
 	f, err := os.CreateTemp(filepath.Dir(archivePath), ".bscan-export-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
 	err = filepath.WalkDir(dir, func(p string, d os.DirEntry, e error) error {
@@ -70,7 +81,7 @@ func ExportVerified(dir, archivePath string, pub ed25519.PublicKey) error {
 		if err = tw.WriteHeader(h); err != nil {
 			return err
 		}
-		in, err := os.Open(p)
+		in, err := openExportFile(archiveRoot, rel, info)
 		if err != nil {
 			return err
 		}
@@ -83,6 +94,24 @@ func ExportVerified(dir, archivePath string, pub ed25519.PublicKey) error {
 		return err
 	}
 	return os.Rename(f.Name(), archivePath)
+}
+
+// Keep a concurrent symlink replacement inside the catalog and reject replaced
+// entries before copying their bytes to a distributable archive.
+func openExportFile(root *os.Root, name string, expected os.FileInfo) (*os.File, error) {
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		_ = f.Close() // Read-only cleanup after a failed identity check.
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("database export entry changed")
+	}
+	return f, nil
 }
 
 // Import validates an archive in a sibling staging directory before replacing
@@ -122,17 +151,26 @@ func importContextLimit(ctx context.Context, archivePath, dir string, pub ed2551
 	if err != nil {
 		return meta, err
 	}
-	defer os.RemoveAll(stage)
-	f, err := os.Open(archivePath)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.RemoveAll(stage)
+	}()
+	f, err := os.Open(archivePath) // #nosec G304 -- The caller selects the local import archive; every entry is validated before extraction.
 	if err != nil {
 		return meta, err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	gz, err := gzip.NewReader(contextReader{ctx: ctx, r: f})
 	if err != nil {
 		return meta, err
 	}
-	defer gz.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = gz.Close()
+	}()
 	expanded := &archiveExpansionReader{limited: io.LimitedReader{R: contextReader{ctx: ctx, r: gz}, N: maxExpanded + 1}, max: maxExpanded}
 	tr := tar.NewReader(expanded)
 	seen := map[string]bool{}
@@ -159,11 +197,11 @@ func importContextLimit(ctx context.Context, archivePath, dir string, pub ed2551
 		path := filepath.Join(stage, filepath.FromSlash(name))
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err = os.MkdirAll(path, 0755); err != nil {
+			if err = os.MkdirAll(path, 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 				return meta, err
 			}
 			continue
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg: // tar.Reader normalizes legacy NUL type flags to TypeReg.
 		default:
 			return meta, fmt.Errorf("unsupported archive entry %q", h.Name)
 		}
@@ -171,10 +209,10 @@ func importContextLimit(ctx context.Context, archivePath, dir string, pub ed2551
 			return meta, fmt.Errorf("expanded database archive exceeds %d bytes (including headers)", maxExpanded)
 		}
 		total += h.Size
-		if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		if err = os.MkdirAll(filepath.Dir(path), 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 			return meta, err
 		}
-		out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644) // #nosec G302 G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory. Distributable vulnerability catalog data is intentionally world-readable.
 		if err != nil {
 			return meta, err
 		}
@@ -197,7 +235,7 @@ func importContextLimit(ctx context.Context, archivePath, dir string, pub ed2551
 		return meta, err
 	}
 	meta, err = st.Meta()
-	st.Close()
+	err = errors.Join(err, st.Close())
 	if err != nil {
 		return meta, err
 	}

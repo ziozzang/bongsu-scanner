@@ -50,23 +50,6 @@ func parseOSRelease(b []byte) OSRelease {
 	}
 }
 
-// findOSRelease picks the root's os-release out of files using osReleaseRank.
-func findOSRelease(files []File) *OSRelease {
-	best, bestRank := (*OSRelease)(nil), 0
-	for _, f := range files {
-		r := osReleaseRank(f.Path)
-		if r == 0 || r <= bestRank || len(f.Data) == 0 {
-			continue
-		}
-		o := parseOSRelease(f.Data)
-		if o.ID == "" {
-			continue
-		}
-		best, bestRank = &o, r
-	}
-	return best
-}
-
 // cataloger parses inputs immediately and retains only deduplicated packages.
 // OS package defaults are resolved in finish so a late (or higher-priority)
 // os-release has the same effect as the archive catalog's original two passes.
@@ -472,16 +455,6 @@ func (c *cataloger) finish() ([]Package, *OSRelease) {
 		return a.Arch < b.Arch
 	})
 	return out, c.osr
-}
-
-// catalog preserves the in-memory entry point used by image/archive scans.
-func catalog(files []File, extra []Package) ([]Package, *OSRelease) {
-	var c cataloger
-	for _, f := range files {
-		c.addFile(f)
-	}
-	c.addPackages(extra)
-	return c.finish()
 }
 
 // mergePackage folds a duplicate discovery into prev: the first Source is
@@ -1382,9 +1355,6 @@ var maxInstalledNPM = 50000
 
 func isInstalledNPMPackage(p string) bool {
 	return path.Base(p) == "package.json" && strings.Contains("/"+p, "/node_modules/")
-}
-func scanInstalledNPM(f File, add func(Package)) {
-	scanInstalledNPMWithPrefixes(f, nil, add)
 }
 
 func scanInstalledNPMWithPrefixes(f File, prefixes []string, add func(Package)) {

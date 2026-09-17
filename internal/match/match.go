@@ -364,14 +364,6 @@ type advisoryIdentity struct {
 	Aliases []string
 }
 
-func aliasCanonicalIDs(records []vulndb.Record) map[string]string {
-	identities := make([]advisoryIdentity, len(records))
-	for i, r := range records {
-		identities[i] = advisoryIdentity{r.ID, r.Aliases}
-	}
-	return aliasIdentityIDs(identities)
-}
-
 func aliasIdentityIDs(records []advisoryIdentity) map[string]string {
 	parent := map[string]string{}
 	protected := map[string]bool{}
@@ -473,19 +465,6 @@ func mergeFinding(dst *Finding, src Finding) {
 	}
 }
 
-// compare rejects unknown ordering. Exact identity remains usable with low
-// confidence when an ecosystem's grammar cannot parse the version.
-func compare(eco, a, b string) (int, bool, bool) {
-	c, e := version.Compare(eco, a, b)
-	if e == nil && version.Valid(eco, a) && version.Valid(eco, b) {
-		return c, true, false
-	}
-	if a == b {
-		return 0, true, true
-	}
-	return 0, false, true
-}
-
 // versionIdentifier normalizes spelling without discarding build metadata,
 // which is significant for explicit versions even when ordering ignores it.
 func versionIdentifier(eco, v string) string {
@@ -516,11 +495,6 @@ func versionIdentifier(eco, v string) string {
 		normalized += v[i:]
 	}
 	return normalized
-}
-
-func affectedVersion(eco, v string, a vulndb.Affected) (bool, []string, bool, string) {
-	cache := newVersionCache()
-	return cache.affectedVersion(eco, v, cache.prepareAffected(eco, a))
 }
 
 func (cache *versionCache) affectedVersion(eco, v string, a preparedAffected) (bool, []string, bool, string) {
@@ -632,11 +606,6 @@ func ShouldFail(r Report, threshold string) bool {
 	return false
 }
 
-// sortedEvents handles OSV feeds whose events are not in version order.
-// Invalid boundaries cannot establish a trustworthy affected interval.
-func sortedEvents(eco string, in []vulndb.Event) ([]vulndb.Event, bool) {
-	return newVersionCache().sortedEvents(eco, in)
-}
 func (cache *versionCache) sortedEvents(eco string, in []vulndb.Event) ([]vulndb.Event, bool) {
 	events := make([]vulndb.Event, 0, len(in))
 	value := func(e vulndb.Event) string {

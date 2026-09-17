@@ -126,11 +126,14 @@ func bytesTrimSpace(b []byte) []byte {
 }
 
 func FileDigest(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	h := sha256.New()
 	if _, err := f.WriteTo(h); err != nil {
 		return "", err
@@ -191,7 +194,7 @@ func (r Record) Verify(pub ed25519.PublicKey) error {
 
 func ReadRecord(path string) (Record, error) {
 	var r Record
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return r, err
 	}
@@ -207,7 +210,7 @@ func WriteRecord(path string, r Record) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o644)
+	return os.WriteFile(path, b, 0o644) // #nosec G306 -- Detached signatures contain public verification data, never private key material.
 }
 
 func Fingerprint(pub ed25519.PublicKey) string {

@@ -108,7 +108,10 @@ func (c *Client) Analyze(ctx context.Context, input Input) (Result, error) {
 		}
 		return Result{}, errors.New("assessment: provider request failed")
 	}
-	defer response.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = response.Body.Close()
+	}()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return Result{}, fmt.Errorf("assessment: provider returned HTTP %d", response.StatusCode)
 	}

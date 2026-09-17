@@ -130,7 +130,6 @@ func renderMarkdown(w io.Writer, d Document) error {
 
 type field struct{ Name, Value string }
 
-func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func headerFields(d Document) []field {
 	out := []field{{"Target", d.Target}, {"SBOM file", d.SBOMPath}, {"Generated at (UTC)", d.GeneratedAt.Format("2006-01-02T15:04:05Z07:00")}, {"Tool version", d.GeneratedBy.Version}, {"DB updated_at", d.DB.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")}, {"DB record count", strconv.Itoa(d.DB.Records)}, {"DB sources", sourcesText(d.DB.Sources)}, {"Options", optionsText(d.Options)}, {"Options provenance", d.OptionsNote}, {"Skipped reasons", countsText(d.Summary.Skipped)}}
 	out = append(out, field{"Severity policy legend", policyLegend(d)})

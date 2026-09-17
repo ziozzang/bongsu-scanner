@@ -459,7 +459,8 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 	cpuProfile := fs.String("cpuprofile", "", "")
 	memProfile := fs.String("memprofile", "", "")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage of scan:")
+		// Diagnostic output is best effort; it does not determine command success.
+		_, _ = fmt.Fprintln(fs.Output(), "Usage of scan:")
 		visible := flag.NewFlagSet("scan", flag.ContinueOnError)
 		visible.SetOutput(fs.Output())
 		addScanFlags(visible)
@@ -484,7 +485,8 @@ func cmdScan(ctx context.Context, args []string) (err error) {
 			return createErr
 		}
 		if startErr := pprof.StartCPUProfile(out); startErr != nil {
-			out.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = out.Close()
 			return startErr
 		}
 		defer func() {
@@ -514,7 +516,7 @@ func validateOfflineTarget(target string, offline bool) error {
 	return nil
 }
 
-func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) {
+func scanOne(ctx context.Context, target string, f scanFlags) (paths []string, resultErr error) {
 	if err := scan.ValidateRegistryReference(target); err != nil {
 		return nil, err
 	}
@@ -536,7 +538,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		return nil, err
 	}
 	if matching != nil {
-		defer matching.store.Close()
+		defer closeCommandCatalog(matching.store, &resultErr)
 	}
 	if err := resolveScanSigning(&f); err != nil {
 		return nil, err
@@ -601,7 +603,7 @@ func scanOne(ctx context.Context, target string, f scanFlags) ([]string, error) 
 		logf("scan:policy", "partial scan of %s (denied=%d errors=%d metadata-skipped=%d limit=%q); SBOM will be marked partial\n",
 			r.Name, r.Scan.PermissionDenied, r.Scan.SkippedErrors, r.Scan.MetadataSkipped, r.Scan.LimitReached)
 	}
-	if err := os.MkdirAll(f.output, 0o755); err != nil {
+	if err := os.MkdirAll(f.output, 0o755); err != nil { // #nosec G301 -- Directory entries are public; sensitive contents use separately restricted file permissions.
 		return nil, err
 	}
 	var outputs []string
@@ -761,7 +763,7 @@ func resolveScanSigning(f *scanFlags) error {
 	if err != nil {
 		return err
 	}
-	keyData, err := os.ReadFile(keyPath)
+	keyData, err := os.ReadFile(keyPath) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -1017,11 +1019,14 @@ func cmdScramble(args []string) error {
 		return errors.New("scramble requires one input file")
 	}
 	inPath := fs.Arg(0)
-	in, err := os.Open(inPath)
+	in, err := os.Open(inPath) // #nosec G304 G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = in.Close()
+	}()
 	cfg, _, err := config.LoadForCLI()
 	if err != nil {
 		return err
@@ -1044,7 +1049,7 @@ func cmdScramble(args []string) error {
 			return err
 		}
 		return atomicOutput(*out, func(w *os.File) error {
-			return scramble.Encrypt(in, w, uint64(info.Size()), n, priv, time.Now())
+			return scramble.Encrypt(in, w, uint64(info.Size()), n, priv, time.Now()) // #nosec G115 -- os.File.Stat reports a nonnegative file size on supported filesystems.
 		})
 	case "decrypt":
 		if *out == "" {
@@ -1201,7 +1206,7 @@ func ensureKey(cfg *config.Config) (ed25519.PrivateKey, string, bool, error) {
 	if err != nil {
 		return nil, "", false, err
 	}
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		priv, err := sign.ParsePrivate(b)
 		return priv, path, false, err
 	} else if !os.IsNotExist(err) {
@@ -1228,7 +1233,7 @@ func ensureKey(cfg *config.Config) (ed25519.PrivateKey, string, bool, error) {
 	}
 	pubPath, _ = config.Expand(pubPath)
 	pubPEM, _ := sign.MarshalPublic(pub)
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil { // #nosec G306 -- Public verification keys are intentionally world-readable; private keys use 0600.
 		return nil, path, false, err
 	}
 	cfg.PrivateKey, cfg.PublicKey = path, pubPath
@@ -1240,11 +1245,11 @@ func resolvePublic(cfg config.Config, spec string) (ed25519.PublicKey, error) {
 		spec = v
 	}
 	if p, err := config.Expand(spec); err == nil {
-		if b, err := os.ReadFile(p); err == nil {
+		if b, err := os.ReadFile(p); err == nil { // #nosec G304 G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 			return sign.ParsePublic(b)
 		}
 	}
-	if b, err := os.ReadFile(spec); err == nil {
+	if b, err := os.ReadFile(spec); err == nil { // #nosec G304 G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		return sign.ParsePublic(b)
 	}
 	return sign.ParsePublic([]byte(spec))
@@ -1285,7 +1290,7 @@ func parseSize(s string) (int, error) {
 }
 
 func atomicOutput(path string, fn func(*os.File) error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { // #nosec G301 G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional. Directory entries are public; sensitive contents use separately restricted file permissions.
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
@@ -1293,15 +1298,19 @@ func atomicOutput(path string, fn func(*os.File) error) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmp) // #nosec G703 -- CreateTemp generated this name in the caller-selected output directory.
+	}()
 	if err := fn(f); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := os.Rename(tmp, path); err != nil { // #nosec G703 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		return err
 	}
 	fmt.Println(path)
@@ -1365,7 +1374,15 @@ func printVersion() {
 type globalFlags struct {
 	quiet, noColor, showVersion bool
 	logFormat, configPath       string
+	findingsExit                int
+	memoryLimit                 string
 }
+
+// findingsExitCode is the process exit status used when --fail-on is met.
+// It is configurable because the Go runtime itself exits with status 2 on a
+// fatal error (out of memory, stack overflow): CI pipelines that must tell
+// "vulnerabilities found" from "the scanner crashed" can pick another code.
+var findingsExitCode = 2
 
 func globalFlagSet(options *globalFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("bscan", flag.ContinueOnError)
@@ -1376,8 +1393,38 @@ func globalFlagSet(options *globalFlags) *flag.FlagSet {
 	fs.StringVar(&options.configPath, "config", "", "configuration path (overrides BONGSU_CONFIG)")
 	fs.BoolVar(&options.showVersion, "version", false, "show build information")
 	fs.BoolVar(&options.showVersion, "v", false, "show build information")
+	fs.IntVar(&options.findingsExit, "findings-exit-code", 2, "exit status when --fail-on is met (the Go runtime also uses 2 for fatal errors; choose another code to tell them apart)")
+	fs.StringVar(&options.memoryLimit, "memory-limit", os.Getenv("BSCAN_MEMORY_LIMIT"), "soft heap limit for the Go runtime, e.g. 512MiB or 1GiB (BSCAN_MEMORY_LIMIT); the collector works harder near the limit instead of aborting")
 	fs.Usage = usage
 	return fs
+}
+
+// parseByteSize accepts plain bytes or IEC/SI suffixes (K, M, G, T with or
+// without an 'i' and 'B').
+func parseByteSize(s string) (int64, error) {
+	t := strings.TrimSpace(strings.ToUpper(s))
+	if t == "" {
+		return 0, errors.New("empty size")
+	}
+	mult := int64(1)
+	for _, suf := range []struct {
+		name string
+		mult int64
+	}{{"TIB", 1 << 40}, {"GIB", 1 << 30}, {"MIB", 1 << 20}, {"KIB", 1 << 10}, {"TB", 1 << 40}, {"GB", 1 << 30}, {"MB", 1 << 20}, {"KB", 1 << 10}, {"T", 1 << 40}, {"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}, {"B", 1}} {
+		if strings.HasSuffix(t, suf.name) {
+			t = strings.TrimSuffix(t, suf.name)
+			mult = suf.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	if n > (1<<63-1)/mult {
+		return 0, fmt.Errorf("size %q is too large", s)
+	}
+	return n * mult, nil
 }
 
 func parseGlobalFlags(args []string) (globalFlags, []string, error) {
@@ -1388,6 +1435,14 @@ func parseGlobalFlags(args []string) (globalFlags, []string, error) {
 	}
 	if options.logFormat != "text" && options.logFormat != "json" {
 		return options, nil, fmt.Errorf("--log-format must be text or json, got %q", options.logFormat)
+	}
+	if options.findingsExit < 1 || options.findingsExit > 125 || options.findingsExit == 130 {
+		return options, nil, fmt.Errorf("--findings-exit-code must be between 1 and 125, got %d", options.findingsExit)
+	}
+	if options.memoryLimit != "" {
+		if _, err := parseByteSize(options.memoryLimit); err != nil {
+			return options, nil, fmt.Errorf("--memory-limit: %w", err)
+		}
 	}
 	var emptyConfig bool
 	fs.Visit(func(f *flag.Flag) {
@@ -1421,7 +1476,15 @@ func applyGlobalFlags(options globalFlags) (func(), error) {
 	previousQuiet, previousJSON := progressLog.quiet, progressLog.json
 	progressLog.quiet, progressLog.json = options.quiet, options.logFormat == "json"
 	progressLog.Unlock()
+	previousExit := findingsExitCode
+	findingsExitCode = options.findingsExit
+	if options.memoryLimit != "" {
+		if limit, err := parseByteSize(options.memoryLimit); err == nil {
+			debug.SetMemoryLimit(limit)
+		}
+	}
 	return func() {
+		findingsExitCode = previousExit
 		progressLog.Lock()
 		progressLog.quiet, progressLog.json = previousQuiet, previousJSON
 		progressLog.Unlock()

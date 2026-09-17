@@ -50,11 +50,14 @@ func scanJavaFile(f File, diskPath string, add func(Package)) (skipped, failures
 	if diskPath == "" {
 		return scanJavaArchive(bytes.NewReader(f.Data), int64(len(f.Data)), f, add)
 	}
-	rd, err := os.Open(diskPath)
+	rd, err := os.Open(diskPath) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return 0, 1
 	}
-	defer rd.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rd.Close()
+	}()
 	st, err := rd.Stat()
 	if err != nil {
 		return 0, 1
@@ -88,7 +91,8 @@ func scanJavaArchive(rd io.ReaderAt, size int64, f File, add func(Package)) (ski
 				return nil
 			}
 			b, err := io.ReadAll(io.LimitReader(r, limit+1))
-			r.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = r.Close()
 			remaining -= int64(len(b))
 			if int64(len(b)) > limit {
 				skipped++

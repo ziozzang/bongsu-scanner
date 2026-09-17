@@ -16,7 +16,7 @@ func unameMachine() string {
 		if c == 0 {
 			break
 		}
-		b = append(b, byte(c))
+		b = append(b, byte(c)) // #nosec G115 -- Reinterpret the kernel char byte without changing its bit pattern.
 	}
 	return string(b)
 }

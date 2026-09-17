@@ -152,14 +152,17 @@ func fetchFeed(ctx context.Context, client *httpx.Client, feed Feed, prev *Sourc
 		headers["If-None-Match"] = prev.ETag
 		headers["If-Modified-Since"] = prev.LastMod
 	}
-	if err := os.MkdirAll(filepath.Dir(rawPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(rawPath), 0o755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 		return fetchResult{Meta: meta}, err
 	}
 	f, err := os.CreateTemp(filepath.Dir(rawPath), ".download-*")
 	if err != nil {
 		return fetchResult{Meta: meta}, err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
 	h := sha256.New()
 	n, etag, lastMod, err := client.Download(ctx, feed.URL, headers, io.MultiWriter(f, h), feed.MaxBytes)
 	closeErr := f.Close()

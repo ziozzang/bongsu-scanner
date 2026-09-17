@@ -17,11 +17,14 @@ type Entry struct {
 }
 
 func File(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -30,11 +33,14 @@ func File(path string) (string, error) {
 }
 
 func Write(path string, entries []Entry) error {
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	for _, e := range entries {
 		if strings.ContainsAny(e.Path, "\r\n") {
 			return fmt.Errorf("unsafe manifest path %q", e.Path)
@@ -47,11 +53,14 @@ func Write(path string, entries []Entry) error {
 }
 
 func Read(path string) ([]Entry, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	return ReadFrom(f)
 }
 

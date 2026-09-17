@@ -70,7 +70,7 @@ func OpenWithKeyResolverContext(ctx context.Context, dir string, opts Options, r
 	}
 	opts.Isolation, opts.SkipIsolation = mode, false
 	dir = filepath.Clean(dir)
-	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil { // #nosec G301 -- Catalog and feed directories contain distributable vulnerability data, not credentials.
 		return nil, err
 	}
 	unlock, err := acquireSharedDatabaseLock(dir + ".lock")
@@ -121,12 +121,6 @@ func OpenWithKeyResolverContext(ctx context.Context, dir string, opts Options, r
 	return st, nil
 }
 
-// openVerifiedSnapshot requires an existing lock for the entire store lifetime
-// or an isolated staging path.
-func openVerifiedSnapshot(dir string, pub ed25519.PublicKey) (Store, error) {
-	return openVerifiedSnapshotContext(context.Background(), dir, pub)
-}
-
 func openVerifiedSnapshotContext(ctx context.Context, dir string, pub ed25519.PublicKey) (Store, error) {
 	return openVerifiedSnapshotOptionsContext(ctx, dir, Options{PublicKey: pub})
 }
@@ -144,7 +138,8 @@ func openVerifiedSnapshotOptionsContext(ctx context.Context, dir string, opts Op
 		}
 		defer func() {
 			if source != nil {
-				source.file.Close()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = source.file.Close()
 			}
 		}()
 	}
@@ -169,7 +164,8 @@ func openVerifiedSnapshotOptionsContext(ctx context.Context, dir string, opts Op
 		st, err := openSQLiteSnapshotOptionsContext(ctx, dir, m, digest, opts, source)
 		if err == nil && source != nil {
 			if st.(*sqliteStore).source == nil {
-				source.file.Close()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = source.file.Close()
 			}
 			source = nil // The in-place store owns the descriptor until Close.
 		}
@@ -181,7 +177,8 @@ func openVerifiedSnapshotOptionsContext(ctx context.Context, dir string, opts Op
 	s := &diskStore{dir: dir, meta: m, loaded: map[string]*ecosystemIndex{}, files: map[string][2]*os.File{}}
 	for _, e := range m.Ecosystems {
 		if err := ctx.Err(); err != nil {
-			s.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = s.Close()
 			return nil, err
 		}
 		eco := BaseEcosystem(e)
@@ -192,14 +189,17 @@ func openVerifiedSnapshotOptionsContext(ctx context.Context, dir string, opts Op
 		namesRel := filepath.ToSlash(filepath.Join("index", safeName(eco), "names.json"))
 		names, err := verifiedLegacyCopy(ctx, filepath.Join(base, "names.json"), digests[namesRel])
 		if err != nil {
-			s.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = s.Close()
 			return nil, err
 		}
 		recordsRel := filepath.ToSlash(filepath.Join("index", safeName(eco), "records.jsonl.gz"))
 		records, err := verifiedLegacyCopy(ctx, filepath.Join(base, "records.jsonl.gz"), digests[recordsRel])
 		if err != nil {
-			closeLegacyCopy(names)
-			s.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = closeLegacyCopy(names)
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = s.Close()
 			return nil, err
 		}
 		s.files[eco] = [2]*os.File{names, records}
@@ -308,11 +308,14 @@ func readJSONContext(ctx context.Context, path string, v any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	if err := readJSONReader(contextReader{ctx: ctx, r: f}, v); err != nil {
 		return err
 	}
@@ -336,16 +339,9 @@ func writeJSON(path string, v any) error {
 	if len(b)+1 > 64<<20 {
 		return errors.New("database JSON exceeds 64 MiB")
 	}
-	return os.WriteFile(path, append(b, '\n'), 0644)
+	return os.WriteFile(path, append(b, '\n'), 0644) // #nosec G306 -- Distributable vulnerability catalog data is intentionally world-readable.
 }
-func readRecords(path string, emit Emit) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return readRecordsReader(f, emit)
-}
+
 func readRecordsReader(reader io.Reader, emit Emit) error {
 	return readRecordsBounded(reader, emit, 1<<30, 64<<20)
 }
@@ -355,7 +351,10 @@ func readRecordsBounded(reader io.Reader, emit Emit, maxBytes int64, maxRecord i
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = gz.Close()
+	}()
 	limited := &io.LimitedReader{R: gz, N: maxBytes + 1}
 	scanner := bufio.NewScanner(limited)
 	initial := 64 << 10
@@ -380,38 +379,7 @@ func readRecordsBounded(reader io.Reader, emit Emit, maxBytes int64, maxRecord i
 	}
 	return nil
 }
-func writeRecords(path string, records []*Record) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz := gzip.NewWriter(f)
-	var expanded int64
-	for _, r := range records {
-		b, err := json.Marshal(r)
-		if err != nil {
-			gz.Close()
-			return err
-		}
-		if len(b)+1 >= 64<<20 || int64(len(b)+1) > (1<<30)-expanded {
-			gz.Close()
-			return errors.New("database record or expanded index exceeds size limit")
-		}
-		expanded += int64(len(b) + 1)
-		if _, err = gz.Write(append(b, '\n')); err != nil {
-			gz.Close()
-			return err
-		}
-	}
-	if err = gz.Close(); err != nil {
-		return err
-	}
-	return f.Close()
-}
+
 func safeRelative(p string) bool {
 	return p != "" && !strings.ContainsAny(p, "\\\r\n") && !filepath.IsAbs(p) && filepath.ToSlash(filepath.Clean(p)) == p && p != "." && p != ".." && !strings.HasPrefix(p, "../")
 }
@@ -428,10 +396,6 @@ func VerifyContext(ctx context.Context, dir string, pub ed25519.PublicKey) error
 	return err
 }
 
-func verifyWithDigests(dir string, pub ed25519.PublicKey) (map[string]string, error) {
-	return verifyWithDigestsContext(context.Background(), dir, pub)
-}
-
 func verifyWithDigestsContext(ctx context.Context, dir string, pub ed25519.PublicKey, sources ...*catalogFile) (map[string]string, error) {
 	var source *catalogFile
 	var pinned *os.File
@@ -445,29 +409,20 @@ func verifyWithDigestsContext(ctx context.Context, dir string, pub ed25519.Publi
 	}
 	return digests, ctx.Err()
 }
-func verify(dir string, pub ed25519.PublicKey) (map[string]string, error) {
-	return verifyContext(context.Background(), dir, pub)
-}
-
-func verifyContext(ctx context.Context, dir string, pub ed25519.PublicKey, pinned ...*os.File) (map[string]string, error) {
-	var f *os.File
-	if len(pinned) > 0 {
-		f = pinned[0]
-	}
-	// Explicit Verify and install/import validation always hash all entries.
-	return verifyCatalogContext(ctx, dir, pub, f, nil)
-}
 
 func verifyCatalogContext(ctx context.Context, dir string, pub ed25519.PublicKey, pinned *os.File, source *catalogFile) (map[string]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	manifest := filepath.Join(dir, "manifest.sha256")
-	manifestFile, err := os.Open(manifest)
+	manifestFile, err := os.Open(manifest) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return nil, err
 	}
-	defer manifestFile.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = manifestFile.Close()
+	}()
 	h := sha256.New()
 	limited := &io.LimitedReader{R: contextReader{ctx: ctx, r: manifestFile}, N: (64 << 20) + 1}
 	entries, err := filehash.ReadFrom(io.TeeReader(limited, h))
@@ -593,9 +548,6 @@ func verifyCatalogContext(ctx context.Context, dir string, pub ed25519.PublicKey
 	}
 	return digests, ctx.Err()
 }
-func writeManifest(dir string, opts Options) error {
-	return writeManifestContext(context.Background(), dir, opts)
-}
 
 func writeManifestContext(ctx context.Context, dir string, opts Options) error {
 	if err := ctx.Err(); err != nil {
@@ -634,23 +586,26 @@ func writeManifestContext(ctx context.Context, dir string, opts Options) error {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	path := filepath.Join(dir, "manifest.sha256")
-	manifest, err := os.Create(path)
+	manifest, err := os.Create(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
 		if err = ctx.Err(); err != nil {
-			manifest.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = manifest.Close()
 			_ = os.Remove(path)
 			return err
 		}
 		if strings.ContainsAny(entry.Path, "\r\n") {
-			manifest.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = manifest.Close()
 			_ = os.Remove(path)
 			return fmt.Errorf("unsafe manifest path %q", entry.Path)
 		}
 		if _, err = fmt.Fprintf(manifest, "%s  %s\n", entry.Digest, entry.Path); err != nil {
-			manifest.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = manifest.Close()
 			_ = os.Remove(path)
 			return err
 		}
@@ -685,11 +640,14 @@ func writeManifestContext(ctx context.Context, dir string, opts Options) error {
 // readVerifiedJSONContext parses only bytes whose hash matches the verified
 // manifest, even if the source is replaced between verification and this read.
 func readVerifiedJSONContext(ctx context.Context, path, expected string, v any) error {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	b, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, (64<<20)+1))
 	if err != nil {
 		return err
@@ -708,16 +666,22 @@ func verifiedLegacyCopy(ctx context.Context, path, expected string) (*os.File, e
 	if expected == "" {
 		return nil, fmt.Errorf("database integrity check failed: manifest does not cover %s", path)
 	}
-	in, err := os.Open(path)
+	in, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return nil, err
 	}
-	defer in.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = in.Close()
+	}()
 	out, err := os.CreateTemp("", ".bscan-legacy-reader-*")
 	if err != nil {
 		return nil, err
 	}
-	fail := func(err error) (*os.File, error) { closeLegacyCopy(out); return nil, err }
+	fail := func(err error) (*os.File, error) { // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = closeLegacyCopy(out)
+		return nil, err
+	}
 	if _, err = io.Copy(out, contextReader{ctx: ctx, r: in}); err != nil {
 		return fail(err)
 	}
@@ -749,11 +713,14 @@ func closeLegacyCopy(f *os.File) error {
 // preliminary signer discovery, without changing the general signing package.
 func ReadSignatureContext(ctx context.Context, path string) (sign.Record, error) {
 	var record sign.Record
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return record, err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	b, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, (64<<10)+1))
 	if err != nil {
 		return record, err

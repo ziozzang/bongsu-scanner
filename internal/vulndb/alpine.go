@@ -72,7 +72,7 @@ func (alpineSource) Feeds(opts *Options) ([]Feed, error) {
 // for ecosystem "Alpine:<release>". The secfixes key "0" means "not
 // affected" and is skipped. Records are emitted sorted by ID.
 func parseAlpineSecDB(ctx context.Context, p, release, repo string, emit Emit) error {
-	b, err := os.ReadFile(p)
+	b, err := os.ReadFile(p) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}

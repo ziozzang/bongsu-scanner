@@ -51,11 +51,14 @@ type Document struct {
 }
 
 func LoadFile(path string) (Document, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return Document{}, err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return Document{}, err

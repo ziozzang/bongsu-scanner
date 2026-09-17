@@ -761,8 +761,8 @@ for a in "$@"; do
   prev="$a"
 done
 case "$1 $2" in
-  "image save") cp "$FAKE_DOCKER_IMAGE" "$out" ;;
-  "export "*) cp "$FAKE_DOCKER_EXPORT" "$out" ;;
+  "image save") if [ -n "$out" ]; then cp "$FAKE_DOCKER_IMAGE" "$out"; else cat "$FAKE_DOCKER_IMAGE"; fi ;;
+  "export "*) if [ -n "$out" ]; then cp "$FAKE_DOCKER_EXPORT" "$out"; else cat "$FAKE_DOCKER_EXPORT"; fi ;;
   "container inspect")
     last=""; for a in "$@"; do last="$a"; done
     if [ "$last" = "missing" ]; then echo "Error response from daemon: No such container: missing" >&2; exit 1; fi
@@ -812,7 +812,9 @@ func TestDockerImageTargetUsesSeparator(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %q", calls)
 	}
-	if !strings.HasPrefix(calls[0], "image save -o ") || !strings.HasSuffix(calls[0], " -- alpine:3.20") {
+	// The archive is streamed from docker's stdout into a bscan-owned file:
+	// no -o flag, so docker never creates ".tmp-*" siblings it might leak.
+	if calls[0] != "image save -- alpine:3.20" {
 		t.Fatalf("image save call = %q", calls[0])
 	}
 	if calls[1] != "image inspect --format {{json .}} -- alpine:3.20" {
@@ -863,7 +865,7 @@ func TestContainerTargetUsesExport(t *testing.T) {
 	if calls[0] != "container inspect --format {{.Id}}|{{.Image}}|{{.Name}}|{{.State.Status}} -- bscan-1d" {
 		t.Fatalf("inspect call = %q", calls[0])
 	}
-	if !strings.HasPrefix(calls[1], "export -o ") || !strings.HasSuffix(calls[1], " -- abcdef0123456789") {
+	if calls[1] != "export -- abcdef0123456789" {
 		t.Fatalf("export call = %q", calls[1])
 	}
 	if !strings.HasPrefix(calls[2], "image inspect --format {{json .}} -- sha256:") {

@@ -210,7 +210,10 @@ func (c *Client) GetJSON(ctx context.Context, rawURL string, headers map[string]
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return statusError(req, resp)
 	}
@@ -244,7 +247,10 @@ func (c *Client) Download(ctx context.Context, rawURL string, headers map[string
 	if err != nil {
 		return 0, "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
+	}()
 	etag = Sanitize(resp.Header.Get("ETag"))
 	lastModified = Sanitize(resp.Header.Get("Last-Modified"))
 	if resp.StatusCode == http.StatusNotModified {

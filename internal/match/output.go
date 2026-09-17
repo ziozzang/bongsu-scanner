@@ -145,11 +145,6 @@ func encodeJSONReport(w io.Writer, r Report) error {
 	return err
 }
 
-func encode(w io.Writer, v any) error {
-	e := json.NewEncoder(w)
-	e.SetIndent("", "  ")
-	return e.Encode(v)
-}
 func writeCycloneDX(w io.Writer, r Report, d Document) error {
 	// Preserve the historical compact-file encoder byte for byte, including
 	// generated refs, float64 numbers and sorted keys. Only CycloneDX pays for

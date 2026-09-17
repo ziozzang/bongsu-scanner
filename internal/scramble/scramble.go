@@ -61,7 +61,7 @@ func Encrypt(in io.Reader, out io.Writer, size uint64, chunkSize int, priv ed255
 			return err
 		}
 		h.Write(buf[:n])
-		offset += uint64(n)
+		offset += uint64(n) // #nosec G115 -- n is a successful ReadFull count or a bounded slice length, hence nonnegative.
 	}
 	sig := ed25519.Sign(priv, h.Sum(nil))
 	_, err := out.Write(sig)
@@ -101,7 +101,7 @@ func Decrypt(in io.Reader, out io.Writer, pub ed25519.PublicKey) (Header, error)
 		if _, err := out.Write(buf[:n]); err != nil {
 			return Header{}, err
 		}
-		offset += uint64(n)
+		offset += uint64(n) // #nosec G115 -- n is a successful ReadFull count or a bounded slice length, hence nonnegative.
 	}
 	sig := make([]byte, ed25519.SignatureSize)
 	if _, err := io.ReadFull(in, sig); err != nil {
@@ -122,7 +122,7 @@ func makeHeader(chunk uint32, size uint64, at time.Time, salt [32]byte, pub ed25
 	copy(b, magic[:])
 	binary.BigEndian.PutUint32(b[8:12], chunk)
 	binary.BigEndian.PutUint64(b[12:20], size)
-	binary.BigEndian.PutUint64(b[20:28], uint64(at.Unix()))
+	binary.BigEndian.PutUint64(b[20:28], uint64(at.Unix())) // #nosec G115 -- The wire format preserves signed Unix seconds as a two's-complement uint64 bit pattern.
 	copy(b[28:60], salt[:])
 	copy(b[60:92], pub)
 	return b
@@ -133,7 +133,7 @@ func parseHeader(b []byte) (Header, error) {
 		return Header{}, fmt.Errorf("not a bongsu scramble file")
 	}
 	h := Header{ChunkSize: binary.BigEndian.Uint32(b[8:12]), PlainSize: binary.BigEndian.Uint64(b[12:20]),
-		CreatedAt: time.Unix(int64(binary.BigEndian.Uint64(b[20:28])), 0).UTC(),
+		CreatedAt: time.Unix(int64(binary.BigEndian.Uint64(b[20:28])), 0).UTC(), // #nosec G115 -- The wire format preserves signed Unix seconds as a two's-complement uint64 bit pattern.
 		PublicKey: append(ed25519.PublicKey(nil), b[60:92]...)}
 	copy(h.Salt[:], b[28:60])
 	if h.ChunkSize == 0 || h.ChunkSize > 1<<30 {
@@ -161,6 +161,6 @@ func xor(b, pub, salt []byte, offset uint64) {
 			b[i] ^= stream[start+i]
 		}
 		b = b[n:]
-		offset += uint64(n)
+		offset += uint64(n) // #nosec G115 -- n is a successful ReadFull count or a bounded slice length, hence nonnegative.
 	}
 }

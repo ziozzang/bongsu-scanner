@@ -189,12 +189,6 @@ func affectedIndexName(a Affected) (string, bool) {
 	return name, name != ""
 }
 
-// buildIndexes is retained for package fixtures; production builds pass their
-// cancellation context directly to buildSQLite.
-func buildIndexes(dir string, records map[string]*Record, meta *Meta) error {
-	return buildSQLite(context.Background(), dir, records, meta)
-}
-
 func buildSQLite(ctx context.Context, dir string, records map[string]*Record, meta *Meta) error {
 	return buildSQLiteStream(ctx, dir, func(emit Emit) error {
 		ids := make([]string, 0, len(records))
@@ -229,7 +223,10 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = db.Close()
+	}()
 	db.SetMaxOpenConns(1)
 	// This file is private staging output: failed builds are discarded, and
 	// the completed file is closed, hashed and verified before installation.
@@ -240,7 +237,10 @@ func buildSQLiteStream(ctx context.Context, dir string, visit func(Emit) error, 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		// Rollback is cleanup after failure or a checked Commit.
+		_ = tx.Rollback()
+	}()
 	if _, err = tx.ExecContext(ctx, sqliteSchema); err != nil {
 		return err
 	}
@@ -428,7 +428,8 @@ func compressSQLiteJSON(data []byte) ([]byte, error) {
 	defer sqliteCompressors.Put(zw)
 	zw.Reset(&b)
 	if _, err := zw.Write(data); err != nil {
-		zw.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = zw.Close()
 		return nil, err
 	}
 	if err := zw.Close(); err != nil {
@@ -448,7 +449,10 @@ func decodeSQLiteRecordBounded(data []byte, record *Record, limit int64) error {
 	if err != nil {
 		return fmt.Errorf("invalid compressed SQLite advisory: %w", err)
 	}
-	defer zr.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = zr.Close()
+	}()
 	b, err := io.ReadAll(io.LimitReader(zr, limit))
 	if err != nil {
 		return fmt.Errorf("invalid compressed SQLite advisory: %w", err)

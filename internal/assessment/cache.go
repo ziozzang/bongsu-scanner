@@ -18,11 +18,14 @@ func (c *Client) readCache(key string, in Input) (Result, bool) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > maxResponseBytes {
 		return Result{}, false
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Cache filename is a hash under the configured local cache directory.
 	if err != nil {
 		return Result{}, false
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) {
 		return Result{}, false
@@ -56,14 +59,19 @@ func (c *Client) writeCache(key string, r Result) {
 	if err != nil {
 		return
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
 	raw, err := json.Marshal(r)
 	if err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return
 	}
 	if _, err = f.Write(raw); err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return
 	}
 	if err = f.Close(); err != nil {

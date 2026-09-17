@@ -18,7 +18,7 @@ func str(m map[string]any, key string) string { s, _ := m[key].(string); return 
 // ContextFromSBOM reads bscan's CycloneDX properties or SPDX annotations.
 // Absent metadata stays nil; malformed typed metadata is an error.
 func ContextFromSBOM(path string) (target string, scanMeta *scan.ScanMetadata, osMeta *scan.OSRelease, image *scan.ImageMetadata, host *scan.HostMetadata, err error) {
-	b, e := os.ReadFile(path)
+	b, e := os.ReadFile(path) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if e != nil {
 		err = e
 		return

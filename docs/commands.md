@@ -148,7 +148,9 @@ bscan [global flags] COMMAND [command flags] [arguments]
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--config` | `""` | configuration path (overrides BONGSU_CONFIG) |
+| `--findings-exit-code` | `2` | exit status when --fail-on is met (the Go runtime also uses 2 for fatal errors; choose another code to tell them apart) |
 | `--log-format` | `text` | progress/summary log format: text or json |
+| `--memory-limit` | `""` | soft heap limit for the Go runtime, e.g. 512MiB or 1GiB (BSCAN_MEMORY_LIMIT); the collector works harder near the limit instead of aborting |
 | `--no-color` | `false` | compatibility placeholder; output never uses color |
 | `-q` | `false` | suppress progress logs on stderr |
 | `--quiet` | `false` | suppress progress logs on stderr |
@@ -256,7 +258,7 @@ bscan scan [flags] TARGET
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
 | `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
-| `--fail-on` | `""` | exit 2 when a finding meets this severity |
+| `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
@@ -302,7 +304,7 @@ bscan batch [flags] TARGET...
 | `--db-isolation` | `auto` | SQLite reader isolation: auto, copy, or none |
 | `--exclude` | `""` | path or glob to skip (repeatable; absolute, root-relative, or bare name) |
 | `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
-| `--fail-on` | `""` | exit 2 when a finding meets this severity |
+| `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--fail-on-partial` | `false` | exit with an error when a walk was partial (permission denied, I/O errors, limits) |
 | `--files` | `true` | include individual file hashes |
 | `--format` | `both` | spdx, cyclonedx, or both |
@@ -594,7 +596,7 @@ bscan match [flags] SBOM...
 | `--details` | `false` | include full advisory details text in findings |
 | `--env-fact` | `""` | user-declared LLM context KEY=VALUE (repeatable) |
 | `--exclude-unimportant` | `false` | exclude Debian unimportant advisories |
-| `--fail-on` | `""` | exit 2 when a finding meets this severity |
+| `--fail-on` | `""` | exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity |
 | `--format` | `table` | table, json, cyclonedx, html, markdown, csv, or sarif |
 | `--ignore` | `""` | comma-separated advisory IDs to ignore |
 | `--include-unimportant` | `false` | deprecated no-op: unimportant advisories are included by default |

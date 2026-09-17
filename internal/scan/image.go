@@ -107,11 +107,14 @@ func boundedArchiveReader(ctx context.Context, rd io.Reader) io.Reader {
 }
 
 func digestArchiveFile(ctx context.Context, file string) (string, error) {
-	f, err := os.Open(file)
+	f, err := os.Open(file) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, contextReader{ctx, f}); err != nil {
 		return "", err
@@ -151,7 +154,7 @@ func validateDockerRef(ref string) error {
 // runDocker runs the docker CLI, returning stdout. On failure the error
 // carries the daemon's stderr (for example "No such container: x").
 func runDocker(ctx context.Context, label string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- Fixed docker executable, separate argv, validated references after --; no shell is invoked.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -169,6 +172,36 @@ func runDocker(ctx context.Context, label string, args ...string) ([]byte, error
 		return nil, fmt.Errorf("docker %s: %w: %s", label, err, msg)
 	}
 	return nil, fmt.Errorf("docker %s: %w", label, err)
+}
+
+// runDockerToFile streams a docker command's stdout into path, which bscan
+// owns and removes on failure. Using stdout instead of docker's -o flag
+// avoids the ".tmp-<name>" sibling files that docker creates and does not
+// clean up when the process is killed mid-export (cancellation, timeouts).
+func runDockerToFile(ctx context.Context, label, path string, args ...string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- path is the bscan-created temporary archive from tempArchive, never user input.
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- Fixed docker executable, separate argv, validated references after --; no shell is invoked.
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = f, &stderr
+	runErr := cmd.Run()
+	closeErr := f.Close()
+	if runErr == nil && closeErr == nil {
+		return nil
+	}
+	_ = os.Remove(path)
+	if ctx.Err() != nil {
+		return fmt.Errorf("docker %s: %w", label, ctx.Err())
+	}
+	if runErr == nil {
+		return fmt.Errorf("docker %s: %w", label, closeErr)
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return fmt.Errorf("docker %s: %w: %s", label, runErr, msg)
+	}
+	return fmt.Errorf("docker %s: %w", label, runErr)
 }
 
 func tempArchive(pattern string) (string, error) {
@@ -256,9 +289,12 @@ func dockerImage(ctx context.Context, ref string, opts Options) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.Remove(tmpPath)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmpPath)
+	}()
 	report(opts, "docker", "exporting image with docker image save", false)
-	if _, err := runDocker(ctx, "image save", "image", "save", "-o", tmpPath, "--", ref); err != nil {
+	if err := runDockerToFile(ctx, "image save", tmpPath, "image", "save", "--", ref); err != nil {
 		return Result{}, err
 	}
 	archiveOpts := opts
@@ -306,9 +342,12 @@ func dockerContainer(ctx context.Context, ref string, opts Options) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.Remove(tmpPath)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(tmpPath)
+	}()
 	report(opts, "docker", "exporting container root filesystem with docker export", false)
-	if _, err := runDocker(ctx, "export", "export", "-o", tmpPath, "--", containerID); err != nil {
+	if err := runDockerToFile(ctx, "export", tmpPath, "export", "--", containerID); err != nil {
 		return Result{}, err
 	}
 	archiveOpts := opts
@@ -371,11 +410,14 @@ func detectFormat(head []byte) archiveFormat {
 }
 
 func sniffFile(file string) (archiveFormat, error) {
-	f, err := os.Open(file)
+	f, err := os.Open(file) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return formatTar, err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	head := make([]byte, 512)
 	n, err := io.ReadFull(f, head)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
@@ -565,7 +607,7 @@ func unsafePath(name string) bool {
 // decompression limit (default 16 GiB), as well as the metadata retention budget.
 // All subsequent reads use cached offsets and consume no decompression budget.
 func indexOuter(ctx context.Context, file string, format archiveFormat, buffer bool, opts Options) (*outerArchive, error) {
-	f, err := os.Open(file)
+	f, err := os.Open(file) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return nil, err
 	}
@@ -582,8 +624,14 @@ func indexOuter(ctx context.Context, file string, format archiveFormat, buffer b
 	if format == formatTar {
 		a.file, a.seekable = f, true
 	} else {
-		defer f.Close()
-		defer stream.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
+		}()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = stream.Close()
+		}()
 		limit := opts.MaxTotalBytes
 		if limit <= 0 {
 			limit = maxLayerBytes
@@ -792,28 +840,38 @@ func rootfsArchive(ctx context.Context, file string, opts Options) (Result, erro
 }
 
 func applyRootfsFile(u *unpacker, file string, format archiveFormat) error {
-	f, err := os.Open(file)
+	f, err := os.Open(file) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	stream, err := decompress(format, f, file)
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = stream.Close()
+	}()
 	rd := boundedArchiveReader(u.ctx, stream)
 	if err := u.applyTarSource(rd, "", func() (io.Reader, func(), error) {
-		f, err := os.Open(file)
+		f, err := os.Open(file) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		if err != nil {
 			return nil, nil, err
 		}
 		r, err := decompress(format, f, file)
 		if err != nil {
-			f.Close()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
 			return nil, nil, err
 		}
-		return r, func() { r.Close(); f.Close() }, nil
+		return r, func() { // Cleanup only; read errors or the primary operation error are handled separately.
+			_ = r.Close() // Cleanup only; read errors or the primary operation error are handled separately.
+			_ = f.Close()
+		}, nil
 	}); err != nil {
 		return fmt.Errorf("archive %s: %w", file, err)
 	}
@@ -821,12 +879,6 @@ func applyRootfsFile(u *unpacker, file string, format archiveFormat) error {
 		return fmt.Errorf("archive %s: %w", file, err)
 	}
 	return u.ctx.Err()
-}
-
-// assembleResult sorts the merged filesystem, catalogs packages (including
-// extra packages discovered from Go binaries) and attaches image metadata.
-func assembleResult(name, source, kind string, fs store, layers []File, image *ImageMetadata, extra []Package, now time.Time, opts Options) Result {
-	return assembleRPMResult(name, source, kind, fs, layers, image, extra, now, opts, nil)
 }
 
 func assembleRPMResult(name, source, kind string, fs store, layers []File, image *ImageMetadata, extra []Package, now time.Time, opts Options, rpmFiles map[string]string, directoryKinds ...map[string]byte) Result {
@@ -1019,10 +1071,6 @@ func (u *unpacker) removeUnder(prefix string, added map[string]bool) {
 		}
 	}
 	walk(strings.TrimSuffix(prefix, "/"))
-}
-
-func (u *unpacker) applyTar(rd io.Reader, layer string) error {
-	return u.applyTarSource(rd, layer, nil)
 }
 
 func (u *unpacker) applyTarSource(rd io.Reader, layer string, reopen archiveSource) error {
@@ -1375,7 +1423,7 @@ func (u *unpacker) restoreSource(reopen archiveSource, entries map[int][]string)
 				if h.Size > maxFileMetadata {
 					return fmt.Errorf("source entry for %s changed", names[0])
 				}
-				data, err = os.ReadFile(diskPath)
+				data, err = os.ReadFile(diskPath) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 				if err != nil {
 					return err
 				}
@@ -1429,14 +1477,20 @@ func layerSource(a *outerArchive, name string) archiveSource {
 				done()
 				return nil, nil, err
 			}
-			return gz, func() { gz.Close(); done() }, nil
+			return gz, func() { // Cleanup only; read errors or the primary operation error are handled separately.
+				_ = gz.Close()
+				done()
+			}, nil
 		case formatZstd:
 			zr, err := newZstdReader(br)
 			if err != nil {
 				done()
 				return nil, nil, err
 			}
-			return zr, func() { zr.Close(); done() }, nil
+			return zr, func() { // Cleanup only; read errors or the primary operation error are handled separately.
+				_ = zr.Close()
+				done()
+			}, nil
 		}
 		return br, done, nil
 	}
@@ -1486,7 +1540,10 @@ func (u *unpacker) applyLayer(rd io.Reader, size int64, want layerCheck) (LayerI
 		if err != nil {
 			return LayerInfo{}, fmt.Errorf("layer %s: %w", want.name, err)
 		}
-		defer gz.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = gz.Close()
+		}()
 		diffHash = sha256.New()
 		body = io.TeeReader(gz, diffHash)
 		if mediaType == "" {
@@ -1497,7 +1554,10 @@ func (u *unpacker) applyLayer(rd io.Reader, size int64, want layerCheck) (LayerI
 		if err != nil {
 			return LayerInfo{}, fmt.Errorf("layer %s: zstd: %w", want.name, err)
 		}
-		defer zr.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = zr.Close()
+		}()
 		diffHash = sha256.New()
 		body = io.TeeReader(zr, diffHash)
 		if mediaType == "" {
@@ -1622,6 +1682,7 @@ func (u *unpacker) unpackDockerArchive(a *outerArchive) ([]File, *ImageMetadata,
 		report(u.opts, "archive", fmt.Sprintf("manifest.json lists %d images; scanning only the first (%s)", len(manifests), strings.Join(m.RepoTags, ",")), false)
 	}
 	if len(m.Layers) > maxImageLayers {
+		//lint:ignore ST1005 Docker is a proper noun; preserve the diagnostic spelling.
 		return nil, nil, fmt.Errorf("Docker manifest declares %d layers (limit %d)", len(m.Layers), maxImageLayers)
 	}
 	image := &ImageMetadata{Tags: appendUnique(nil, m.RepoTags...)}
@@ -1629,9 +1690,11 @@ func (u *unpacker) unpackDockerArchive(a *outerArchive) ([]File, *ImageMetadata,
 	if m.Config != "" {
 		cfgRaw, err := a.bytes(clean(m.Config))
 		if err != nil {
+			//lint:ignore ST1005 Docker is a proper noun; preserve the diagnostic spelling.
 			return nil, nil, fmt.Errorf("Docker config %q: %w", m.Config, err)
 		}
 		if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+			//lint:ignore ST1005 Docker is a proper noun; preserve the diagnostic spelling.
 			return nil, nil, fmt.Errorf("Docker config %q: %w", m.Config, err)
 		}
 		image.applyConfig(cfg, cfgRaw)
@@ -1647,6 +1710,7 @@ func (u *unpacker) unpackDockerArchive(a *outerArchive) ([]File, *ImageMetadata,
 		report(u.opts, "verify", fmt.Sprintf("Docker config %q (verified=%t)", m.Config, verified), false)
 	}
 	if n := len(cfg.RootFS.DiffIDs); n > 0 && n != len(m.Layers) {
+		//lint:ignore ST1005 Docker is a proper noun; preserve the diagnostic spelling.
 		return nil, nil, fmt.Errorf("Docker config declares %d diff_ids but manifest lists %d layers", n, len(m.Layers))
 	}
 	if len(cfg.RootFS.DiffIDs) == 0 {
@@ -1661,6 +1725,7 @@ func (u *unpacker) unpackDockerArchive(a *outerArchive) ([]File, *ImageMetadata,
 		name := clean(layer)
 		e, ok := a.entries[name]
 		if !ok {
+			//lint:ignore ST1005 Docker is a proper noun; preserve the diagnostic spelling.
 			return nil, nil, fmt.Errorf("Docker layer %q missing", layer)
 		}
 		want := layerCheck{name: layer, digest: blobDigestFromPath(name), reopen: layerSource(a, name)}

@@ -53,7 +53,7 @@ func commandRegistry() []commandSpec {
 		{"format", "table", "table, json, cyclonedx, html, markdown, csv, or sarif", "string", false},
 		{"o", "", "output file (default stdout)", "string", false},
 		{"min-severity", "", "minimum severity to include", "string", false},
-		{"fail-on", "", "exit 2 when a finding meets this severity", "string", false},
+		{"fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity", "string", false},
 		{"ignore", "", "comma-separated advisory IDs to ignore", "string", false},
 		{"include-unimportant", "false", "deprecated no-op: unimportant advisories are included by default", "bool", false},
 		{"exclude-unimportant", "false", "exclude Debian unimportant advisories", "bool", false},

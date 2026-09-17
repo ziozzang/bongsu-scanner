@@ -201,16 +201,22 @@ func parseNVDFeed(ctx context.Context, path string, emit Emit, maxExpanded int64
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return fmt.Errorf("NVD gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = gz.Close()
+	}()
 	limited := &io.LimitedReader{R: contextReader{ctx: ctx, r: gz}, N: maxExpanded + 1}
 	dec := json.NewDecoder(limited)
 	expect := func(want json.Delim) error {

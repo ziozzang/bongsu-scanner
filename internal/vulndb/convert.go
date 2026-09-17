@@ -15,7 +15,7 @@ import (
 // It preserves data freshness, source metadata and original advisory JSON.
 // The output is unsigned unless opts.PrivateKey is supplied; opts.PublicKey
 // pins the source signature. srcDir and destDir may be the same directory.
-func Convert(ctx context.Context, srcDir, destDir string, opts Options) (Meta, error) {
+func Convert(ctx context.Context, srcDir, destDir string, opts Options) (_ Meta, resultErr error) {
 	var meta Meta
 	if err := ctx.Err(); err != nil {
 		return meta, err
@@ -56,7 +56,7 @@ func Convert(ctx context.Context, srcDir, destDir string, opts Options) (Meta, e
 	if err != nil {
 		return meta, err
 	}
-	defer st.Close()
+	defer func() { resultErr = errors.Join(resultErr, st.Close()) }()
 	meta, err = st.Meta()
 	if err != nil {
 		return meta, err
@@ -74,7 +74,10 @@ func Convert(ctx context.Context, srcDir, destDir string, opts Options) (Meta, e
 	if err != nil {
 		return meta, err
 	}
-	defer os.RemoveAll(stage)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.RemoveAll(stage)
+	}()
 	for _, name := range []string{"cache", "raw"} {
 		if name == "raw" && opts.NoKeepRaw {
 			continue
@@ -122,6 +125,9 @@ func Convert(ctx context.Context, srcDir, destDir string, opts Options) (Meta, e
 	if err = ctx.Err(); err != nil {
 		return meta, err
 	}
+	if err = st.Close(); err != nil {
+		return meta, err
+	}
 	if err = installDatabaseContext(ctx, stage, dest); err != nil {
 		return meta, err
 	}
@@ -144,7 +150,10 @@ func visitStoreRecords(ctx context.Context, store Store, emit Emit) error {
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = rows.Close()
+		}()
 		for rows.Next() {
 			var b []byte
 			if err = rows.Scan(&b); err != nil {

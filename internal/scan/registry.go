@@ -210,14 +210,17 @@ func registryCredentials(host string) (string, string, error) {
 	if err != nil {
 		return "", "", nil
 	}
-	f, err := os.Open(filepath.Join(home, ".docker", "config.json"))
+	f, err := os.Open(filepath.Join(home, ".docker", "config.json")) // #nosec G304 -- Uses the local Docker config or private, internally constructed OCI staging paths.
 	if os.IsNotExist(err) {
 		return "", "", nil
 	}
 	if err != nil {
 		return "", "", errors.New("cannot read Docker registry credentials")
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	var cfg struct {
 		Auths map[string]struct {
 			Auth string `json:"auth"`
@@ -275,7 +278,8 @@ func (c *registryClient) request(ctx context.Context, rawURL, accept, authorizat
 			return resp, nil
 		}
 		delay := registryRetryDelay(resp.Header.Get("Retry-After"), attempt, time.Now())
-		resp.Body.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -312,7 +316,7 @@ func registryRetryDelay(value string, attempt int, now time.Time) time.Duration 
 		return min(max(date.Sub(now), 0), 60*time.Second)
 	}
 	base := (200 * time.Millisecond) << min(attempt, 8)
-	return base/2 + time.Duration(rand.Int64N(int64(base/2)+1))
+	return base/2 + time.Duration(rand.Int64N(int64(base/2)+1)) // #nosec G404 -- Randomness only jitters retry delays; it is not used for keys, tokens, or security decisions.
 }
 
 // Split challenge lists only at unquoted commas (RFC 9110 section 11.3).
@@ -487,7 +491,10 @@ func (c *registryClient) authenticate(ctx context.Context, h http.Header) error 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("registry token request: HTTP %d", resp.StatusCode)
 	}
@@ -522,7 +529,8 @@ func (c *registryClient) get(ctx context.Context, resource, accept string) (*htt
 		if resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
-		resp.Body.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized || attempt > 0 {
 			return nil, fmt.Errorf("registry request: HTTP %d", resp.StatusCode)
 		}
@@ -560,7 +568,10 @@ func (c *registryClient) manifest(ctx context.Context, ref string, expected *oci
 	if err != nil {
 		return ociDescriptor{}, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
+	}()
 	contentType, _, typeErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if typeErr != nil || (!isIndexType(contentType) && !isManifestType(contentType)) {
 		return ociDescriptor{}, nil, errors.New("unsupported registry manifest Content-Type")
@@ -636,7 +647,10 @@ func (c *registryClient) blob(ctx context.Context, d ociDescriptor, metadata boo
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = resp.Body.Close()
+	}()
 	if resp.ContentLength >= 0 && resp.ContentLength != d.Size {
 		return errors.New("registry blob size mismatch")
 	}
@@ -766,7 +780,10 @@ func registryImage(ctx context.Context, target string, opts Options) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.RemoveAll(tmp)
+	}()
 	layout := filepath.Join(tmp, "layout")
 	if err := os.MkdirAll(filepath.Join(layout, "blobs", "sha256"), 0700); err != nil {
 		return Result{}, err
@@ -817,7 +834,7 @@ func registryImage(ctx context.Context, target string, opts Options) (Result, er
 }
 
 func registryLayoutTar(ctx context.Context, layout, archive string) error {
-	f, err := os.OpenFile(archive, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(archive, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- Uses the local Docker config or private, internally constructed OCI staging paths.
 	if err != nil {
 		return err
 	}
@@ -843,7 +860,7 @@ func registryLayoutTar(ctx context.Context, layout, archive string) error {
 		if err := tw.WriteHeader(&tar.Header{Name: filepath.ToSlash(rel), Mode: 0600, Size: info.Size()}); err != nil {
 			return err
 		}
-		src, err := os.Open(name)
+		src, err := os.Open(name) // #nosec G122 G304 -- Layout is generated internally in a private 0700 temporary directory, inaccessible to other users. Uses the local Docker config or private, internally constructed OCI staging paths.
 		if err != nil {
 			return err
 		}

@@ -178,7 +178,10 @@ func scanRPMDatabase(f File, diskPath string, add func(Package)) int {
 				return 1
 			}
 			diskPath = tmp.Name()
-			defer os.Remove(diskPath)
+			defer func() {
+				// Best-effort removal of temporary state; preserve the operation result.
+				_ = os.Remove(diskPath)
+			}()
 			_, err = tmp.Write(f.Data)
 			closeErr := tmp.Close()
 			if err != nil || closeErr != nil {
@@ -190,11 +193,14 @@ func scanRPMDatabase(f File, diskPath string, add func(Package)) int {
 	var r io.ReaderAt = bytes.NewReader(f.Data)
 	size := int64(len(f.Data))
 	if diskPath != "" {
-		file, err := os.Open(diskPath)
+		file, err := os.Open(diskPath) // #nosec G304 -- Local CLI/API paths are caller-selected; reading or writing arbitrary local paths is intentional.
 		if err != nil {
 			return 1
 		}
-		defer file.Close()
+		defer func() {
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = file.Close()
+		}()
 		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() {
 			return 1
@@ -224,14 +230,20 @@ func scanRPMSQLite(diskPath string, emit func([]byte)) int {
 	if err != nil {
 		return 1
 	}
-	defer db.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = db.Close()
+	}()
 	db.SetMaxOpenConns(1)
 	// Do not materialize an untrusted oversized blob in the SQL driver.
 	rows, err := db.Query("SELECT CASE WHEN length(blob) <= ? THEN blob ELSE NULL END FROM Packages ORDER BY hnum", maxRPMHeader)
 	if err != nil {
 		return 1
 	}
-	defer rows.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rows.Close()
+	}()
 	errors := 0
 	for rows.Next() {
 		var b []byte

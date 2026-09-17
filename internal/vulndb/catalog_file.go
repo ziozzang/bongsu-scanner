@@ -91,7 +91,10 @@ func (m verificationMarker) matches(dir string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
+	}()
 	// Bound even an owner-created corrupt receipt, and require one JSON value.
 	b, err := io.ReadAll(io.LimitReader(f, 4097))
 	if err != nil || len(b) > 4096 {
@@ -110,7 +113,10 @@ func (m verificationMarker) write(dir string) {
 	if err != nil {
 		return
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(f.Name())
+	}()
 	err = f.Chmod(0600)
 	if err == nil {
 		err = json.NewEncoder(f).Encode(m)
@@ -124,13 +130,14 @@ func (m verificationMarker) write(dir string) {
 }
 
 func openCatalogFile(path string) (*catalogFile, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return nil, err
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, err
 	}
 	source := &catalogFile{file: f, info: info}
@@ -139,7 +146,8 @@ func openCatalogFile(path string) (*catalogFile, error) {
 	// filesystem timestamps coalesce. ReadAt also preserves the hash offset.
 	source.headerSize, err = f.ReadAt(source.header[:], 0)
 	if err != nil && err != io.EOF {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, err
 	}
 	// Short/invalid catalogs still go through the ordinary integrity checks.

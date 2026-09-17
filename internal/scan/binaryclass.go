@@ -230,6 +230,9 @@ func binaryScanData(r io.ReaderAt, size int64, elf bool) []byte {
 // Read only the ELF structures needed to locate .rodata. Do not invoke a
 // general object parser that can allocate from attacker-controlled counts.
 func binaryRodata(r io.ReaderAt, size int64) (int64, int64) {
+	if size < 0 {
+		return 0, 0
+	}
 	var h [64]byte
 	if _, err := r.ReadAt(h[:], 0); err != nil || !isELF(h[:]) {
 		return 0, 0
@@ -261,12 +264,12 @@ func binaryRodata(r io.ReaderAt, size int64) (int64, int64) {
 	default:
 		return 0, 0
 	}
-	valid := func(off, n uint64) bool { return off <= uint64(size) && n <= uint64(size)-off }
+	valid := func(off, n uint64) bool { return off <= uint64(size) && n <= uint64(size)-off } // #nosec G115 -- size is nonnegative; valid bounds each offset and length by the int64 file size.
 	if count == 0 || count > 4096 || names >= count || !valid(table, uint64(stride)*uint64(count)) {
 		return 0, 0
 	}
 	sections := make([]byte, int(stride)*int(count))
-	if _, err := r.ReadAt(sections, int64(table)); err != nil {
+	if _, err := r.ReadAt(sections, int64(table)); err != nil { // #nosec G115 -- size is nonnegative; valid bounds each offset and length by the int64 file size.
 		return 0, 0
 	}
 	sectionRange := func(s []byte) (uint64, uint64) {
@@ -280,7 +283,7 @@ func binaryRodata(r io.ReaderAt, size int64) (int64, int64) {
 		return 0, 0
 	}
 	stringsTable := make([]byte, n)
-	if _, err := r.ReadAt(stringsTable, int64(off)); err != nil {
+	if _, err := r.ReadAt(stringsTable, int64(off)); err != nil { // #nosec G115 -- size is nonnegative; valid bounds each offset and length by the int64 file size.
 		return 0, 0
 	}
 	for i := 0; i < int(count); i++ {
@@ -302,7 +305,7 @@ func binaryRodata(r io.ReaderAt, size int64) (int64, int64) {
 		}
 		off, n = sectionRange(s)
 		if valid(off, n) {
-			return int64(off), int64(n)
+			return int64(off), int64(n) // #nosec G115 -- size is nonnegative; valid bounds each offset and length by the int64 file size.
 		}
 	}
 	return 0, 0

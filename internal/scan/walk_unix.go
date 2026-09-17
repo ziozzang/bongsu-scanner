@@ -59,7 +59,7 @@ func (w *walkState) openWalkFile(p string, directory bool) (*os.File, fs.FileInf
 	} else if w.safeRoot != nil {
 		f, err = w.safeRoot.OpenFile(w.rel(p), flags, 0)
 	} else {
-		f, err = os.OpenFile(p, flags, 0)
+		f, err = os.OpenFile(p, flags, 0) // #nosec G304 -- The caller selects the scan root; O_NOFOLLOW and post-open validation protect traversal.
 	}
 	if err != nil {
 		return nil, nil, err
@@ -69,7 +69,8 @@ func (w *walkState) openWalkFile(p string, directory bool) (*os.File, fs.FileInf
 		err = fmt.Errorf("%s: walk entry changed type", p)
 	}
 	if err != nil {
-		f.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = f.Close()
 		return nil, nil, err
 	}
 	return f, info, nil

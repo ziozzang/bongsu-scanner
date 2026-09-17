@@ -34,7 +34,7 @@ func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.StringVar(&f.isolation, "db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
 	fs.StringVar(&f.severitySource, "severity-source", "distro", "severity policy: cvss, distro, or max")
 	fs.StringVar(&f.minimum, "min-severity", "", "minimum severity to include")
-	fs.StringVar(&f.fail, "fail-on", "", "exit 2 when a finding meets this severity")
+	fs.StringVar(&f.fail, "fail-on", "", "exit with the findings exit code (default 2, see --findings-exit-code) when a finding meets this severity")
 	fs.BoolVar(&f.onlyFixed, "only-fixed", false, "include only findings with a known fix")
 	addDeprecatedIncludeUnimportant(fs)
 	fs.BoolVar(&f.excludeUnimportant, "exclude-unimportant", false, "exclude Debian unimportant advisories")

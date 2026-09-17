@@ -37,14 +37,6 @@ var ErrUnsupportedCatalog = errors.New("unsupported catalog format")
 var sqliteMaxRowBytes = 64 << 20
 var sqliteMaxExpandedBytes int64 = 64 << 20
 
-func openSQLiteSnapshot(dir string, m Meta, expectedDigest string) (Store, error) {
-	return openSQLiteSnapshotContext(context.Background(), dir, m, expectedDigest)
-}
-
-func openSQLiteSnapshotContext(ctx context.Context, dir string, m Meta, expectedDigest string) (Store, error) {
-	return openSQLiteSnapshotOptionsContext(ctx, dir, m, expectedDigest, Options{Isolation: "copy"}, nil)
-}
-
 func openSQLiteSnapshotOptionsContext(ctx context.Context, dir string, m Meta, expectedDigest string, opts Options, source *catalogFile) (Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -71,7 +63,8 @@ func openSQLiteSnapshotOptionsContext(ctx context.Context, dir string, m Meta, e
 		path = filepath.Join(snapshot, SQLiteFileName)
 		isolated, err := isolateSQLiteContext(ctx, source, path, mode == "copy")
 		if err != nil {
-			cleanup()
+			// Cleanup only; read errors or the primary operation error are handled separately.
+			_ = cleanup()
 			return nil, err
 		}
 		if !isolated {
@@ -83,33 +76,46 @@ func openSQLiteSnapshotOptionsContext(ctx context.Context, dir string, m Meta, e
 		} else if mode == "copy" {
 			digest, err := hashFileContext(ctx, path)
 			if err != nil {
-				cleanup()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = cleanup()
 				return nil, err
 			}
 			if digest != expectedDigest {
-				cleanup()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = cleanup()
 				return nil, errors.New("SQLite catalog changed while its verified snapshot was being created")
 			}
 		}
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		cleanup()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = cleanup()
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", sqliteURI(absolute, true))
 	if err != nil {
-		cleanup()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = cleanup()
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	fail := func(err error) (Store, error) { db.Close(); cleanup(); return nil, err }
+	fail := func(err error) (Store, error) { // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = db.Close() // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = cleanup()
+		return nil, err
+	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fail(err)
 	}
-	fail = func(err error) (Store, error) { conn.Close(); db.Close(); cleanup(); return nil, err }
+	fail = func(err error) (Store, error) { // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = conn.Close() // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = db.Close()   // Cleanup only; read errors or the primary operation error are handled separately.
+		_ = cleanup()
+		return nil, err
+	}
 	// Limits belong to a physical connection, so all queries use this pinned
 	// connection for its full lifetime, including advisory-ID lookups.
 	if _, err = sqlite.Limit(conn, sqlitelib.SQLITE_LIMIT_LENGTH, sqliteMaxRowBytes); err != nil {
@@ -162,31 +168,25 @@ func openSQLiteSnapshotOptionsContext(ctx context.Context, dir string, m Meta, e
 	return &sqliteStore{db: db, conn: conn, meta: m, snapshot: snapshot, releaseSnapshot: cleanup, source: source}, nil
 }
 
-func cloneOrCopySQLite(src, dst string) error {
-	return cloneOrCopySQLiteContext(context.Background(), src, dst)
-}
-
-func cloneOrCopySQLiteContext(ctx context.Context, src, dst string) error {
-	_, err := isolateSQLiteContext(ctx, src, dst, true)
-	return err
-}
-
 // The caller holds the database lock from verification until isolation finishes.
 // Auto never falls back to a full copy; a failed clone retains an in-place reader.
 func isolateSQLiteContext(ctx context.Context, src, dst string, allowCopy bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return false, err
 	}
-	defer in.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = in.Close()
+	}()
 	before, err := in.Stat()
 	if err != nil {
 		return false, err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600) // #nosec G304 -- Catalog/cache paths are constructed under the caller-selected database or staging directory.
 	if err != nil {
 		return false, err
 	}
@@ -223,7 +223,10 @@ func copySQLiteFileContext(ctx context.Context, in io.Reader, dst string) error 
 	if err != nil {
 		return err
 	}
-	defer os.Remove(out.Name())
+	defer func() {
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.Remove(out.Name())
+	}()
 	_, copyErr := io.Copy(out, contextReader{ctx: ctx, r: in})
 	if err = errors.Join(copyErr, out.Close(), ctx.Err()); err != nil {
 		return err
@@ -290,7 +293,10 @@ func (s *sqliteStore) lookupFunc(ctx context.Context, ecosystem, name string, bo
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rows.Close()
+	}()
 	decoder := takeSQLiteReadDecoder()
 	defer func() { releaseSQLiteReadDecoder(decoder) }()
 	var scratch []Affected
@@ -321,13 +327,6 @@ func (s *sqliteStore) lookupFunc(ctx context.Context, ecosystem, name string, bo
 		}
 	}
 	return errors.Join(rows.Err(), ctx.Err())
-}
-
-// Imported catalogs must expose the ordinary tables produced by the current SQLite schema.
-// Reject views, virtual tables and generated columns before selecting advisory
-// data, so a matching name cannot disguise executable expressions or huge blobs.
-func validateSQLiteSchema(conn *sql.Conn) error {
-	return validateSQLiteSchemaContext(context.Background(), conn)
 }
 
 func validateSQLiteSchemaContext(ctx context.Context, conn *sql.Conn) error {
@@ -362,17 +361,20 @@ func validateSQLiteSchemaContext(ctx context.Context, conn *sql.Conn) error {
 			var col string
 			var hidden int
 			if err = rows.Scan(&col, &hidden); err != nil {
-				rows.Close()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = rows.Close()
 				return err
 			}
 			if hidden != 0 {
-				rows.Close()
+				// Cleanup only; read errors or the primary operation error are handled separately.
+				_ = rows.Close()
 				return fmt.Errorf("SQLite %s contains generated or hidden columns", name)
 			}
 			got = append(got, col)
 		}
 		err = rows.Err()
-		rows.Close()
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rows.Close()
 		if err != nil {
 			return err
 		}
@@ -401,7 +403,8 @@ func newReaderSnapshot(parent string) (string, func() error, error) {
 	}
 	ownerUnlock, err := acquireDatabaseLock(filepath.Join(snapshot, "owner.lock"))
 	if err != nil {
-		os.RemoveAll(snapshot)
+		// Best-effort removal of temporary state; preserve the operation result.
+		_ = os.RemoveAll(snapshot)
 		return "", nil, err
 	}
 	var once sync.Once
@@ -464,7 +467,10 @@ func (d *sqliteReadDecoder) decode(data []byte, record *Record) error {
 	if err != nil {
 		return fmt.Errorf("invalid compressed SQLite advisory: %w", err)
 	}
-	defer d.reader.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = d.reader.Close()
+	}()
 	d.output.Reset()
 	_, err = d.output.ReadFrom(io.LimitReader(d.reader, sqliteMaxExpandedBytes))
 	if err != nil {
@@ -497,7 +503,10 @@ func (s *sqliteStore) LookupCPEContext(ctx context.Context, vendor, product stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		// Cleanup only; read errors or the primary operation error are handled separately.
+		_ = rows.Close()
+	}()
 	decoder := takeSQLiteReadDecoder()
 	defer releaseSQLiteReadDecoder(decoder)
 	for rows.Next() {

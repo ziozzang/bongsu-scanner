@@ -69,9 +69,7 @@ func goVersionNumber(v string) string {
 			v = v[:i]
 		}
 	}
-	if strings.HasPrefix(v, "go") {
-		v = v[2:]
-	}
+	v = strings.TrimPrefix(v, "go")
 	if v == "" || (v[0] < '0' || v[0] > '9') {
 		return ""
 	}

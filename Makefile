@@ -6,6 +6,13 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/bscan ./cmd/bscan
 
+# Analyze production code; tests are checked by vet and the test jobs.
+# Build analyzers with the repository toolchain so they can parse its Go version.
+.PHONY: lint
+lint:
+	GOTOOLCHAIN="$$(go env GOVERSION)" GOFLAGS=-mod=mod go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 -tests=false ./...
+	GOTOOLCHAIN="$$(go env GOVERSION)" GOFLAGS=-mod=mod go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet ./...
+
 test:
 	@files="$$(gofmt -l .)" || exit 1; if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files"; exit 1; fi
 	go test -race -count=1 ./...
