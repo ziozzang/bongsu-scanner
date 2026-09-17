@@ -51,7 +51,7 @@ its own standard field names and does not become a findings document.
 | `vector` | string | Optional CVSS vector. A vector can be present without a calculated score. |
 | `confidence` | string | `high` or `low`, describing matching confidence, independent of severity. |
 | `distro_severity` | string | Optional vendor rating, such as critical/high/medium/low, important/moderate, unimportant/negligible, unknown or end-of-life; preserves normalized feed vocabulary. |
-| `distro_status` | string | Optional `undetermined`: retained finding requiring review, with low confidence. `not-affected` suppresses a candidate instead of appearing here. |
+| `distro_status` | string | Optional vendor state of the matched package. Debian tracker: `undetermined` (retained, low confidence). Red Hat VEX: `affected` (no fix yet), `fix-deferred`, `will-not-fix`, `out-of-support-scope`, `under-investigation` (low confidence), `workaround-only` (a workaround is published; no fixed build). `not-affected` markers suppress a candidate instead of appearing here. Absent for findings with a fixed build. |
 | `assessment` | object | Optional LLM advisory review; never removes the underlying match or overrides its severity. Fields below. |
 
 Severity order is CRITICAL > HIGH > MEDIUM > LOW > NEGLIGIBLE > UNKNOWN.
@@ -152,7 +152,8 @@ Selection describes requested feeds, not guaranteed matching coverage.
 | Reason | Counted when |
 | --- | --- |
 | `centos-stream-unsupported` | A Red Hat subject identifies CentOS Stream, which is not mapped to RHEL advisories. |
-| `distro-owned` | A language subject has a distribution owner. The owning OS package is matched through its own subject. |
+| `distro-owned` | A language subject has a distribution owner (`bscan:owner`) whose OS package is present in the same document and matchable. The owning OS package is matched through its own subject. |
+| `owner-unmatched` | A language subject names an owner that is absent from the document or cannot be matched (ecosystem or release not in the catalog); the language package is matched normally and the count records the gap. |
 | `module-mismatch` | An RPM affected-entry/version/query check has a `.module+` build marker but the subject lacks MODULARITYLABEL, or vice versa. Counted after package/release filtering, including version nonmatches; repeated binary/source queries can count separately. |
 | `unknown-ecosystem` | A subject cannot be assigned a supported ecosystem. |
 | `ecosystem-not-in-database` | The subject ecosystem is absent from the catalog. |

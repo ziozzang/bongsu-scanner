@@ -658,3 +658,403 @@ stderr는 `bscan: vulnerabilities meet --fail-on HIGH`(batch는 rootfs prefix �
 
 최종 정리: `docker image rm bscan:u3-acceptance` 종료 0 (0.016초), 검사 컨테이너 `bscan-u3-inspect`도 제거했다. `chmod -R u+w "$W"` 후 `shutil.rmtree(W)`로 u3 전체를 삭제하고 경로 부재를 확인했다(종료 0, 2.891초). 원시 로그·키·catalog·archive·clone·모든 작업 캐시를 함께 삭제했다. 기존 Alpine/Go 이미지와 공용 Docker build cache는 유지했다. 원본 보고서 내용은 보존했고 변경 파일은 이 보고서 하나뿐이다.
 최종 `git diff --check -- docs/reviews/2026-09-17-acceptance.md`도 종료 0 (0.003초)으로 통과했다.
+
+## Round 7 acceptance (U4)
+
+판정: **reject**. 실제 스캔·서명·CI 종료 코드·오프라인 차단은 통과했지만, findings JSON의 문서 계약과 출력의 차이, 선택 내역의 잘림, 기본 카탈로그 변환의 큰 메모리 사용을 확인했다. 요청한 scan의 `--report json`도 지원하지 않았다. 다음 결과는 이전 회차의 판정을 재사용한 것이 아니라 새 HOME·새 빌드로 직접 실행한 결과다.
+
+### 시험 대상과 재현 조건
+
+- 원본 `/home/ziozzang/bongsu-scanner`, HEAD `2cf5064cd007d683f5a56298ad93de07c948bdc5`. tracked files를 `$W/src`로 복사해 고정했다. 원본은 이 섹션 append 외에는 변경하지 않았으며 상태를 변경하는 git 명령은 실행하지 않았다.
+- `W=/home/ziozzang/.cache/bongsu-work/u4`, `R=/home/ziozzang/bongsu-scanner`, 기본 cwd `$W/run`, `PATH=$W/bin:<Go 1.27.1 bin>:<기존 PATH>`, `BONGSU_HOME=$W/home`, `BONGSU_NO_UPDATE_CHECK=1`. 전달된 TMPDIR은 `work-U4`였지만 모든 시험 프로세스에는 `TMPDIR=$W/tmp`, `GOTMPDIR=$W/tmp`를 적용했다.
+- `GOCACHE=$W/gocache`, `GOMODCACHE=$W/gomod`, `GOPATH=$W/gopath`, `XDG_CACHE_HOME=$W/xdg`, `BUILDX_CONFIG=$W/buildx`, `GOMAXPROCS=4`, `GOTOOLCHAIN=local`, `GOFLAGS='-p=2 -buildvcs=false'`. 설치된 Go 1.27.1을 직접 선택했다. 모든 `go test`는 GOFLAGS의 `-p=2`를 상속했다. Git 메타데이터를 복사하지 않았으므로 build 정보의 commit/date `unknown`은 의도한 시험 조건이다.
+- `make build`는 Makefile 기본값인 **0.1.0**, `make dist VERSION=0.6.0-rc2`의 Linux archive는 **0.6.0-rc2**를 보고했다. 동일 소스의 archive 실행 파일로 후반 시험을 이어갔다. native SHA-256 `6dd910ff48890e04164158e991c1396741161751efe23e8cd6a1c7761b94252c`, rc2 SHA-256 `46824d9b114966ebdb69402bae62e873cc1638135c1b7f581fb928207c086bab`.
+- 일반 사용자 UID/GID 1000, Debian 13/linux amd64, Docker 29.5.2. `/usr/bin/time`의 peak RSS(KiB)와 Python monotonic wall time을 기록했다. 일부 독립 작업은 겹쳤다. 소스 빌드/DB 갱신과 겹친 host 시간은 단독 성능 회귀 판정으로 사용하지 않았다.
+- 매칭·CI의 기본 DB는 `$W/airgap`에 오프라인 import한 기본 카탈로그다. Ubuntu/VEX 정책 시험은 `$W/home`의 확장 카탈로그를 사용했다. DB writer와 같은 DB reader가 겹치지 않도록 분리했다. `db.prev`는 용량 관리를 위해 필요 없는 세대부터 제거했고, convert 검증 후 변환본도 제거했다.
+- 옵션 없는 재갱신과 VEX 갱신에는 `GODEBUG=http2debug=1`(재갱신), `http2debug=2`(VEX)를 추가하여 HTTP 요청·응답을 관측했다. 재갱신은 HTTP/2 프레임과 별도 조건부 HEAD 조회를 함께 대조했다. `$W/bin`의 임시 exec wrapper는 원본 실행 파일에 이 환경값만 추가하고 실제 프로세스 종료값을 보존했다. 제품 코드를 계측·변경하지 않았고, 이후 직접 실행 파일로 복구했다. 아래 취소 로그 판정은 계측 로그와 CLI의 최종 오류를 구분한다.
+- Docker daemon의 이미지/레이어 저장은 daemon의 기존 저장소를 사용했다. 기존 `alpine:3.20`은 pull하지 않았고, 이번에 pull한 `ubuntu:24.04`, `golang:1.27.1-alpine` 및 생성한 `bscan:u4-acceptance`는 정리했다. 타 사용자의 컨테이너·이미지·공용 build cache는 prune하지 않았다.
+
+재현용 최소 fixture와 환경은 다음과 같다. source snapshot 복사 후 모든 make/go 명령은 `$W/src`, 나머지는 `$W/run`에서 실행한다. 실제 명령/추가 환경/종료값/시간은 아래 전체 실행표에 있다.
+
+```sh
+W=/home/ziozzang/.cache/bongsu-work/u4
+R=/home/ziozzang/bongsu-scanner
+export W R BONGSU_HOME="$W/home" BONGSU_NO_UPDATE_CHECK=1
+export TMPDIR="$W/tmp" GOTMPDIR="$W/tmp" GOCACHE="$W/gocache"
+export GOMODCACHE="$W/gomod" GOPATH="$W/gopath" XDG_CACHE_HOME="$W/xdg"
+export BUILDX_CONFIG="$W/buildx" GOMAXPROCS=4 GOFLAGS='-p=2 -buildvcs=false'
+# PATH에는 설치된 Go 1.27.1의 bin과 $W/bin을 앞에 둔다.
+mkdir -p "$W/run/rootfs" "$W/run/unreadable/denied"
+printf '%s\n' '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.20"}}}' > "$W/run/rootfs/package-lock.json"
+printf test > "$W/run/unreadable/denied/secret"
+chmod 000 "$W/run/unreadable/denied"
+```
+
+`rootfs.tar`/`rootfs.tgz`는 이 디렉터리의 tar/gzip이다. orphan fixture는 생성된 CycloneDX lodash component에 `{"name":"bscan:owner","value":"rpm:missing-owner@1"}` property만 추가했다. module fixture는 실제 UBI9 SBOM의 RPM components에 `bscan:modularity=u4:fixture:1:context`를 붙였다. 이 둘은 skip 계약 시험용 합성 입력이며 실제 이미지의 package/version을 발견했다고 주장하지 않는다.
+
+### 단계별 수락 결과
+
+종료값은 **실제 프로세스 값**이다. 의도한 오류 1/2/3/7/130도 기대값과 일치하면 PASS로 표시했다. 아래 요약의 시간/RSS는 해당 대표 실행이며, 각 독립 명령의 값은 전체 실행표에 별도로 있다.
+
+| 단계 | 판정 | 종료 / wall / peak RSS | 확인 내용 |
+| --- | --- | --- | --- |
+| 1. 소스 빌드 | PASS | 0 / 21.772초 / 781,372 KiB | make build; 0.1.0은 Makefile 기본값 |
+| 1. 다섯 portable archives | PASS | 0 / 71.304초 / 807,920 KiB | rc2의 linux amd64/arm64, darwin amd64/arm64, windows amd64; archive 내부 executable·LICENSE·THIRD_PARTY_NOTICES 및 SHA256SUMS 전부 확인 |
+| 1. version/about/help/completion | PASS | 0 / 0.018초 / 12,540 KiB | root+모든 문서 명령 경로의 help가 stdout, stderr 0 bytes; bash/zsh/fish 생성, bash 구문·source 확인 |
+| 2. init/config | PASS | 0 / 0.006초 / 12,668 KiB | 빈 config show는 파일을 만들지 않음; config init 덮어쓰기 거절; template의 두 피드 제한은 주석 |
+| 2. 기본 DB | PASS | 0 / 188.322초 / 1,026,928 KiB | 765,054 records; defaults 출처, 모든 source의 data through 출력, freshness 경고 0 |
+| 2. Ubuntu 추가 | PASS | 0 / 358.993초 / 1,504,048 KiB | sources 4개·기존 ecosystem·Alpine release 유지, Ubuntu 저장 |
+| 2. 저장 선택 재사용 | PASS | 0 / 285.338초 / 1,532,112 KiB | plain update가 installed catalog 사용; 조건부 요청 및 동일 선택 확인 |
+| 2. redhat-vex 추가 | PASS | 0 / 739.981초 / 2,263,104 KiB | OSV Red Hat feed 생략 안내, selection의 Red Hat은 유지, status에 redhat-vex |
+| 2. lookup/show/verify | PASS | 0 / 2.622초 / 18,380 KiB | lodash lookup과 GHSA 상세 조회; 서명·manifest 검증 |
+| 2. export/import | PASS | 0 / 17.483초 / 21,592 KiB | 별도 BONGSU_HOME, BONGSU_OFFLINE=1 및 네트워크 없는 namespace에서 pinned import/verify/match |
+| 2. convert | FAIL (성능), 기능 PASS | 0 / 135.308초 / 10,947,588 KiB | 765,054 records의 변환/후속 verify는 성공; 10.44 GiB peak RSS: U4-D5 |
+| 3. 일반 사용자 host | PASS (partial) | 0 / 34.194초 / 239,292 KiB | 54,082 packages; denied=167, partial=true. 첫 실행의 visited=6,053,982. 권한 상승 없이 요청대로 실행 |
+| 3. 디렉터리/tar/tgz | PASS | 0 / 0.009초 / 13,644 KiB | SPDX 2.3/CycloneDX 1.6, archive SHA manifest·서명; tar와 tgz 각각 실행 |
+| 3. Docker/registry/OCI | PASS | 0 / 1.797초 / 31,544 KiB | docker Ubuntu 24.04와 registry/oci Alpine 3.20 실제 스캔 |
+| 3. 실행 중 container | PASS (환경 우회) | 0 / 0.134초 / 28,860 KiB | 기본 docker run은 docker0 부재로 125; 제거 후 --network none 재시작, Running=true 확인 후 스캔 |
+| 3. batch/4 reports | PASS | 2 / 1.341초 / 34,952 KiB | 여러 target 및 html/markdown/csv/sarif + 자동 findings JSON; HIGH 게이트 2 |
+| 3. 요청한 --report json | FAIL (요청 범위 제한) | 1 / 0.008초 / 12,284 KiB | unsupported report format "json", exit 1. 문서의 네 형식 목록에는 json이 없으므로 문서 위반은 아님. 별도 report --format json은 성공 |
+| 3. 실제 custom findings exit | PASS | 7 / 0.636초 / 21,116 KiB | match/scan/batch 세 프로세스 모두 7; 산출물 보존 |
+| 3. strict partial | PASS | 3 / 0.018초 / 13,180 KiB | readable root + mode000 child: exit3, SBOM 없음; findings code7을 설정해도 3 |
+| 3. SIGINT | PASS | 130 / 7.055초 / 19,580 KiB | 시작 2초 뒤 프로세스 그룹에 SIGINT; CLI 최종 interrupted 1회, manifest 불변, verify 성공 |
+| 3. quiet/JSON/memory | PASS | 0 / 0.603초 / 20,280 KiB | Ubuntu coverage warning은 -q에서도 유지; JSON progress의 ts/level/stage/msg 검증; 64MiB soft limit scan/match 완료 |
+| 3. severity/filter/details/CPE | PASS | 0 / 1.476초 / 24,412 KiB | cvss/distro/max, exclude-unimportant, only-fixed, details, --cpe 실행 및 결과 대조; NVD 추가 다운로드는 요청 범위 밖 |
+| 4. findings JSON | FAIL (문서), 구조 PASS | 0 / 6.384초 / 472,524 KiB | schema/snake_case/string PURL/findings []/counters/skip vocabulary 검사; U4-D1/D2 |
+| 4. report round trips | PASS | 0 / 0.009초 / 14,076 KiB | html/markdown/csv/sarif/json; CSV/SARIF 5 findings 일치, HTML 외부 script/link 없음 |
+| 4. legacy JSON | PASS | 1 / 0.008초 / 12,412 KiB | 문서의 legacy findings JSON from a pre-release build; re-run bscan match 안내 그대로 |
+| 5. CI shell blocks | PASS | 3 / 0.640초 / 21,188 KiB | 모든 sh 및 GitHub/GitLab YAML 내 실행 블록 로컬 실행; GitHub code3→warning/0, GitLab 변환 후3; 실제 hosted actions 제외 |
+| 6. UBI OSV/VEX | PASS | 0 / 13.489초 / 54,848 KiB | 같은 UBI9 image: OSV 181 → VEX 823 findings; 아래 status/rating 분포 |
+| 6. CentOS Stream | PASS | 0 / 6.353초 / 49,992 KiB | centos-stream-unsupported=145, owner-unmatched=7; OS finding 0을 안전 판정으로 해석하지 않음 |
+| 7. 서명/trust/scramble | PASS | 0 / 0.004초 / 3,312 KiB | verify/check/hash/sign, trust name, 암호화/복원 바이트 동일; 유효 v1은 기본 허용, minimum2에서1, v2는0 |
+| 7. offline 차단 | PASS | 1 / 0.010초 / 12,412 KiB | registry/oci, scan/batch --match, db update, update/update --check, LLM 모두 offline 오류1; local Docker는0 |
+| 8. lint | PASS | 0 / 57.307초 / 1,576,844 KiB | staticcheck/gosec |
+| 8. test-short | PASS | 0 / 108.864초 / 852,156 KiB | format/vet/short race tests; -p2 |
+| 8. ci | PASS | 0 / 59.644초 / 468,720 KiB | short race tests 및 Linux 두 architecture 빌드 |
+| 8. generate | PASS | 0 / 6.114초 / 740,448 KiB | tracked source hash 대조와 commands.md cmp에서 변경 없음 |
+| 8. Docker build/smoke | PASS | 0 / 0.404초 / 29,388 KiB | --network=host build, --network none/non-root/read-only/bind reports; 기본 UID:GID 65532:65532 |
+| 9. umask | PASS | 0 / 0.009초 / 14,204 KiB | SBOM/서명/findings/5종 보고서: 022→0644, 077→0600; config/private key는 양쪽0600, HOME0700 |
+| 9. 문서·표시 정확성 | FAIL | 0 / 2.682초 / 18,428 KiB | findings 어휘·status, Selection 잘림, rubysec help 누락, 크기 단위: 아래 결함표 |
+
+### 카탈로그와 성능 측정
+
+| 선택 | wall 초 | peak RSS KiB | DB 디렉터리 bytes | SQLite bytes | records |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| default | 188.322 | 1,026,928 | 4,177,499,270 | 3,180,724,224 | 765,054 |
+| ubuntu | 358.993 | 1,504,048 | 8,195,817,275 | 6,013,304,832 | 832,344 |
+| reuse | 285.338 | 1,532,112 | 8,196,652,859 | 6,014,140,416 | 832,344 |
+| vex | 739.981 | 2,263,104 | 10,614,565,603 | 8,104,984,576 | 816,211 |
+
+크기는 DB 디렉터리 내 일반 파일의 논리 크기 합계이며 db.prev·lock·export는 제외했다.
+default 크기는 검증한 import 복사본의 실측이다. signed 파일은 원본과 동일하며, unsigned verification receipt 크기는 원본과 미세하게 다를 수 있다.
+
+기본 OSV 다운로드 합계는 673,371,470 bytes로 README의 약 670 MB와 일치했다. Ubuntu 추가 시 다운로드는 687.1이라고 표시됐지만 이는 MiB 값이다(U4-D6). per-source data through가 unknown인 native source도 있었으며, 문서가 허용하는 상태다.
+
+host는 0 / 50.299초 / 236,668 KiB, 같은 SBOM 매칭은 0 / 5.733초 / 381,888 KiB였다. Round 5의 약14초/240MB 및 soak의 23.066초/222,656KiB, match 4.627–6.430초/310,660–357,292KiB와 비교하면 host 시간만 커졌고 메모리는 비슷했다. 이번 host는 다른 작업과 겹쳤으며 GOMAXPROCS=4였으므로 단독 성능 회귀로 확정하지 않는다. partial=true와 167 denied를 결과에서 확인했다.
+
+기본 런타임 재시험(GOMAXPROCS 제한 해제)은 0 / 34.194초 / 239,292 KiB였다. 메모리는 이전 기준에 가깝고 wall은 여전히 컸다. 재시험도 DB 구축과 겹쳤으므로 머신 부하를 배제한 성능 회귀 증명은 아니다.
+
+조건부 HEAD 검증은 동일 ETag/Last-Modified로 **26/27 HTTP304**, RubySec 1개 HTTP200이었다. 첫 보조 HEAD 스크립트의 URL 공백 2건을 percent-encode해 재검증했다(시험 도구 오류). 실제 plain update의 HTTP/2 trace에는 조건부 헤더 및 END_STREAM HEADERS가 보이며, 일반 로그는 상태 코드를 출력하지 않는다. 따라서 26/27이라는 숫자는 보조 HEAD의 실측이며, plain update의 각 HTTP status를 직접 모두 로깅했다고 주장하지 않는다. VEX 업데이트의 debug2 status 집계는 다음과 같다.
+
+`{'304': 25, '200': 1, '302': 1}`
+
+VEX 전체 갱신은 739.981초(12.33분)로 요청의 4–8분 예상보다 길었고 peak RSS는 2.16 GiB였다. Ubuntu를 포함한 전체 갱신·GOMAXPROCS=4·HTTP trace 조건의 수치이므로 README의 VEX 단독 변환 약2분/1GB 미만과 같은 범위로 비교하지 않았다. VEX 변환은 42,232 records, 6,279,678 affected entries, skipped_malformed=0, skipped_oversized=0이었다.
+
+### Findings·정책·CI 상세
+
+- JSON 구조 assertion **468개**, 실패 **0개**. 별도의 문서 어휘 대조는 `owner-unmatched`와 Red Hat status에서 FAIL(U4-D1/D2). 출력에서 확인한 이유: `centos-stream-unsupported, distro-not-affected, distro-owned, ecosystem-not-in-database, missing-version, module-mismatch, no-usable-range, owner-unmatched, unimportant, unknown-ecosystem, withdrawn`. 빈 Alpine 결과는 `findings: []`이며 null이 아니다. 합성 module fixture는 `module-mismatch: 770`, UBI OSV는 `distro-owned: 18`을 확인했다.
+- UBI OSV **181**, VEX **823** findings. VEX distro_status 분포: `{'없음': 340, 'workaround-only': 362, 'affected': 22, 'under-investigation': 17, 'fix-deferred': 79, 'will-not-fix': 3}`. distro_severity 분포: `{'high': 95, 'medium': 394, 'low': 332, 'negligible': 2}`. not-affected는 retained finding에 없으며 vendor status와 fixed_in/confidence를 대조했다. 서로 다른 upstream 데이터 공급 범위가 있으므로 finding 수 차이 전체를 오탐/누락 판정으로 해석하지 않았다.
+- Ubuntu `cvss`: 59 findings, by_severity `{'HIGH': 34, 'LOW': 8, 'MEDIUM': 17}`.
+- Ubuntu `distro`: 59 findings, by_severity `{'LOW': 6, 'MEDIUM': 51, 'NEGLIGIBLE': 2}`.
+- Ubuntu `max`: 59 findings, by_severity `{'HIGH': 34, 'LOW': 5, 'MEDIUM': 20}`.
+- Ubuntu exclude-unimportant: 57 findings, skipped `{'unimportant': 2, 'unknown-ecosystem': 6, 'withdrawn': 134}`. host에서는 51,603→50,218 findings; only-fixed fixture의 모든 retained hit에 fixed_in이 있었고 --details에서만 본문이 나타났다. CPE 플래그는 실행 완료를 확인했지만 NVD 카탈로그를 수집하지 않아 CPE 양성 정확도는 이 시험에서 입증하지 않았다.
+- CI 문서의 2개 sh 블록과 GitHub의 build/PATH-file/date/import/scan/exit 처리, GitLab의 build/PATH/import/scan/Python conversion/exit 블록을 로컬에서 실행했다. 소스 디렉터리 음성 입력에서는 0, lodash 양성 입력에서는 findings3을 실측했다. GitHub 처리 블록은 warning을 쓰고0, GitLab 처리 블록은 변환 JSON을 보존하고3이었다. 변환 결과의 schema version15.2.0과 dependency_scanning envelope를 검사했으며 hosted cache/upload/보안 UI는 실행하지 않았다. 원격 GitLab JSON Schema 전체 검증을 이번 결과로 주장하지 않는다.
+- 실제 종료값 0/1/2/3/7/130을 모두 확인했다. SBOM이 없는 partial3, legacy JSON1, 잘못된 global flag 위치1, v1 minimum 거절1, findings 산출물 보존7을 구분했다.
+
+### 결함과 재현
+
+| ID / 심각도 | 재현 및 영향 | file:line 근본 원인 |
+| --- | --- | --- |
+| U4-D1 / P2 | `bscan -q scan --match --output centos registry://quay.io/centos/centos:stream9` → owner-unmatched:7. 또는 위 orphan fixture에 `bscan match --format json orphan.cdx.json` → owner-unmatched:1, lodash findings5. docs/findings-json.md의 명시적 skip vocabulary에 없는 값이며 owner가 있어도 owner coverage가 없으면 언어 매칭이 유지된다. 새 사용자가 schema consumer/coverage 해석을 문서대로 구현할 수 없다. | `internal/match/match.go:138`–144가 fallback을 구현; `docs/findings-json.md:150`–167에서 owner-unmatched 누락, `:155` 및 `README.md:368`–373은 owner가 있다는 이유만으로 distro-owned로 설명 |
+| U4-D2 / P2 | VEX catalog에서 `bscan scan --match --output ubi-vex registry://registry.access.redhat.com/ubi9/ubi:9.4`의 distro_status에 workaround-only/affected/fix-deferred/under-investigation/will-not-fix 상태가 나타난다. findings reference는 undetermined만 설명하여 severity-policy 문서와 불일치한다. | `internal/match/cache.go:275`–279에서 redhat_status를 읽고 `internal/match/match.go:289`–291에서 출력; 문서 `docs/findings-json.md:54` 갱신 누락. 실제 전체 vocabulary는 `docs/severity-policy.md:47`–51 |
+| U4-D3 / P3 | `bscan db status` 기본 Selection이 `alpine=v3.18,v3.19,v3.20,v3.21,v3.2...`로 끝난다. 추가 선택도 잘린다. 저장된 meta.json은 정상이나 문서가 안내한 Selection 줄만으로 모든 값을 감사할 수 없다. | `cmd/bscan/db.go:257`, `:336`이 선택 전체 문자열에 `httpx.Sanitize` 적용; `internal/httpx/httpx.go:45`, `:310`–314는 200 rune로 잘라냄 |
+| U4-D4 / P3 | `bscan help db update` / docs command reference의 --source 열거에서 기본 source인 rubysec가 빠져 있다. 기본 update/status에는 rubysec가 실제 존재하고 README는 --source에 이를 넣으라고 안내한다. | `cmd/bscan/db.go:290` source help 문자열 누락 → 생성된 `docs/commands.md:485` 부근에 전파; 실제 기본 공급원 `internal/vulndb/source.go:67` 및 등록 `:112` |
+| U4-D5 / P2 | 기본 갱신 직후 `bscan db convert --no-keep-raw "$W/converted"`: exit0,135.308초, **10,947,588KiB(10.44GiB)**. 변환 후 verify는 성공하지만 기본 catalog 하나에 약10.4GiB RSS가 필요한 확장성 문제다. 메모리 상한 계약 위반이나 실제 OOM으로 주장하지 않으며, 작은 메모리 환경에서의 실패는 미실측이다. 추가 대용량 반복 시험은 하지 않았다. | `internal/vulndb/convert.go:64`–70에서 모든 Record를 map에 유지한 뒤 `:113`에서 다시 SQLite를 구축. 조회/갱신의 streaming 경로와 달리 catalog 전체가 살아 있음 |
+| U4-D6 / P3 | 기본 DB의 논리 bytes 합계4,177,499,270인데 `db status`는 Disk size:3.9 GB라고 표시한다. 이는3.9GiB이며 약4.18GB다. Ubuntu feed도 MiB 계산값을 MB로 표시한다. 바이트 값/문서의 decimal MB와 CLI를 직접 비교하면 단위가 어긋난다. | `internal/vulndb/source.go:524`–531에서 2^30/2^20/2^10으로 나누면서 GB/MB/KB로 표시 |
+
+P1은 재현하지 못했다. `--report html,markdown,csv,sarif,json`의 거절은 요청 범위의 FAIL로 남기되, README/command reference는 네 형식만 약속하므로 문서 위반 결함으로 중복 집계하지 않았다(`cmd/bscan/scanmatch.go:73`–77). 별도 `report --format json`으로 다섯 번째 presentation을 생성할 수 있다. 기본 Docker 브리지 부재, 최초 네트워크 우회 재시도의 이름 충돌, 첫 JSON report 거절에 따른 report 입력 부재는 각각 환경/시험 선행조건 실패로 분리했다. 유효 v1 fixture는 새 local Ed25519 key로 `cmd/bscan/verify_minversion_test.go:19`의 v1 payload/domain 규칙에 따라 서명했다.
+
+### U4 수정 (재시험 직후)
+
+- **U4-D1/D2:** `owner-unmatched`와 Red Hat `distro_status` 값(affected, fix-deferred, will-not-fix, out-of-support-scope, under-investigation, workaround-only)을 `docs/findings-json.md`와 README에 기록했다.
+- **U4-D3:** `db status`/`db update`의 Selection 줄은 항목별로 sanitize하여 잘리지 않는다 (`cmd/bscan/db.go` sanitizeSelection, 회귀 테스트 추가).
+- **U4-D4:** `--source` 도움말에 rubysec(기본)와 `default` 토큰을 명시했다.
+- **U4-D6:** 크기 표시는 이진 단위 표기(GiB/MiB/KiB)로 바꿨다.
+- `scan/batch --report json`은 이제 받아들이며(findings JSON은 항상 기록되므로 no-op), 오류 문구도 이를 안내한다.
+- **U4-D5:** `db convert`의 전체 레코드 상주 문제는 별도 작업(스트리밍 변환)으로 처리한다.
+- host 스캔 성능: 유휴 상태에서 4회 측정 14.4–15.1초, RSS 230–253 MB로 Round 5 기준선(약 14초/240 MB)과 같다. U4의 34–50초는 동시 DB 구축·GOMAXPROCS=4 조건이었다.
+
+### 전체 명령 실행표
+
+`$W`와 `$R`은 위 절대 경로로 치환한다. 기본 cwd는 `$W/run`; cwd/env 열의 `airgap/offline`은 `BONGSU_HOME=$W/airgap BONGSU_OFFLINE=1`이다. GitHub/GitLab 다중행 블록은 docs/ci-integration.md의 해당 YAML run/script 내용을 그대로 실행했으며 아래에 원문을 반복하지 않았다. `retry-` 실행은 json을 제외한 문서상의 report 목록으로 재실행한 기록이다. 성능/문서 FAIL은 종료값 PASS와 별개로 앞 표에서 판정했다.
+
+| ID | 실제 명령 또는 문서 실행 블록 | cwd / 추가 env | exit | wall 초 | 판정 |
+| --- | --- | --- | ---: | ---: | --- |
+| build | `make build` | $W/src | 0 | 21.772 | PASS |
+| version | `bscan version` | $W/run | 0 | 0.008 | PASS |
+| version-flag | `bscan --version` | $W/run | 0 | 0.006 | PASS |
+| about | `bscan about` | $W/run | 0 | 0.006 | PASS |
+| help-root | `bscan --help` | $W/run | 0 | 0.006 | PASS |
+| help-init | `bscan help init` | $W/run | 0 | 0.006 | PASS |
+| help-config | `bscan help config` | $W/run | 0 | 0.007 | PASS |
+| help-config-show | `bscan help config show` | $W/run | 0 | 0.006 | PASS |
+| help-config-init | `bscan help config init` | $W/run | 0 | 0.006 | PASS |
+| help-key | `bscan help key` | $W/run | 0 | 0.006 | PASS |
+| help-key-show | `bscan help key show` | $W/run | 0 | 0.006 | PASS |
+| help-key-generate | `bscan help key generate` | $W/run | 0 | 0.007 | PASS |
+| help-key-trust | `bscan help key trust` | $W/run | 0 | 0.007 | PASS |
+| help-scan | `bscan help scan` | $W/run | 0 | 0.007 | PASS |
+| help-batch | `bscan help batch` | $W/run | 0 | 0.008 | PASS |
+| help-hash | `bscan help hash` | $W/run | 0 | 0.006 | PASS |
+| help-sign | `bscan help sign` | $W/run | 0 | 0.008 | PASS |
+| help-check | `bscan help check` | $W/run | 0 | 0.008 | PASS |
+| help-verify | `bscan help verify` | $W/run | 0 | 0.007 | PASS |
+| help-scramble | `bscan help scramble` | $W/run | 0 | 0.006 | PASS |
+| help-scramble-encrypt | `bscan help scramble encrypt` | $W/run | 0 | 0.007 | PASS |
+| help-scramble-decrypt | `bscan help scramble decrypt` | $W/run | 0 | 0.007 | PASS |
+| help-encrypt | `bscan help encrypt` | $W/run | 0 | 0.006 | PASS |
+| help-decrypt | `bscan help decrypt` | $W/run | 0 | 0.007 | PASS |
+| help-db | `bscan help db` | $W/run | 0 | 0.007 | PASS |
+| help-db-update | `bscan help db update` | $W/run | 0 | 0.008 | PASS |
+| help-db-status | `bscan help db status` | $W/run | 0 | 0.006 | PASS |
+| help-db-lookup | `bscan help db lookup` | $W/run | 0 | 0.007 | PASS |
+| help-db-show | `bscan help db show` | $W/run | 0 | 0.006 | PASS |
+| help-db-verify | `bscan help db verify` | $W/run | 0 | 0.007 | PASS |
+| help-db-export | `bscan help db export` | $W/run | 0 | 0.007 | PASS |
+| help-db-import | `bscan help db import` | $W/run | 0 | 0.007 | PASS |
+| help-db-convert | `bscan help db convert` | $W/run | 0 | 0.007 | PASS |
+| help-match | `bscan help match` | $W/run | 0 | 0.007 | PASS |
+| help-report | `bscan help report` | $W/run | 0 | 0.007 | PASS |
+| help-update | `bscan help update` | $W/run | 0 | 0.007 | PASS |
+| help-self-update | `bscan help self-update` | $W/run | 0 | 0.007 | PASS |
+| help-version | `bscan help version` | $W/run | 0 | 0.007 | PASS |
+| help-about | `bscan help about` | $W/run | 0 | 0.007 | PASS |
+| help-help | `bscan help help` | $W/run | 0 | 0.006 | PASS |
+| help-completion | `bscan help completion` | $W/run | 0 | 0.008 | PASS |
+| help-completion-bash | `bscan help completion bash` | $W/run | 0 | 0.007 | PASS |
+| help-completion-zsh | `bscan help completion zsh` | $W/run | 0 | 0.007 | PASS |
+| help-completion-fish | `bscan help completion fish` | $W/run | 0 | 0.007 | PASS |
+| completion-bash | `bscan completion bash > bash.completion` | $W/run | 0 | 0.008 | PASS |
+| completion-zsh | `bscan completion zsh > zsh.completion` | $W/run | 0 | 0.007 | PASS |
+| completion-fish | `bscan completion fish > fish.completion` | $W/run | 0 | 0.009 | PASS |
+| completion-bash-syntax | `bash -n bash.completion` | $W/run | 0 | 0.004 | PASS |
+| config-show-empty | `bscan config show` | $W/run ; BONGSU_HOME=$W/config-home | 0 | 0.007 | PASS |
+| config-init | `bscan config init` | $W/run ; BONGSU_HOME=$W/config-home | 0 | 0.006 | PASS |
+| config-init-refuse | `bscan config init` | $W/run ; BONGSU_HOME=$W/config-home | 1 | 0.006 | PASS |
+| init | `bscan init --signer u4-acceptance` | $W/run | 0 | 0.007 | PASS |
+| config-show | `bscan config show` | $W/run | 0 | 0.007 | PASS |
+| dist | `make dist VERSION=0.6.0-rc2` | $W/src | 0 | 71.304 | PASS |
+| scan-host | `bscan scan --timeout 10m --output host-out host` | $W/run | 0 | 50.299 | PASS |
+| scan-directory | `bscan scan --sign --output dir-out rootfs` | $W/run | 0 | 0.013 | PASS |
+| make-tar | `tar -cf rootfs.tar rootfs` | $W/run | 0 | 0.003 | PASS |
+| make-tgz | `tar -czf rootfs.tgz rootfs` | $W/run | 0 | 0.005 | PASS |
+| scan-tar | `bscan scan --sign --output tar-out rootfs.tar` | $W/run | 0 | 0.009 | PASS |
+| scan-tgz | `bscan scan --sign --output tgz-out rootfs.tgz` | $W/run | 0 | 0.009 | PASS |
+| pull-ubuntu | `docker pull ubuntu:24.04` | $W/run | 0 | 2.248 | PASS |
+| scan-docker | `bscan scan --output docker-out docker://ubuntu:24.04` | $W/run | 0 | 0.779 | PASS |
+| scan-registry | `bscan scan --output registry-out registry://docker.io/library/alpine:3.20` | $W/run | 0 | 1.797 | PASS |
+| scan-oci | `bscan scan --output oci-out oci://docker.io/library/alpine:3.20` | $W/run | 0 | 1.789 | PASS |
+| container-start | `docker run -d --name u4 alpine:3.20 sleep 600` | $W/run | 125 | 0.518 | FAIL (환경/재시도 조건) |
+| container-start-none | `docker run -d --network none --name u4 alpine:3.20 sleep 600` | $W/run | 125 | 0.030 | FAIL (환경/재시도 조건) |
+| scan-container | `bscan scan --output container-out container://u4` | $W/run | 0 | 0.150 | PASS |
+| container-remove | `docker rm -f u4` | $W/run | 0 | 0.023 | PASS |
+| scan-batch | `bscan batch --jobs 2 --sign --output batch-out rootfs rootfs.tar docker://alpine:3.20` | $W/run | 0 | 0.129 | PASS |
+| scan-partial | `bscan scan --fail-on-partial --output partial-out unreadable` | $W/run | 3 | 0.018 | PASS |
+| scan-memory | `bscan --memory-limit 64MiB scan --output memory-out rootfs` | $W/run | 0 | 0.014 | PASS |
+| scan-error | `bscan scan no-such-path` | $W/run | 1 | 0.011 | PASS |
+| offline-0 | `unshare -rn bscan scan --output off-reg registry://docker.io/library/alpine:3.20` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.012 | PASS |
+| offline-1 | `unshare -rn bscan scan --output off-oci oci://docker.io/library/alpine:3.20` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.012 | PASS |
+| offline-2 | `unshare -rn bscan batch --output off-batch rootfs registry://docker.io/library/alpine:3.20` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.012 | PASS |
+| offline-3 | `unshare -rn bscan db update` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.014 | PASS |
+| offline-4 | `unshare -rn bscan update --check` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.010 | PASS |
+| offline-5 | `unshare -rn bscan update` | $W/run ; BONGSU_OFFLINE=1 | 1 | 0.008 | PASS |
+| offline-docker | `unshare -rn bscan scan --output offline-docker docker://alpine:3.20` | $W/run ; BONGSU_OFFLINE=1 | 0 | 0.125 | PASS |
+| lint | `make lint` | $W/src | 0 | 57.307 | PASS |
+| container-retry | `docker run -d --network none --name u4 alpine:3.20 sleep 600` | $W/run | 0 | 0.561 | PASS |
+| container-running | `docker inspect --format "{{.State.Running}}" u4` | $W/run | 0 | 0.015 | PASS |
+| scan-container-running | `bscan scan --output running-out container://u4` | $W/run | 0 | 0.134 | PASS |
+| container-clean | `docker rm -f u4` | $W/run | 0 | 0.109 | PASS |
+| key-show | `bscan key show` | $W/run | 0 | 0.008 | PASS |
+| key-trust | `bscan key trust u4 "$W/home/signing.pub"` | $W/run | 0 | 0.008 | PASS |
+| verify | `bscan verify --pubkey u4 dir-out/rootfs.cdx.json.sig dir-out/rootfs.spdx.json.sig` | $W/run | 0 | 0.008 | PASS |
+| check-sig | `bscan check --pubkey u4 tar-out/rootfs.tar.sha256.sig` | $W/run | 0 | 0.008 | PASS |
+| check-manifest | `bscan check tar-out/rootfs.tar.sha256` | $W/run | 0 | 0.007 | PASS |
+| hash | `bscan hash -o rootfs.sha256 rootfs.tar` | $W/run | 0 | 0.008 | PASS |
+| sign | `bscan sign -o rootfs.sha256.sig rootfs.sha256` | $W/run | 0 | 0.009 | PASS |
+| check-hash | `bscan check --pubkey u4 rootfs.sha256.sig` | $W/run | 0 | 0.009 | PASS |
+| scramble-encrypt | `bscan scramble encrypt --chunk-size 4MiB -o payload.bgs rootfs.tar` | $W/run | 0 | 0.010 | PASS |
+| scramble-decrypt | `bscan scramble decrypt --pubkey u4 -o restored.tar payload.bgs` | $W/run | 0 | 0.009 | PASS |
+| scramble-compare | `cmp rootfs.tar restored.tar` | $W/run | 0 | 0.004 | PASS |
+| signature-v1-default | `bscan verify --pubkey u4 rootfs-v1.sig` | $W/run | 0 | 0.008 | PASS |
+| signature-min-v1 | `bscan verify --pubkey u4 rootfs-v1.sig` | $W/run | 1 | 0.007 | PASS |
+| signature-min-v2 | `bscan verify --pubkey u4 rootfs.sha256.sig` | $W/run | 0 | 0.008 | PASS |
+| permissions-022 | `umask 022; bscan scan --sign --output perm-022 rootfs` | $W/run | 0 | 0.013 | PASS |
+| permissions-077 | `umask 077; bscan scan --sign --output perm-077 rootfs` | $W/run | 0 | 0.012 | PASS |
+| checksums | `sha256sum -c SHA256SUMS` | $W/src/dist | 0 | 0.037 | PASS |
+| version-dist | `tar -xzf "$W/src/dist/bscan_0.6.0-rc2_linux_amd64.tar.gz" -C "$W/bin"; "$W/bin/bscan" version` | $W/run | 0 | 0.107 | PASS |
+| docker-base-pull | `docker pull golang:1.27.1-alpine` | $W/run | 0 | 2.238 | PASS |
+| docker-build | `docker build --network=host --platform linux/amd64 --build-arg VERSION=0.6.0-rc2 -t bscan:u4-acceptance .` | $W/src | 0 | 22.792 | PASS |
+| docker-smoke | `sh deploy/container-smoke.sh bscan:u4-acceptance 0.6.0-rc2` | $W/src | 0 | 0.404 | PASS |
+| docker-run-nonroot | `docker run --rm --read-only --network none --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=256m,mode=1777 --mount "type=bind,src=$W/run/rootfs,dst=/input,readonly" --mount "type=bind,src=$W/run/docker-reports,dst=/reports" bscan:u4-acceptance scan --no-sign --workers 2 --output /reports /input` | $W/run | 0 | 0.198 | PASS |
+| docker-config | `docker image inspect --format "{{.Config.User}} {{.Config.WorkingDir}}" bscan:u4-acceptance` | $W/run | 0 | 0.017 | PASS |
+| db-default | `bscan db update` | $W/run | 0 | 188.322 | PASS |
+| db-status-default | `bscan db status` | $W/run | 0 | 2.682 | PASS |
+| db-lookup | `bscan db lookup npm lodash` | $W/run | 0 | 0.801 | PASS |
+| db-show | `bscan db show GHSA-29mw-wpgm-hmr9` | $W/run | 0 | 0.654 | PASS |
+| db-verify | `bscan db verify` | $W/run | 0 | 2.622 | PASS |
+| scan-ubi-osv | `bscan scan --match --report html,markdown,csv,sarif,json --output ubi-osv registry://registry.access.redhat.com/ubi9/ubi:9.4` | $W/run | 1 | 0.007 | FAIL (json report 미지원) |
+| scan-centos | `bscan -q scan --match --output centos registry://quay.io/centos/centos:stream9` | $W/run | 0 | 7.620 | PASS |
+| db-export | `bscan -q db export catalog.tar.gz` | $W/run | 0 | 34.739 | PASS |
+| test-short | `make test-short` | $W/src | 0 | 108.864 | PASS |
+| db-import | `unshare -rn bscan db import --pubkey "$W/home/signing.pub" catalog.tar.gz` | $W/run ; BONGSU_HOME=$W/airgap, BONGSU_OFFLINE=1 | 0 | 17.483 | PASS |
+| db-verify-import | `unshare -rn bscan db verify --pubkey "$W/home/signing.pub"` | $W/run ; BONGSU_HOME=$W/airgap, BONGSU_OFFLINE=1 | 0 | 0.595 | PASS |
+| scan-match-formats | `bscan scan --match --report html,markdown,csv,sarif,json --fail-on HIGH --output matched rootfs` | $W/run ; airgap/offline | 1 | 0.008 | FAIL (json report 미지원) |
+| batch-match | `bscan batch --match --report html,markdown,csv,sarif,json --fail-on HIGH --output batch-matched rootfs rootfs.tgz docker://alpine:3.20` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (json report 미지원) |
+| exit7-match | `bscan --findings-exit-code 7 match --fail-on HIGH --format json -o exit7.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 7 | 2.446 | PASS |
+| exit7-scan | `bscan --findings-exit-code 7 scan --match --fail-on HIGH --output exit7-scan rootfs` | $W/run ; airgap/offline | 7 | 0.619 | PASS |
+| exit7-batch | `bscan --findings-exit-code 7 batch --match --fail-on HIGH --output exit7-batch rootfs` | $W/run ; airgap/offline | 7 | 0.621 | PASS |
+| exit7-partial | `bscan --findings-exit-code 7 scan --fail-on-partial --output exit7-partial unreadable` | $W/run ; airgap/offline | 3 | 0.009 | PASS |
+| severity-cvss | `bscan match --severity-source cvss --format json -o severity-cvss.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.611 | PASS |
+| severity-distro | `bscan match --severity-source distro --format json -o severity-distro.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.652 | PASS |
+| severity-max | `bscan match --severity-source max --format json -o severity-max.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.645 | PASS |
+| only-fixed | `bscan match --only-fixed --fail-on HIGH --format json -o fixed.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 2 | 0.648 | PASS |
+| details | `bscan match --details --format json -o details.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.640 | PASS |
+| exclude-unimportant | `bscan match --exclude-unimportant --format json -o excluded.findings.json host-out/host.cdx.json` | $W/run ; airgap/offline | 0 | 6.146 | PASS |
+| cpe | `bscan match --cpe --format json -o cpe.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.619 | PASS |
+| quiet-coverage | `bscan -q match --format json -o coverage.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.655 | PASS |
+| json-logging | `bscan --log-format json scan --match --output log-json rootfs` | $W/run ; airgap/offline | 0 | 0.621 | PASS |
+| match-memory | `bscan --memory-limit 64MiB match --format json -o memory.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.622 | PASS |
+| empty-findings | `bscan match --format json -o empty.findings.json registry-out/alpine_3.20.cdx.json` | $W/run ; airgap/offline | 0 | 0.700 | PASS |
+| owner-unmatched | `bscan match --format json -o orphan.findings.json orphan.cdx.json` | $W/run ; airgap/offline | 0 | 0.618 | PASS |
+| report-html | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format html -o roundtrip.html` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (선행 입력 없음) |
+| report-markdown | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format markdown -o roundtrip.markdown` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (선행 입력 없음) |
+| report-csv | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format csv -o roundtrip.csv` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (선행 입력 없음) |
+| report-sarif | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format sarif -o roundtrip.sarif` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (선행 입력 없음) |
+| report-json | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format json -o roundtrip.json` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (선행 입력 없음) |
+| ubi-osv-retry | `bscan scan --match --db "$W/airgap/db" --report html,markdown,csv,sarif --output ubi-osv registry://registry.access.redhat.com/ubi9/ubi:9.4` | $W/run | 0 | 18.523 | PASS |
+| match-format-table | `bscan match --format table -o match-format.table dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.622 | PASS |
+| match-format-json | `bscan match --format json -o match-format.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.625 | PASS |
+| match-format-cyclonedx | `bscan match --format cyclonedx -o match-format.cyclonedx dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.656 | PASS |
+| match-format-html | `bscan match --format html -o match-format.html dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.618 | PASS |
+| match-format-markdown | `bscan match --format markdown -o match-format.markdown dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.633 | PASS |
+| match-format-csv | `bscan match --format csv -o match-format.csv dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.622 | PASS |
+| match-format-sarif | `bscan match --format sarif -o match-format.sarif dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.641 | PASS |
+| legacy-reject | `bscan report --from legacy.json --format html` | $W/run ; airgap/offline | 1 | 0.008 | PASS |
+| placement-error | `bscan scan --findings-exit-code 3 rootfs` | $W/run ; airgap/offline | 1 | 0.007 | PASS |
+| report-permissions-022 | `umask 022; bscan scan --match --report html,markdown,csv,sarif,json --output report-perm-022 rootfs` | $W/run ; airgap/offline | 1 | 0.007 | FAIL (json report 미지원) |
+| report-permissions-077 | `umask 077; bscan scan --match --report html,markdown,csv,sarif,json --output report-perm-077 rootfs` | $W/run ; airgap/offline | 1 | 0.008 | FAIL (json report 미지원) |
+| ci | `make ci` | $W/src | 0 | 59.644 | PASS |
+| generate | `go generate ./cmd/bscan` | $W/src | 0 | 6.114 | PASS |
+| generate-no-diff | `cmp docs/commands.md "$R/docs/commands.md"` | $W/src | 0 | 0.004 | PASS |
+| ci-shell-0 | `bscan -q db export ci-catalog.tar.gz ;` | $W/src ; airgap/offline | 0 | 38.979 | PASS |
+| ci-shell-1 | `bscan --findings-exit-code 3 scan --match --report sarif --fail-on HIGH --output out . ;` | $W/src ; airgap/offline | 0 | 0.716 | PASS |
+| ci-github-2 | `go build -o "$BSCAN_BIN/bscan" ./cmd/bscan ; echo "$BSCAN_BIN" >> "$GITHUB_PATH" ;` | $W/src ; airgap/offline | 0 | 0.721 | PASS |
+| ci-github-3 | `echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"` | $W/src ; airgap/offline | 0 | 0.005 | PASS |
+| ci-github-5 | `bscan db import catalog.tar.gz` | $W/src ; airgap/offline | 0 | 19.085 | PASS |
+| ci-github-6 | `status=0 ; bscan --memory-limit 512MiB --log-format json --findings-exit-code 3 scan --match --report sarif --fail-on HIGH --output out . \|\| status=$? ; echo "status=$status" >> "$GITHUB_OUTPUT" ; case "$status" in ;   0) ;; ;   3) echo "::warning::bscan findings meet HIGH; see SARIF and findings artifacts" ;; ;   *) exit "$status" ;; ; esac ;` | $W/src ; airgap/offline | 0 | 0.666 | PASS |
+| ci-gitlab-build | `go build -o "$BSCAN_BIN/bscan" ./cmd/bscan` | $W/src ; airgap/offline | 0 | 0.085 | PASS |
+| ci-gitlab-path | `export PATH="$BSCAN_BIN:$PATH"; command -v bscan` | $W/src ; airgap/offline | 0 | 0.002 | PASS |
+| ci-gitlab-import | `bscan db import catalog.tar.gz` | $W/src ; airgap/offline | 0 | 18.225 | PASS |
+| ci-gitlab-scan-convert | `docs/ci-integration.md GitLab script[3] (Python conversion 포함)` | $W/src ; airgap/offline | 0 | 0.730 | PASS |
+| ci-github-positive | `status=0 ; bscan --memory-limit 512MiB --log-format json --findings-exit-code 3 scan --match --report sarif --fail-on HIGH --output out . \|\| status=$? ; echo "status=$status" >> "$GITHUB_OUTPUT" ; case "$status" in ;   0) ;; ;   3) echo "::warning::bscan findings meet HIGH; see SARIF and findings artifacts" ;; ;   *) exit "$status" ;; ; esac ;` | $W/run/rootfs ; airgap/offline | 0 | 0.632 | PASS |
+| ci-gitlab-positive | `docs/ci-integration.md GitLab script[3] (Python conversion 포함)` | $W/run/rootfs ; airgap/offline | 3 | 0.640 | PASS |
+| retry-scan-match-formats | `bscan scan --match --report html,markdown,csv,sarif --fail-on HIGH --output matched rootfs` | $W/run ; airgap/offline | 2 | 0.603 | PASS |
+| retry-batch-match | `bscan batch --match --report html,markdown,csv,sarif --fail-on HIGH --output batch-matched rootfs rootfs.tgz docker://alpine:3.20` | $W/run ; airgap/offline | 2 | 1.341 | PASS |
+| retry-exit7-match | `bscan --findings-exit-code 7 match --fail-on HIGH --format json -o exit7.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 7 | 0.600 | PASS |
+| retry-exit7-scan | `bscan --findings-exit-code 7 scan --match --fail-on HIGH --output exit7-scan rootfs` | $W/run ; airgap/offline | 7 | 0.636 | PASS |
+| retry-exit7-batch | `bscan --findings-exit-code 7 batch --match --fail-on HIGH --output exit7-batch rootfs` | $W/run ; airgap/offline | 7 | 0.617 | PASS |
+| retry-exit7-partial | `bscan --findings-exit-code 7 scan --fail-on-partial --output exit7-partial unreadable` | $W/run ; airgap/offline | 3 | 0.009 | PASS |
+| retry-severity-cvss | `bscan match --severity-source cvss --format json -o severity-cvss.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.611 | PASS |
+| retry-severity-distro | `bscan match --severity-source distro --format json -o severity-distro.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.609 | PASS |
+| retry-severity-max | `bscan match --severity-source max --format json -o severity-max.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.600 | PASS |
+| retry-only-fixed | `bscan match --only-fixed --fail-on HIGH --format json -o fixed.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 2 | 0.605 | PASS |
+| retry-details | `bscan match --details --format json -o details.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.614 | PASS |
+| retry-exclude-unimportant | `bscan match --exclude-unimportant --format json -o excluded.findings.json host-out/host.cdx.json` | $W/run ; airgap/offline | 0 | 5.885 | PASS |
+| retry-cpe | `bscan match --cpe --format json -o cpe.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.614 | PASS |
+| retry-quiet-coverage | `bscan -q match --format json -o coverage.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run ; airgap/offline | 0 | 0.618 | PASS |
+| retry-json-logging | `bscan --log-format json scan --match --output log-json rootfs` | $W/run ; airgap/offline | 0 | 0.616 | PASS |
+| retry-match-memory | `bscan --memory-limit 64MiB match --format json -o memory.findings.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.603 | PASS |
+| retry-empty-findings | `bscan match --format json -o empty.findings.json registry-out/alpine_3.20.cdx.json` | $W/run ; airgap/offline | 0 | 0.648 | PASS |
+| retry-owner-unmatched | `bscan match --format json -o orphan.findings.json orphan.cdx.json` | $W/run ; airgap/offline | 0 | 0.606 | PASS |
+| retry-report-html | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format html -o roundtrip.html` | $W/run ; airgap/offline | 0 | 0.009 | PASS |
+| retry-report-markdown | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format markdown -o roundtrip.markdown` | $W/run ; airgap/offline | 0 | 0.009 | PASS |
+| retry-report-csv | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format csv -o roundtrip.csv` | $W/run ; airgap/offline | 0 | 0.008 | PASS |
+| retry-report-sarif | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format sarif -o roundtrip.sarif` | $W/run ; airgap/offline | 0 | 0.009 | PASS |
+| retry-report-json | `bscan report --from matched/rootfs.findings.json --sbom matched/rootfs.cdx.json --format json -o roundtrip.json` | $W/run ; airgap/offline | 0 | 0.009 | PASS |
+| retry-match-format-table | `bscan match --format table -o match-format.table dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.599 | PASS |
+| retry-match-format-json | `bscan match --format json -o match-format.json dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.603 | PASS |
+| retry-match-format-cyclonedx | `bscan match --format cyclonedx -o match-format.cyclonedx dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.621 | PASS |
+| retry-match-format-html | `bscan match --format html -o match-format.html dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.614 | PASS |
+| retry-match-format-markdown | `bscan match --format markdown -o match-format.markdown dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.607 | PASS |
+| retry-match-format-csv | `bscan match --format csv -o match-format.csv dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.611 | PASS |
+| retry-match-format-sarif | `bscan match --format sarif -o match-format.sarif dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 0 | 0.613 | PASS |
+| retry-legacy-reject | `bscan report --from legacy.json --format html` | $W/run ; airgap/offline | 1 | 0.008 | PASS |
+| retry-placement-error | `bscan scan --findings-exit-code 3 rootfs` | $W/run ; airgap/offline | 1 | 0.007 | PASS |
+| retry-report-permissions-022 | `umask 022; bscan scan --match --report html,markdown,csv,sarif --output report-perm-022 rootfs` | $W/run ; airgap/offline | 0 | 0.612 | PASS |
+| retry-report-permissions-077 | `umask 077; bscan scan --match --report html,markdown,csv,sarif --output report-perm-077 rootfs` | $W/run ; airgap/offline | 0 | 0.608 | PASS |
+| db-convert | `bscan db convert --no-keep-raw "$W/converted"` | $W/run | 0 | 135.308 | PASS |
+| db-verify-convert | `bscan db verify --db "$W/converted"` | $W/run | 0 | 2.272 | PASS |
+| module-mismatch | `bscan match --format json -o module.findings.json modular.cdx.json` | $W/run ; airgap/offline | 0 | 1.352 | PASS |
+| host-match-baseline | `bscan match --format json -o host.findings.json host-out/host.cdx.json` | $W/run ; airgap/offline | 0 | 5.733 | PASS |
+| offline-extra-0 | `unshare -rn bscan scan --match --output offline-scan registry://docker.io/library/alpine:3.20` | $W/run ; airgap/offline | 1 | 0.009 | PASS |
+| offline-extra-1 | `unshare -rn bscan batch --match --output offline-batch rootfs oci://docker.io/library/alpine:3.20` | $W/run ; airgap/offline | 1 | 0.009 | PASS |
+| offline-extra-2 | `unshare -rn bscan match --llm --llm-base-url https://example.invalid/v1 --llm-model example dir-out/rootfs.cdx.json` | $W/run ; airgap/offline | 1 | 0.008 | PASS |
+| negative-workers | `bscan scan --workers -1 rootfs` | $W/run ; airgap/offline | 1 | 0.007 | PASS |
+| negative-jobs | `bscan batch --jobs -1 rootfs` | $W/run ; airgap/offline | 1 | 0.007 | PASS |
+| report-json-input-rejected | `bscan report --from roundtrip.json` | $W/run ; airgap/offline | 1 | 0.008 | PASS |
+| report-validations | `python3 "$W/report_validate.py"` | $W/run ; airgap/offline | 0 | 0.045 | PASS |
+| rc2-buildinfo | `bscan version; bscan --version; bscan about` | $W/run | 0 | 0.018 | PASS |
+| config-show-no-files | `BONGSU_HOME="$W/show-only" bscan config show; test ! -e "$W/show-only"` | $W/run | 0 | 0.008 | PASS |
+| completion-load | `source bash.completion; declare -F _bscan >/dev/null` | $W/run | 0 | 0.038 | PASS |
+| db-add-ubuntu | `bscan db update --add-ecosystem Ubuntu` | $W/run | 0 | 358.993 | PASS |
+| db-status-ubuntu | `bscan db status` | $W/run | 0 | 4.771 | PASS |
+| conditional-headers | `python3 "$W/conditional.py"` | $W/run | 0 | 11.742 | PASS |
+| conditional-encoded | `python3 "$W/conditional.py"` | $W/run | 0 | 14.159 | PASS |
+| init-permissions-022 | `umask 022; bscan init --signer u4` | $W/run ; BONGSU_HOME=$W/identity-022 | 0 | 0.009 | PASS |
+| json-report-permissions-022 | `umask 022; bscan report --from matched/rootfs.findings.json --format json -o report-perm-022/rootfs.report.json` | $W/run | 0 | 0.009 | PASS |
+| init-permissions-077 | `umask 077; bscan init --signer u4` | $W/run ; BONGSU_HOME=$W/identity-077 | 0 | 0.009 | PASS |
+| json-report-permissions-077 | `umask 077; bscan report --from matched/rootfs.findings.json --format json -o report-perm-077/rootfs.report.json` | $W/run | 0 | 0.009 | PASS |
+| db-reuse | `bscan db update` | $W/run | 0 | 285.338 | PASS |
+| db-status-reuse | `bscan db status` | $W/run | 0 | 4.754 | PASS |
+| docker-cleanup | `docker rmi bscan:u4-acceptance ubuntu:24.04 golang:1.27.1-alpine` | $W/run | 0 | 0.045 | PASS |
+| scan-host-default-runtime | `bscan scan --timeout 10m --output host-default host` | $W/run ; GOMAXPROCS= | 0 | 34.194 | PASS |
+| environment | `id; cat /etc/os-release; go version; docker version --format "{{.Client.Version}} / {{.Server.Version}}"` | $W/run | 0 | 0.030 | PASS |
+| db-add-vex | `bscan db update --add-source redhat-vex` | $W/run | 0 | 739.981 | PASS |
+| db-status-vex | `bscan db status` | $W/run | 0 | 7.305 | PASS |
+| scan-ubi-vex | `bscan scan --match --report html,markdown,csv,sarif,json --output ubi-vex registry://registry.access.redhat.com/ubi9/ubi:9.4` | $W/run | 1 | 0.008 | FAIL (json report 미지원) |
+| scan-centos-vex | `bscan -q scan --match --output centos-vex registry://quay.io/centos/centos:stream9` | $W/run | 0 | 6.353 | PASS |
+| db-interrupt | `exec bscan db update` | $W/run | 130 | 7.055 | PASS |
+| db-verify-interrupt | `bscan db verify` | $W/run | 0 | 6.139 | PASS |
+| ubi-vex-retry | `bscan scan --match --report html,markdown,csv,sarif --output ubi-vex registry://registry.access.redhat.com/ubi9/ubi:9.4` | $W/run | 0 | 13.489 | PASS |
+| ubuntu-policy-cvss | `bscan match --severity-source cvss --format json -o ubuntu-cvss.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run | 0 | 1.481 | PASS |
+| ubuntu-policy-distro | `bscan match --severity-source distro --format json -o ubuntu-distro.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run | 0 | 1.476 | PASS |
+| ubuntu-policy-max | `bscan match --severity-source max --format json -o ubuntu-max.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run | 0 | 1.478 | PASS |
+| ubuntu-exclude | `bscan match --exclude-unimportant --format json -o ubuntu-excluded.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run | 0 | 1.481 | PASS |
+| ubuntu-details | `bscan match --details --format json -o ubuntu-details.findings.json docker-out/ubuntu_24.04.cdx.json` | $W/run | 0 | 1.483 | PASS |
+| ubi-vex-details | `bscan match --details --format json -o vex-details.findings.json ubi-vex/ubi_9.4.cdx.json` | $W/run | 0 | 3.412 | PASS |
+| vex-verify | `bscan db verify` | $W/run | 0 | 6.146 | PASS |
+| artifact-validation | `python3 "$W/validate.py"` | $W/run | 0 | 6.384 | PASS |
+| ci-github-built-binary | `status=0 ; bscan --memory-limit 512MiB --log-format json --findings-exit-code 3 scan --match --report sarif --fail-on HIGH --output out . \|\| status=$? ; echo "status=$status" >> "$GITHUB_OUTPUT" ; case "$status" in ;   0) ;; ;   3) echo "::warning::bscan findings meet HIGH; see SARIF and findings artifacts" ;; ;   *) exit "$status" ;; ; esac ;` | $W/run/rootfs ; BONGSU_HOME=$W/home BONGSU_OFFLINE=1 PATH=$W/ci-bin:... | 0 | 6.768 | PASS |
+| init-plain | `bscan init` | $W/run ; BONGSU_HOME=$W/plain-init | 0 | 0.009 | PASS |
+| final-artifact-validation | `python3 "$W/validate.py"` | $W/run | 0 | 6.213 | PASS |
+| policy-validation | `python3 "$W/policy_validate.py"` | $W/run | 0 | 0.040 | PASS |
+| final-check | `python3 "$W/final_check.py"` | $W/run | 0 | 0.062 | PASS |
+
+### 정리와 판정의 한계
+
+원본 변경 여부는 snapshot hash와 git diff로 확인했다. 이번 회차에서는 플랫폼별 archive의 cross-build/내용/checksum을 검사했으며 macOS/Windows native 실행, self-update 설치, publisher release 배포, systemd/cron 설치, 원격 CI 업로드, LLM 서버 호출, NVD/GHSA/Chainguard 추가 대용량 수집은 수행하지 않았다. 이 범위를 실행했다고 주장하지 않는다.
+
+마지막 추가 검사에서 SPDX-2.3/CycloneDX 1.6, 실행 중 container=true, SIGINT 최종 오류 1회, manifest 불변, DB staging/TMPDIR 잔류 없음, HOME0700 및 원본 tracked 파일 hash 일치를 확인했다.
+
+최종 정리: `docker rmi bscan:u4-acceptance ubuntu:24.04 golang:1.27.1-alpine` 종료 **0**, **0.045초**. 세 tag와 시험 container `u4`의 부재를 재확인했다. 권한을 복구한 뒤 `shutil.rmtree("/home/ziozzang/.cache/bongsu-work/u4")`로 카탈로그·export·키·모든 임시 소스/캐시/로그/보고서 원시 산출물을 삭제했다. 삭제 종료 **0**, **2.870초**, 경로 부재 확인. 기존 alpine:3.20과 공용 Docker build cache는 유지했다.
+최종 `git diff --check -- docs/reviews/2026-09-17-acceptance.md`: 종료 **0**, **0.004초**. 원본 내용은 보존되었고 변경 파일은 이 보고서 하나다. 최종 판정은 **reject**이며 P1 0건, P2 3건, P3 3건이다.

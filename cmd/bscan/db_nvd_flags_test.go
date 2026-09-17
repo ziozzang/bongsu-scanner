@@ -18,7 +18,7 @@ func TestDBUpdateNVDFlags(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("help = %v", err)
 	}
-	if !strings.Contains(out.String(), "-nvd-years") || !strings.Contains(out.String(), "nvd (opt-in)") {
+	if !strings.Contains(out.String(), "-nvd-years") || !strings.Contains(out.String(), "nvd, redhat-vex (opt-in)") {
 		t.Fatalf("NVD flags missing: %s", out.String())
 	}
 	if err := fs.Parse([]string{"--source", "nvd", "--nvd-years", "2024-2026"}); err != nil {

@@ -29,7 +29,7 @@ type scanMatchFlags struct {
 func addScanMatchFlags(fs *flag.FlagSet, f *scanMatchFlags) {
 	fs.BoolVar(&f.cpe, "cpe", false, "enable conservative NVD CPE matching (CPE data can be noisy)")
 	fs.BoolVar(&f.match, "match", false, "match written SBOMs against the local vulnerability database")
-	fs.StringVar(&f.reports, "report", "", "comma-separated html, markdown, csv, or sarif reports (requires --match)")
+	fs.StringVar(&f.reports, "report", "", "comma-separated html, markdown, csv, or sarif reports (requires --match; json is always written as <base>.findings.json)")
 	fs.StringVar(&f.db, "db", "", "local vulnerability database directory (default configured db directory)")
 	fs.StringVar(&f.isolation, "db-isolation", "auto", "SQLite reader isolation: auto, copy, or none")
 	fs.StringVar(&f.severitySource, "severity-source", "distro", "severity policy: cvss, distro, or max")
@@ -73,8 +73,12 @@ func prepareScanMatch(ctx context.Context, f scanMatchFlags) (*scanMatcher, erro
 	for _, format := range splitCSV(f.reports) {
 		switch format {
 		case "html", "markdown", "csv", "sarif":
+		case "json":
+			// --match always writes <base>.findings.json; accept the name so a
+			// list copied from `bscan report --format` does not fail.
+			continue
 		default:
-			return nil, fmt.Errorf("unsupported report format %q", format)
+			return nil, fmt.Errorf("unsupported report format %q (html, markdown, csv, sarif; json is always written as <base>.findings.json)", format)
 		}
 		if !seen[format] {
 			m.formats = append(m.formats, format)

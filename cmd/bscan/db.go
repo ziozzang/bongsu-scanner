@@ -254,7 +254,7 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 	if _, err := fmt.Fprintf(w, "Updated: %s\nRecords: %s\nEcosystems: %s\n", meta.UpdatedAt.UTC().Format(time.RFC3339), vulndb.FormatCount(meta.Records), summarizeEcosystems(meta.Ecosystems)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "Selection: %s\n", httpx.Sanitize(meta.EffectiveSelection().String())); err != nil {
+	if _, err := fmt.Fprintf(w, "Selection: %s\n", sanitizeSelection(meta.EffectiveSelection())); err != nil {
 		return err
 	}
 	for _, source := range meta.Sources {
@@ -287,7 +287,7 @@ func printDBMetaTo(w io.Writer, meta vulndb.Meta) error {
 var dbHTTPClient = httpx.New
 
 func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []string) error {
-	sources := fs.String("source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in)")
+	sources := fs.String("source", "", "comma-separated sources: osv, alpine, debian, rubysec (defaults), ghsa, nvd, redhat-vex (opt-in); default expands the built-in list")
 	nvdYears := fs.String("nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)")
 	ecosystems := fs.String("ecosystem", "", "comma-separated OSV ecosystems")
 	releases := fs.String("alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)")
@@ -333,7 +333,7 @@ func cmdDBUpdate(ctx context.Context, fs *flag.FlagSet, db *string, args []strin
 		ResolveSelection: func(old vulndb.Meta) (vulndb.Selection, error) {
 			selection, provenance, err := resolveDBSelection(fs, cfg.DB, old, additions)
 			if err == nil {
-				logf("db", "selection: %s (%s)\n", httpx.Sanitize(selection.String()), provenance)
+				logf("db", "selection: %s (%s)\n", sanitizeSelection(selection), provenance)
 			}
 			return selection, err
 		},
@@ -498,4 +498,20 @@ func summarizeEcosystems(names []string) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// sanitizeSelection sanitizes each selected name on its own: the joined
+// string easily exceeds httpx.Sanitize's line cap (the Alpine release list
+// alone reached it), and a truncated Selection line cannot be audited.
+func sanitizeSelection(s vulndb.Selection) string {
+	clean := func(values []string) []string {
+		out := make([]string, len(values))
+		for i, value := range values {
+			out[i] = httpx.Sanitize(value)
+		}
+		return out
+	}
+	s.Sources, s.Ecosystems, s.AlpineReleases = clean(s.Sources), clean(s.Ecosystems), clean(s.AlpineReleases)
+	s.NVDYears = httpx.Sanitize(s.NVDYears)
+	return s.String()
 }

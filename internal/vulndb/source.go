@@ -521,14 +521,17 @@ func formatCount(n int) string {
 	return b.String()
 }
 
+// formatBytes uses binary units and labels them as such (GiB, not GB), so a
+// value can be compared with byte counts and with the decimal MB figures in
+// the documentation without guessing which base was used.
 func formatBytes(n int64) string {
 	switch {
 	case n >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
 	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 	case n >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d B", n)
 }

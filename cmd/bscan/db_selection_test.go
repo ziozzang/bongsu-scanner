@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -81,5 +82,19 @@ func TestSummarizeEcosystems(t *testing.T) {
 	want := "Red Hat (3 releases), npm, Debian (1 releases), Alpine (1 release)"
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+// The Selection line must never be truncated: it is the audit trail for a
+// sticky catalog selection (the default Alpine release list alone exceeded
+// the sanitizer's line cap).
+func TestSelectionLineIsNotTruncated(t *testing.T) {
+	var eco []string
+	for i := 0; i < 40; i++ {
+		eco = append(eco, fmt.Sprintf("Ecosystem-%02d\x1b[31m", i))
+	}
+	line := sanitizeSelection(vulndb.Selection{Sources: []string{"osv"}, Ecosystems: eco, AlpineReleases: []string{"v3.22"}})
+	if strings.Contains(line, "...") || strings.Contains(line, "\x1b") || !strings.Contains(line, "Ecosystem-39") {
+		t.Fatalf("selection line = %q", line)
 	}
 }

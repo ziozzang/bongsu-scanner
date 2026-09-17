@@ -367,7 +367,9 @@ RPMs. Red Hat OSV does not identify module names/streams, so this separates
 module from non-module builds without distinguishing individual module streams.
 RPM/dpkg/APK-owned Python, npm and Ruby metadata stays in the SBOM with `bscan:owner`
 (CycloneDX) or `owner=` in the SPDX package comment; language advisory matching
-skips these subjects as `distro-owned` while matching their OS owners normally.
+skips these subjects as `distro-owned` when the owning OS package is present in
+the same SBOM and matchable, and otherwise matches them normally while counting
+`owner-unmatched` (a partial SBOM or an unsupported distribution).
 Ownership retains only metadata paths, capped at 65,536 paths and 16 MiB of
 path/owner text per scan (also bounded per RPM/APK package); incomplete or
 conflicting ownership keeps language matching enabled.

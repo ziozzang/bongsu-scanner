@@ -279,7 +279,7 @@ bscan scan [flags] TARGET
 | `--output` | `.` | output directory |
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
-| `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
+| `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match; json is always written as <base>.findings.json) |
 | `--severity-source` | `distro` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
@@ -325,7 +325,7 @@ bscan batch [flags] TARGET...
 | `--output` | `.` | output directory |
 | `--platform` | `""` | image platform to select from multi-arch archives, os/arch[/variant] |
 | `--redact-ip` | `false` | omit IP addresses from host metadata |
-| `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match) |
+| `--report` | `""` | comma-separated html, markdown, csv, or sarif reports (requires --match; json is always written as <base>.findings.json) |
 | `--severity-source` | `distro` | severity policy: cvss, distro, or max |
 | `--sign` | `false` | sign SBOMs, or the SHA manifest for a local archive |
 | `--skip-binaries` | `false` | do not extract Go build info from ELF executables |
@@ -482,7 +482,7 @@ bscan db update [flags]
 | `--mirror` | `""` | HTTPS OSV mirror base URL |
 | `--no-keep-raw` | `false` | omit original feeds from installed database |
 | `--nvd-years` | `""` | NVD years: range or comma-separated list (default: current year and previous two) |
-| `--source` | `""` | comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in) |
+| `--source` | `""` | comma-separated sources: osv, alpine, debian, rubysec (defaults), ghsa, nvd, redhat-vex (opt-in); default expands the built-in list |
 | `--timeout` | `30m0s` | overall update timeout |
 
 ### bscan db status

@@ -90,7 +90,7 @@ func commandRegistry() []commandSpec {
 		{"add-source", "", "append sources (comma-separated; repeatable; default expands built-ins)", "string", false},
 		{"add-ecosystem", "", "append OSV ecosystems and enable osv (comma-separated; repeatable; default expands built-ins)", "string", false},
 		{"add-alpine-release", "", "append Alpine releases and enable alpine (comma-separated; repeatable; default expands built-ins)", "string", false},
-		{"source", "", "comma-separated sources: osv, alpine, debian, ghsa, nvd (opt-in), redhat-vex (opt-in)", "string", false},
+		{"source", "", "comma-separated sources: osv, alpine, debian, rubysec (defaults), ghsa, nvd, redhat-vex (opt-in); default expands the built-in list", "string", false},
 		{"nvd-years", "", "NVD years: range or comma-separated list (default: current year and previous two)", "string", false},
 		{"ecosystem", "", "comma-separated OSV ecosystems", "string", false},
 		{"alpine-release", "", "comma-separated Alpine releases (e.g. v3.20)", "string", false},
