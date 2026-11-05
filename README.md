@@ -29,4 +29,4 @@ unzip bongsu-node-*-x86_64-linux.zip
 
 이 저장소는 배포판을 올리는 곳입니다. 예전 Go 구현(`bscan` v0.1–v0.5)은 2026-11-05 정리했습니다(이력은 git 기록에 남아 있습니다).
 
-Copyright Jioh L. Jung <ziozzang@gmail.com> — AGPL-3.0-only
+Copyright Jioh L. Jung <jung@jioh.net> — AGPL-3.0-only
